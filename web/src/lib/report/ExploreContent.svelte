@@ -13,8 +13,8 @@
 		blockerBannerText,
 		groupSections,
 		looseFileSections,
-		looseOpen,
-		ontoggleloose,
+		fileOpen,
+		ontogglefile,
 		orphanFindings,
 		hasSkipped,
 		skippedList,
@@ -38,9 +38,9 @@
 		blockerBannerText: string;
 		groupSections: GroupSectionModel[];
 		looseFileSections: FileSection[];
-		/** Plegado de los archivos sin tema, por path; sin entrada manda si tiene hallazgos. */
-		looseOpen: Record<string, boolean>;
-		ontoggleloose: (path: string) => void;
+		/** Override de abierto/cerrado; sin entrada usa el default del panel. */
+		fileOpen: Record<string, boolean>;
+		ontogglefile: (path: string, defaultOpen: boolean) => void;
 		orphanFindings: DecoratedFinding[];
 		hasSkipped: boolean;
 		skippedList: { path: string; reasonLabel: string }[];
@@ -72,19 +72,27 @@
 	{/each}
 </section>
 
-{#snippet fileBlock(file: FileSection)}
+{#snippet fileBlock(file: FileSection, defaultOpen = true)}
+		{@const open = fileOpen[file.path] ?? defaultOpen}
 		{@const total = file.allFindings.length}
 		{@const doneCount = file.allFindings.filter((f) => decided[f.id]).length}
 		{@const allDone = total > 0 && doneCount === total}
-		<div id={fileAnchor(file.path)} class="file-section">
+		<div id={fileAnchor(file.path)} class="file-section" class:collapsed={!open}>
 			<div
 				class="file-head"
 				style:grid-template-columns={showExplanations ? `minmax(0,1fr) 6px ${explanationWidth}px` : 'minmax(0,1fr)'}
 			>
 				<div class="file-head-main">
-					<FileIcon path={file.path} />
-					<span class="path">{file.path}</span>
-					<span class="change-label">{file.changeLabel}</span>
+					<button
+						type="button"
+						class="file-toggle"
+						onclick={() => ontogglefile(file.path, defaultOpen)}
+					>
+						<span class="caret">{open ? '▾' : '▸'}</span>
+						<FileIcon path={file.path} />
+						<span class="path">{file.path}</span>
+						<span class="change-label">{file.changeLabel}</span>
+					</button>
 					{#if total > 0 && !showExplanations}
 						<button type="button" class="findings-control" onclick={() => onopenfindings(file.path)}>
 							{#if allDone}
@@ -116,57 +124,63 @@
 					</div>
 				{/if}
 			</div>
-			<div
-				class="file-grid"
-				class:no-explanations={!showExplanations}
-				style:grid-template-columns={showExplanations ? `minmax(0,1fr) 6px ${explanationWidth}px` : 'minmax(0,1fr)'}
-			>
-				<div class="diff-col">
-					<DiffView
-						path={file.path}
-						diff={file.diff}
-						blocks={file.blocksForFile.map((b) => ({ ...b, accentColor: file.blockAccent[b.id] ?? 'transparent' }))}
-						mode={diffMode}
-						expanded={!!expandedDiffs[file.path]}
-						onToggleExpand={() => ontoggleexpand(file.path)}
-						{splitRatio}
-						onSplitRatioChange={onresizesplit}
-						fontSize={diffFontSize}
-					{wrapLines}
-						onRequestLines={onrequestlines}
-					/>
-				</div>
-				{#if showExplanations}
-					<ResizeHandle ondrag={onresizeexplanation} />
-					<div class="explain-col">
-						{#each file.rows as row (row.id)}
-							<div class="explain-row" style:border-left-color={row.accentColor}>
-								<div class="explain-top">
-									<span class="lines">{row.lines}</span>
-									<span class="op">{row.opLabel}</span>
-								</div>
-								<p class="what">{row.what}</p>
-								{#if row.why}
-									<p class="why">{row.why}</p>
-								{/if}
-							</div>
-						{/each}
+			{#if open}
+				<div
+					class="file-grid"
+					class:no-explanations={!showExplanations}
+					style:grid-template-columns={showExplanations ? `minmax(0,1fr) 6px ${explanationWidth}px` : 'minmax(0,1fr)'}
+				>
+					<div class="diff-col">
+						<DiffView
+							path={file.path}
+							diff={file.diff}
+							blocks={file.blocksForFile.map((b) => ({
+								...b,
+								accentColor: file.blockAccent[b.id] ?? 'transparent'
+							}))}
+							mode={diffMode}
+							expanded={!!expandedDiffs[file.path]}
+							onToggleExpand={() => ontoggleexpand(file.path)}
+							{splitRatio}
+							onSplitRatioChange={onresizesplit}
+							fontSize={diffFontSize}
+							{wrapLines}
+							onRequestLines={onrequestlines}
+						/>
 					</div>
-				{/if}
-			</div>
+					{#if showExplanations}
+						<ResizeHandle ondrag={onresizeexplanation} />
+						<div class="explain-col">
+							{#each file.rows as row (row.id)}
+								<div class="explain-row" style:border-left-color={row.accentColor}>
+									<div class="explain-top">
+										<span class="lines">{row.lines}</span>
+										<span class="op">{row.opLabel}</span>
+									</div>
+									<p class="what">{row.what}</p>
+									{#if row.why}
+										<p class="why">{row.why}</p>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/if}
 		</div>
 {/snippet}
 
 {#each groupSections as g, gi (g.id)}
 	<section id={groupAnchor(g.id)} class="group" style:border-top={gi > 0 ? '1px solid var(--border-soft)' : 'none'}>
 		<header class="group-head">
+			<span class="number">#{g.number}</span>
 			<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
 			<h2>{g.title}</h2>
 		</header>
 		<p class="group-intent">{g.intentText}</p>
 
 		{#each g.fileSections as file (file.path)}
-			{@render fileBlock(file)}
+			{@render fileBlock(file, true)}
 		{/each}
 	</section>
 {/each}
@@ -178,22 +192,8 @@
 			<h2>Archivos que ningún bloque explica · {looseFileSections.length}</h2>
 		</header>
 		{#each looseFileSections as file (file.path)}
-			{#if looseOpen[file.path] ?? file.allFindings.length > 0}
-				{@render fileBlock(file)}
-			{:else}
-				<!-- Sin hallazgos y sin bloques: el diff arranca plegado para no colgar la página con cientos. -->
-				<button
-					type="button"
-					id={fileAnchor(file.path)}
-					class="loose-row"
-					onclick={() => ontoggleloose(file.path)}
-				>
-					<span class="loose-caret">▸</span>
-					<FileIcon path={file.path} />
-					<span class="loose-path">{file.path}</span>
-					<span class="loose-change">{file.changeLabel}</span>
-				</button>
-			{/if}
+			<!-- Sin hallazgos arranca plegado para no colgar la página con cientos de diffs. -->
+			{@render fileBlock(file, file.allFindings.length > 0)}
 		{/each}
 	</section>
 {/if}
@@ -265,47 +265,6 @@
 		max-width: 80ch;
 	}
 
-	.loose-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: 100%;
-		padding: 6px 10px;
-		border: 0;
-		border-bottom: 1px solid var(--border-soft);
-		background: transparent;
-		text-align: left;
-	}
-
-	.loose-row:hover {
-		background: var(--bg-card);
-	}
-
-	.loose-caret {
-		font-size: 9px;
-		color: var(--text-faint);
-	}
-
-	.loose-path {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-family: var(--mono);
-		font-size: 11.5px;
-		color: var(--text-dim);
-	}
-
-	.loose-change {
-		font-size: 10.5px;
-		color: var(--text-faint);
-	}
-
-	.loose .kind-chip {
-		color: var(--text-faint);
-	}
-
 	.group {
 		display: flex;
 		flex-direction: column;
@@ -317,6 +276,13 @@
 		display: flex;
 		align-items: baseline;
 		gap: 10px;
+	}
+
+	.group-head .number {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--text-faint);
+		flex-shrink: 0;
 	}
 
 	.group-head h2 {
@@ -344,6 +310,10 @@
 		line-height: 1.5;
 	}
 
+	.loose .kind-chip {
+		color: var(--text-faint);
+	}
+
 	.file-section {
 		border-top: 1px solid var(--border);
 	}
@@ -354,12 +324,41 @@
 		border-bottom: 1px solid var(--border-soft);
 	}
 
+	.file-section.collapsed .file-head {
+		border-bottom: 0;
+	}
+
 	.file-head-main {
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		padding: 10px 0;
+		gap: 8px;
+		padding: 6px 0;
 		min-width: 0;
+	}
+
+	.file-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: 1;
+		min-width: 0;
+		padding: 4px 0;
+		border: 0;
+		background: transparent;
+		text-align: left;
+		color: inherit;
+		cursor: pointer;
+	}
+
+	.file-toggle:hover .path {
+		color: var(--accent);
+	}
+
+	.caret {
+		width: 10px;
+		flex-shrink: 0;
+		font-size: 10px;
+		color: var(--text-faint);
 	}
 
 	.file-head-gutter {

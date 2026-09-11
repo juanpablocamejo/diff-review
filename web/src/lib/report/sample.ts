@@ -8,25 +8,25 @@ export const SAMPLE_DOCUMENT: ReviewDocument = {
 		{
 			id: 'g1',
 			kind: 'feat',
-			title: 'feat(vendedor): flujo PostPreOrden end-to-end',
+			title: 'vendedor: flujo PostPreOrden end-to-end',
 			intent: 'Nuevo endpoint que recibe la pre-orden del vendedor y la despacha vía MediatR hacia aprobaciones.'
 		},
 		{
 			id: 'g2',
 			kind: 'feat',
-			title: 'feat(rol): distingue operaciones comprador/vendedor',
+			title: 'rol: distingue operaciones comprador/vendedor',
 			intent: 'GetTransactionType ahora resuelve el tipo según el rol para no mezclar PAGO_DEBIN con GENERAR_DEBIN.'
 		},
 		{
 			id: 'g3',
 			kind: 'infra',
-			title: 'feat(infra): retry con Polly para HttpClient de Bantotal',
+			title: 'bantotal: retry con Polly para HttpClient',
 			intent: 'Agrega política de reintentos con backoff para llamadas transitorias, evitando reintentar POST no idempotentes.'
 		},
 		{
 			id: 'g4',
 			kind: 'chore',
-			title: 'chore(release): configuración por rol y limpieza de constantes',
+			title: 'release: configuración por rol y limpieza de constantes',
 			intent: 'Ajusta config y remueve una constante de moneda duplicada.'
 		}
 	],

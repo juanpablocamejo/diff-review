@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { fileIcon } from './icons';
 
-	let { path, size = 14 }: { path: string; size?: number } = $props();
+	let { path, size = 16 }: { path: string; size?: number } = $props();
 
 	const icon = $derived(fileIcon(path));
 </script>
@@ -20,7 +20,6 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		opacity: 0.9;
 	}
 
 	.file-icon :global(svg) {

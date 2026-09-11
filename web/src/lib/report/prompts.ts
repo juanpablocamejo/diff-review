@@ -5,7 +5,7 @@ import type { FindingSeverity, ReportMeta, ReviewDocument } from './types';
 export const OUTPUT_SCHEMA_BLOCK = `{
   "intent": "2-4 oraciones: qué problema resuelve el branch y cómo. Sin listar archivos.",
   "groups": [
-    { "id": "g1", "kind": "feat|fix|refactor|perf|test|chore|docs|infra", "title": "imperativo, tipo(scope): título, máx 72 caracteres", "intent": "1-2 oraciones sobre este tema" }
+    { "id": "g1", "kind": "feat|fix|refactor|perf|test|chore|docs|infra", "title": "scope: título en imperativo, máx 72 caracteres (sin repetir el kind)", "intent": "1-2 oraciones sobre este tema" }
   ],
   "blocks": [
     {

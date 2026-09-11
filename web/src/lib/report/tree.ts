@@ -79,16 +79,8 @@ function tally(node: Node, counts: Map<string, FileCount>): { files: number; fin
 	return { files, findings, done };
 }
 
-/**
- * Arma las filas visibles del árbol: carpetas primero y archivos después, en orden
- * alfabético, saltando lo que cuelga de una carpeta plegada. Devuelve una lista plana
- * porque así se renderiza con un `each` y la indentación es un padding, sin recursión.
- */
-export function buildTreeRows(
-	items: FileNavItem[],
-	counts: Map<string, FileCount>,
-	collapsed: Set<string>
-): TreeRow[] {
+/** Arma el bosque comprimido a partir de los paths (misma lógica que el render). */
+function buildForest(items: FileNavItem[]): Node {
 	const root = emptyNode('', '');
 	for (const item of items) {
 		const parts = item.path.split('/');
@@ -105,6 +97,33 @@ export function buildTreeRows(
 		node.files.push(item);
 	}
 	compress(root);
+	return root;
+}
+
+/** Paths de todas las carpetas del árbol (post-compress), para expandir/colapsar todo. */
+export function collectTreeDirPaths(items: FileNavItem[]): string[] {
+	const paths: string[] = [];
+	const walk = (node: Node) => {
+		for (const dir of node.dirs.values()) {
+			paths.push(dir.path);
+			walk(dir);
+		}
+	};
+	walk(buildForest(items));
+	return paths;
+}
+
+/**
+ * Arma las filas visibles del árbol: carpetas primero y archivos después, en orden
+ * alfabético, saltando lo que cuelga de una carpeta plegada. Devuelve una lista plana
+ * porque así se renderiza con un `each` y la indentación es un padding, sin recursión.
+ */
+export function buildTreeRows(
+	items: FileNavItem[],
+	counts: Map<string, FileCount>,
+	collapsed: Set<string>
+): TreeRow[] {
+	const root = buildForest(items);
 	tally(root, counts);
 
 	const rows: TreeRow[] = [];

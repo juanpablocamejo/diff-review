@@ -102,3 +102,20 @@ export function sourceLabel(source: string) {
 export function plural(n: number, one: string, many: string) {
 	return `${n} ${n === 1 ? one : many}`;
 }
+
+/**
+ * El chip ya muestra el kind: saca el prefijo tipo conventional-commit del título
+ * (`feat(warehouses): foo` → `warehouses: foo`, `chore: bar` → `bar`).
+ */
+export function displayGroupTitle(title: string, kind: string): string {
+	const raw = String(title ?? '').replace(/\s+/g, ' ').trim();
+	const k = String(kind ?? '').trim().toLowerCase();
+	if (!raw || !k) return raw;
+	const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const match = raw.match(new RegExp(`^${escaped}(?:\\(([^)]*)\\))?\\s*:\\s*(.*)$`, 'i'));
+	if (!match) return raw;
+	const scope = (match[1] ?? '').trim();
+	const rest = (match[2] ?? '').trim();
+	if (!rest) return scope || raw;
+	return scope ? `${scope}: ${rest}` : rest;
+}

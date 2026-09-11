@@ -3,7 +3,7 @@
 	import { groupAnchor } from './anchors';
 	import type { FileNavItem, GroupNavItem } from './build';
 	import FileIcon from './FileIcon.svelte';
-	import { buildTreeRows, type FileCount } from './tree';
+	import { buildTreeRows, collectTreeDirPaths, type FileCount } from './tree';
 
 	let {
 		collapsed,
@@ -33,6 +33,8 @@
 	/** Índice de Explorar: los mismos archivos, indexados por tema o por carpeta. */
 	let exploreIndex = $state<'temas' | 'archivos'>('temas');
 	let collapsedDirs = $state<string[]>([]);
+	/** Árbol con carpetas, o lista plana de paths. */
+	let filesLayout = $state<'tree' | 'list'>('tree');
 
 	const fileCounts = $derived.by(() => {
 		const counts = new Map<string, FileCount>();
@@ -45,7 +47,28 @@
 		return counts;
 	});
 
+	const allDirPaths = $derived(collectTreeDirPaths(fileNav));
 	const treeRows = $derived(buildTreeRows(fileNav, fileCounts, new Set(collapsedDirs)));
+	const allExpanded = $derived(collapsedDirs.length === 0);
+
+	const listRows = $derived.by(() =>
+		[...fileNav]
+			.sort((a, b) => a.path.localeCompare(b.path))
+			.map((file) => {
+				const count = fileCounts.get(file.path);
+				const slash = file.path.lastIndexOf('/');
+				return {
+					path: file.path,
+					name: slash >= 0 ? file.path.slice(slash + 1) : file.path,
+					dir: slash >= 0 ? file.path.slice(0, slash) : '',
+					changeMark: file.changeMark,
+					navigable: file.navigable,
+					findings: count?.total ?? 0,
+					done: !!count?.total && count.done === count.total,
+					skipReasonLabel: file.skipReasonLabel
+				};
+			})
+	);
 
 	const groupCounts = $derived.by(() => {
 		const decided = new Set(findings.filter((f) => f.decided).map((f) => f.id));
@@ -61,6 +84,23 @@
 		collapsedDirs = collapsedDirs.includes(key)
 			? collapsedDirs.filter((k) => k !== key)
 			: [...collapsedDirs, key];
+	}
+
+	function toggleExpandAll() {
+		collapsedDirs = allExpanded ? allDirPaths : [];
+	}
+
+	/** Indent por nivel y slot compartido chevron/ícono (estilo explorer de Cursor/VS Code). */
+	const TREE_INDENT = 8;
+	const TREE_SLOT = 16;
+	const TREE_PAD = 4;
+
+	function treePad(depth: number) {
+		return TREE_PAD + depth * TREE_INDENT;
+	}
+
+	function guideLeft(level: number) {
+		return TREE_PAD + level * TREE_INDENT + TREE_SLOT / 2;
 	}
 </script>
 
@@ -95,6 +135,7 @@
 							{@const count = groupCounts.get(g.id)}
 							<a href={`#${groupAnchor(g.id)}`} class="group-link">
 								<span class="row">
+									<span class="number">#{g.number}</span>
 									<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
 									<span class="title">{g.title}</span>
 									{#if count?.total}
@@ -113,53 +154,188 @@
 						{/each}
 					</div>
 				{:else}
-					<div class="tree">
-						{#each treeRows as row (row.key)}
-							{#if row.kind === 'dir'}
-								<button
-									type="button"
-									class="tree-row dir"
-									style:padding-left="{6 + row.depth * 11}px"
-									onclick={() => toggleDir(row.key)}
-								>
-									<span class="caret">{row.open ? '▾' : '▸'}</span>
-									<span class="name">{row.label}</span>
-									{#if row.findings}
-										<span
-											class="count"
-											class:done={row.done}
-											title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'} en esta carpeta{row.done
-												? ' · todos revisados'
-												: ''}">{row.done ? '✓' : row.findings}</span
-										>
-									{/if}
-								</button>
+					<div class="files-toolbar">
+						<div class="seg" role="group" aria-label="Vista de archivos">
+							<button
+								type="button"
+								class="tool"
+								class:on={filesLayout === 'tree'}
+								title="Vista en árbol"
+								aria-label="Vista en árbol"
+								aria-pressed={filesLayout === 'tree'}
+								onclick={() => (filesLayout = 'tree')}
+							>
+								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+									<path
+										d="M3 2.5h3.2v3.2H3V2.5Zm0 4.4h3.2v3.2H3V6.9Zm0 4.4h3.2v3.2H3v-3.2ZM7.6 4.1H13M7.6 8.5H13M7.6 12.9H13M6.2 4.1v8.8"
+										stroke="currentColor"
+										stroke-width="1.5"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									/>
+								</svg>
+							</button>
+							<button
+								type="button"
+								class="tool"
+								class:on={filesLayout === 'list'}
+								title="Vista en lista"
+								aria-label="Vista en lista"
+								aria-pressed={filesLayout === 'list'}
+								onclick={() => (filesLayout = 'list')}
+							>
+								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+									<path
+										d="M3 4h10M3 8h10M3 12h10"
+										stroke="currentColor"
+										stroke-width="1.5"
+										stroke-linecap="round"
+									/>
+								</svg>
+							</button>
+						</div>
+						{#if filesLayout === 'tree'}
+							<button
+								type="button"
+								class="tool"
+								disabled={allDirPaths.length === 0}
+								title={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
+								aria-label={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
+								onclick={toggleExpandAll}
+							>
+								{#if allExpanded}
+								<!-- colapsar todo: doble chevron ↑ -->
+								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+									<path
+										d="M4.5 7.2 8 3.8l3.5 3.4M4.5 12.2 8 8.8l3.5 3.4"
+										stroke="currentColor"
+										stroke-width="1.5"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									/>
+								</svg>
 							{:else}
+								<!-- expandir todo: doble chevron ↓ -->
+								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+									<path
+										d="M4.5 3.8 8 7.2l3.5-3.4M4.5 8.8 8 12.2l3.5-3.4"
+										stroke="currentColor"
+										stroke-width="1.5"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									/>
+								</svg>
+							{/if}
+							</button>
+						{/if}
+					</div>
+					{#if filesLayout === 'tree'}
+						<div class="tree">
+							{#each treeRows as row (row.key)}
+								{#if row.kind === 'dir'}
+									<button
+										type="button"
+										class="tree-row dir"
+										style:padding-left="{treePad(row.depth)}px"
+										onclick={() => toggleDir(row.key)}
+									>
+										{#if row.depth > 0}
+											<span class="tree-guides" aria-hidden="true">
+												{#each Array(row.depth) as _, i (i)}
+													<span class="tree-guide" style:left="{guideLeft(i)}px"></span>
+												{/each}
+											</span>
+										{/if}
+										<span class="tree-slot">
+											<span class="caret">{row.open ? '▾' : '▸'}</span>
+										</span>
+										<span class="name">{row.label}</span>
+										{#if row.findings}
+											<span
+												class="count"
+												class:done={row.done}
+												title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'} en esta carpeta{row.done
+													? ' · todos revisados'
+													: ''}">{row.done ? '✓' : row.findings}</span
+											>
+										{/if}
+									</button>
+								{:else}
+									<button
+										type="button"
+										class="tree-row file"
+										class:skipped={!!row.skipReasonLabel}
+										class:muted={!row.navigable}
+										style:padding-left="{treePad(row.depth)}px"
+										disabled={!row.navigable}
+										title={row.skipReasonLabel ? `${row.path} · omitido (${row.skipReasonLabel})` : row.path}
+										onclick={() => onselectfile(row.path)}
+									>
+										{#if row.depth > 0}
+											<span class="tree-guides" aria-hidden="true">
+												{#each Array(row.depth) as _, i (i)}
+													<span class="tree-guide" style:left="{guideLeft(i)}px"></span>
+												{/each}
+											</span>
+										{/if}
+										<span class="tree-slot">
+											<FileIcon path={row.path} size={TREE_SLOT} />
+										</span>
+										<span class="name">{row.label}</span>
+										{#if row.findings}
+											<span
+												class="count"
+												class:done={row.done}
+												title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'}{row.done
+													? ' · todos revisados'
+													: ''}">{row.done ? '✓' : row.findings}</span
+											>
+										{/if}
+										<span class="mark" class:add={row.changeMark === 'A'} class:del={row.changeMark === 'D'}
+											>{row.changeMark}</span
+										>
+									</button>
+								{/if}
+							{/each}
+						</div>
+					{:else}
+						<div class="tree list">
+							{#each listRows as row (row.path)}
 								<button
 									type="button"
 									class="tree-row file"
 									class:skipped={!!row.skipReasonLabel}
 									class:muted={!row.navigable}
-									style:padding-left="{6 + row.depth * 11}px"
+									style:padding-left="{TREE_PAD}px"
 									disabled={!row.navigable}
 									title={row.skipReasonLabel ? `${row.path} · omitido (${row.skipReasonLabel})` : row.path}
 									onclick={() => onselectfile(row.path)}
 								>
-									<FileIcon path={row.path} />
-									<span class="name">{row.label}</span>
+									<span class="tree-slot">
+										<FileIcon path={row.path} size={TREE_SLOT} />
+									</span>
+									<span class="name-line">
+										<span class="name">{row.name}</span>
+										{#if row.dir}
+											<span class="dir">{row.dir}</span>
+										{/if}
+									</span>
 									{#if row.findings}
-										<span class="count" class:done={row.done}
-											title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'}{row.done ? ' · todos revisados' : ''}"
-											>{row.done ? '✓' : row.findings}</span
+										<span
+											class="count"
+											class:done={row.done}
+											title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'}{row.done
+												? ' · todos revisados'
+												: ''}">{row.done ? '✓' : row.findings}</span
 										>
 									{/if}
 									<span class="mark" class:add={row.changeMark === 'A'} class:del={row.changeMark === 'D'}
 										>{row.changeMark}</span
 									>
 								</button>
-							{/if}
-						{/each}
-					</div>
+							{/each}
+						</div>
+					{/if}
 				{/if}
 			</div>
 		{:else}
@@ -303,6 +479,69 @@
 		border-bottom-color: var(--accent);
 	}
 
+	.files-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 6px;
+		margin: -2px 0 8px;
+	}
+
+	.files-toolbar .tool {
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid var(--border);
+		background: var(--bg-card);
+		color: var(--text-dim);
+	}
+
+	.files-toolbar .tool:hover:not(:disabled) {
+		color: var(--text);
+		border-color: var(--text-faint);
+	}
+
+	.files-toolbar .tool.on {
+		background: var(--accent-soft);
+		border-color: var(--border);
+		color: var(--text);
+	}
+
+	.files-toolbar .tool:disabled {
+		opacity: 0.35;
+		cursor: default;
+	}
+
+	.files-toolbar .tool-icon {
+		width: 14px;
+		height: 14px;
+		display: block;
+	}
+
+	/* Árbol | Lista: siempre se ven las dos opciones; la activa queda marcada. */
+	.files-toolbar .seg {
+		display: flex;
+		overflow: hidden;
+		border: 1px solid var(--border);
+	}
+
+	.files-toolbar .seg .tool {
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+	}
+
+	.files-toolbar .seg .tool + .tool {
+		border-left: 1px solid var(--border);
+	}
+
+	.files-toolbar .seg .tool.on {
+		background: var(--accent-soft);
+	}
+
 	.nav-list {
 		display: flex;
 		flex-direction: column;
@@ -315,11 +554,12 @@
 	}
 
 	.tree-row {
+		position: relative;
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 		width: 100%;
-		padding: 3px 6px;
+		padding: 2px 6px 2px 0;
 		border: 0;
 		background: transparent;
 		text-align: left;
@@ -346,10 +586,35 @@
 		text-decoration-color: var(--text-faint);
 	}
 
-	.caret {
-		width: 9px;
+	.tree-guides {
+		position: absolute;
+		inset: 0 auto 0 0;
+		width: 0;
+		pointer-events: none;
+	}
+
+	.tree-guide {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 1px;
+		background: var(--border-soft);
+		opacity: 0.9;
+	}
+
+	/* Misma columna para ▸/▾ e ícono Seti: el texto arranca alineado. */
+	.tree-slot {
+		width: 16px;
+		height: 16px;
 		flex-shrink: 0;
-		font-size: 9px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.caret {
+		font-size: 10px;
+		line-height: 1;
 		color: var(--text-faint);
 	}
 
@@ -379,6 +644,32 @@
 		white-space: nowrap;
 		font-family: var(--mono);
 		font-size: 11.5px;
+	}
+
+	.tree-row .name-line {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		overflow: hidden;
+	}
+
+	.tree-row .name-line .name {
+		flex: 0 1 auto;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.tree-row .name-line .dir {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-family: var(--mono);
+		font-size: 10.5px;
+		color: var(--text-faint);
 	}
 
 	/* Único contador del índice: hallazgos del archivo, de la carpeta o del tema. */
@@ -417,6 +708,13 @@
 		display: flex;
 		gap: 6px;
 		align-items: center;
+	}
+
+	.group-link .number {
+		font-size: 10px;
+		color: var(--text-faint);
+		font-weight: 700;
+		flex-shrink: 0;
 	}
 
 	.kind-chip {

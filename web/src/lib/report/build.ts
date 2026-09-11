@@ -1,4 +1,4 @@
-import { changeLabel, findingKindLabel, kindLabel, opLabel, severityLabel, skipLabel } from './labels';
+import { changeLabel, displayGroupTitle, findingKindLabel, kindLabel, opLabel, severityLabel, skipLabel } from './labels';
 import type {
 	BlockSide,
 	ChangeType,
@@ -53,6 +53,8 @@ export type FileSection = {
 
 export type GroupSectionModel = {
 	id: string;
+	/** Numeración estable 1-based, igual que los hallazgos. */
+	number: number;
 	kind: GroupKind;
 	kindLabel: string;
 	kindColor: string;
@@ -74,6 +76,7 @@ export type FileNavItem = {
 
 export type GroupNavItem = {
 	id: string;
+	number: number;
 	kindLabel: string;
 	kindColor: string;
 	title: string;
@@ -152,7 +155,7 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 	const allPaths = new Set(files.map((f) => f.path));
 	blocks.forEach((b) => allPaths.add(b.file));
 
-	const groupSections: GroupSectionModel[] = groups.map((g) => {
+	const groupSections: GroupSectionModel[] = groups.map((g, gi) => {
 		const blocksInGroup = blocks.filter((b) => b.group === g.id);
 		const pathsInGroup: string[] = [];
 		const seen = new Set<string>();
@@ -221,10 +224,11 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 
 		return {
 			id: g.id,
+			number: gi + 1,
 			kind: g.kind,
 			kindLabel: kindLabel(g.kind),
 			kindColor: `var(--kind-${g.kind})`,
-			title: g.title,
+			title: displayGroupTitle(g.title, g.kind),
 			intentText: g.intent,
 			fileSections
 		};
@@ -284,6 +288,7 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 
 	const groupsNav: GroupNavItem[] = groupSections.map((g) => ({
 		id: g.id,
+		number: g.number,
 		kindLabel: g.kindLabel,
 		kindColor: g.kindColor,
 		title: g.title,

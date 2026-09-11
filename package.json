@@ -3,11 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Review a branch against its base: intent, themes, change blocks, and findings.",
+  "description": "Local UI to prompt a coding agent for a branch review and browse the result.",
   "scripts": {
     "test": "node --test lib/*.test.mjs",
-    "extract": "node extract-diff.mjs",
-    "review": "node run-review.mjs",
     "web:install": "bun --cwd web install",
     "web:dev": "bun --cwd web run dev",
     "web:build": "bun --cwd web run build",
