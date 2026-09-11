@@ -1,0 +1,19 @@
+{
+  "name": "diff-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Review a branch against its base: intent, themes, change blocks, and findings.",
+  "scripts": {
+    "test": "node --test lib/*.test.mjs",
+    "extract": "node extract-diff.mjs",
+    "review": "node run-review.mjs",
+    "web:install": "bun --cwd web install",
+    "web:dev": "bun --cwd web run dev",
+    "web:build": "bun --cwd web run build",
+    "web:check": "bun --cwd web run type-check"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

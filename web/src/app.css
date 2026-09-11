@@ -1,0 +1,351 @@
+:root {
+	--bg: #0b0e14;
+	--bg-elev: #11151d;
+	--bg-card: #151a24;
+	--bg-card-hover: #1a2130;
+	--border: #242b3a;
+	--border-soft: #1c2230;
+	--text: #e6e9ef;
+	--text-dim: #9aa4b8;
+	--text-faint: #5f6b82;
+	--accent: #6ea8fe;
+	--accent-soft: #1c2b45;
+	--ok: #7ee2a8;
+	--ok-bg: #0d2a1c;
+	--warn: #e2c67e;
+	--danger: #ff9a9a;
+	--danger-bg: #2a1414;
+	--danger-border: #4a1e1e;
+	--mono: ui-monospace, 'JetBrains Mono', 'Fira Code', Consolas, 'SFMono-Regular', Menlo, monospace;
+	--sans: -apple-system, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;
+
+	/* Botones "primarios" (Copiar, Generar con X): fondo sólido + texto que siempre contrasta contra ese fondo. */
+	--btn-primary-bg: #1c2b45;
+	--btn-primary-border: #3a5a8f;
+	--btn-primary-text: #cfe0ff;
+
+	/* Un color por kind de tema: el chip de la lista y el borde de la sección. */
+	--kind-feat: #7ee2a8;
+	--kind-fix: #ff9a9a;
+	--kind-refactor: #c9a5ff;
+	--kind-perf: #e2c67e;
+	--kind-test: #6ea8fe;
+	--kind-chore: #9aa4b8;
+	--kind-docs: #7fd6e0;
+	--kind-infra: #f0a868;
+
+	/* Severidad de hallazgos. */
+	--sev-high: #ff9a9a;
+	--sev-med: #e2c67e;
+	--sev-low: #6ea8fe;
+	--sev-nit: #7f8aa3;
+
+	/* Diff. */
+	--diff-add-bg: #0f2419;
+	--diff-add-fg: #7ee2a8;
+	--diff-del-bg: #2a1418;
+	--diff-del-fg: #ff9a9a;
+	--diff-hunk-bg: #141924;
+	--diff-gutter: #46516a;
+	--diff-mark: #2b3f63;
+	--diff-mark-edge: #6ea8fe;
+	--diff-add-strong: #1f6b3c;
+	--diff-del-strong: #6d2530;
+	--diff-blank-bg: repeating-linear-gradient(135deg, #11151d 0 6px, #151a24 6px 12px);
+
+	/* Triage: decisión "corregir" (verde) vs "publicar" (azul info). */
+	--fix-bg: #0e1a13;
+	--fix-border: #2f6b46;
+	--fix-text: #7ee2a8;
+	--publish-bg: #0e1622;
+	--publish-border: #3a5a8f;
+	--publish-text: #7db8ff;
+
+	--scrollbar-thumb: #2a3348;
+	--scrollbar-thumb-hover: #3a4660;
+	--selection-bg: #33507a;
+	--header-bg: rgba(11, 14, 20, 0.92);
+}
+
+:root[data-theme='light'] {
+	--bg: #ffffff;
+	--bg-elev: #f6f7f9;
+	--bg-card: #eef0f3;
+	--bg-card-hover: #e4e7ec;
+	--border: #d7dbe2;
+	--border-soft: #e4e7ec;
+	--text: #16181d;
+	--text-dim: #4b5563;
+	--text-faint: #6b7280;
+	--accent: #2f6fe0;
+	--accent-soft: #dce8ff;
+	--ok: #1f9d55;
+	--ok-bg: #e3f8ea;
+	--warn: #a5720a;
+	--danger: #c92a2a;
+	--danger-bg: #fbe4e4;
+	--danger-border: #f3b4b4;
+
+	--btn-primary-bg: #2f6fe0;
+	--btn-primary-border: #2358b8;
+	--btn-primary-text: #ffffff;
+
+	--kind-feat: #1f9d55;
+	--kind-fix: #c92a2a;
+	--kind-refactor: #7c4dd6;
+	--kind-perf: #a5720a;
+	--kind-test: #2f6fe0;
+	--kind-chore: #5b6472;
+	--kind-docs: #0f8fa3;
+	--kind-infra: #c1690f;
+
+	--sev-high: #c92a2a;
+	--sev-med: #a5720a;
+	--sev-low: #2f6fe0;
+	--sev-nit: #6b7280;
+
+	--diff-add-bg: #e6f7ec;
+	--diff-add-fg: #1f9d55;
+	--diff-del-bg: #fbe9e9;
+	--diff-del-fg: #c92a2a;
+	--diff-hunk-bg: #eef1f5;
+	--diff-gutter: #9aa3b2;
+	--diff-mark: #cfe0ff;
+	--diff-mark-edge: #2f6fe0;
+	--diff-add-strong: #a7ebbd;
+	--diff-del-strong: #f9b8b8;
+	--diff-blank-bg: repeating-linear-gradient(135deg, #f6f7f9 0 6px, #eef0f3 6px 12px);
+
+	--fix-bg: #e6f7ec;
+	--fix-border: #1f9d55;
+	--fix-text: #157a41;
+	--publish-bg: #e8f0fe;
+	--publish-border: #2f6fe0;
+	--publish-text: #1d4fa8;
+
+	--scrollbar-thumb: #c7cbd4;
+	--scrollbar-thumb-hover: #aab0bb;
+	--selection-bg: #cfe0ff;
+	--header-bg: rgba(255, 255, 255, 0.92);
+}
+
+/*
+ * Fragmento que cambió dentro de una línea emparejada (borrado contra agregado). Va en
+ * global porque lo inyecta {@html} desde renderLine y el CSS con scope de Svelte no lo
+ * alcanza.
+ */
+.code .chg {
+	border-radius: 2px;
+}
+
+.code.del .chg {
+	background: var(--diff-del-strong);
+}
+
+.code.add .chg {
+	background: var(--diff-add-strong);
+}
+
+/* Paleta de highlight.js, acotada a los tokens que aparecen en un diff. */
+.hljs-comment,
+.hljs-quote {
+	color: #6b7689;
+	font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-formula {
+	color: #c9a5ff;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+	color: #a5d6a7;
+}
+
+.hljs-number,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-type,
+.hljs-selector-class,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+	color: #f0a868;
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-title.class_,
+.hljs-title.function_ {
+	color: #7fd6e0;
+}
+
+.hljs-attr,
+.hljs-property,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+	color: #6ea8fe;
+}
+
+.hljs-built_in,
+.hljs-class,
+.hljs-params {
+	color: #e6e9ef;
+}
+
+.hljs-meta,
+.hljs-tag {
+	color: #9aa4b8;
+}
+
+:root[data-theme='light'] .hljs-comment,
+:root[data-theme='light'] .hljs-quote {
+	color: #6b7280;
+}
+
+:root[data-theme='light'] .hljs-keyword,
+:root[data-theme='light'] .hljs-selector-tag,
+:root[data-theme='light'] .hljs-literal,
+:root[data-theme='light'] .hljs-doctag,
+:root[data-theme='light'] .hljs-formula {
+	color: #7c4dd6;
+}
+
+:root[data-theme='light'] .hljs-string,
+:root[data-theme='light'] .hljs-regexp,
+:root[data-theme='light'] .hljs-addition,
+:root[data-theme='light'] .hljs-attribute,
+:root[data-theme='light'] .hljs-meta .hljs-string {
+	color: #1f9d55;
+}
+
+:root[data-theme='light'] .hljs-number,
+:root[data-theme='light'] .hljs-variable,
+:root[data-theme='light'] .hljs-template-variable,
+:root[data-theme='light'] .hljs-type,
+:root[data-theme='light'] .hljs-selector-class,
+:root[data-theme='light'] .hljs-selector-attr,
+:root[data-theme='light'] .hljs-selector-pseudo {
+	color: #b5650f;
+}
+
+:root[data-theme='light'] .hljs-title,
+:root[data-theme='light'] .hljs-section,
+:root[data-theme='light'] .hljs-title.class_,
+:root[data-theme='light'] .hljs-title.function_ {
+	color: #0f8fa3;
+}
+
+:root[data-theme='light'] .hljs-attr,
+:root[data-theme='light'] .hljs-property,
+:root[data-theme='light'] .hljs-symbol,
+:root[data-theme='light'] .hljs-bullet,
+:root[data-theme='light'] .hljs-link {
+	color: #2f6fe0;
+}
+
+:root[data-theme='light'] .hljs-built_in,
+:root[data-theme='light'] .hljs-class,
+:root[data-theme='light'] .hljs-params {
+	color: #16181d;
+}
+
+:root[data-theme='light'] .hljs-meta,
+:root[data-theme='light'] .hljs-tag {
+	color: #5b6472;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: 700;
+}
+
+/* Flash al scrollear a un ancla desde la sidebar o desde un hallazgo. */
+.anchor-flash {
+	animation: anchor-flash 1.4s ease-out;
+}
+
+@keyframes anchor-flash {
+	0% {
+		box-shadow: 0 0 0 2px var(--accent);
+	}
+	100% {
+		box-shadow: 0 0 0 2px transparent;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--sans);
+	min-height: 100%;
+}
+
+body {
+	-webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	cursor: pointer;
+}
+
+::selection {
+	background: var(--selection-bg);
+}
+
+html,
+body,
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+*::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+	background: var(--scrollbar-thumb);
+	border-radius: 999px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+	background: var(--scrollbar-thumb-hover);
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+	background: transparent;
+}

@@ -1,0 +1,27 @@
+# Reportes generados por la CLI (artefactos por par de tips, no fuente).
+data/
+output/
+
+# App web: install y build propios.
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/.vite/
+
+# Dependencias / entornos
+node_modules/
+.env
+.env.*
+!.env.example
+
+# OS / editores
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.log
+
+# Dumps locales de review / chats de agente
+diff-review-output.json
+**/chat.md

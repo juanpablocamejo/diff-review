@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tienda-argenta.internal/schemas/branch-diff-review.json",
+  "title": "Branch Diff Review Report",
+  "description": "Documento de review de un branch contra su base. El modelo devuelve intent/groups/blocks/findings/skipped como JSON; el pipeline agrega meta, files y prompts.",
+  "type": "object",
+  "required": ["version", "branch", "baseBranch", "mergeBase", "generatedAt", "intent", "stats", "groups", "blocks", "findings"],
+  "properties": {
+    "version": {
+      "const": 2,
+      "description": "Formato del documento. 1 = reportes viejos por sección/archivo, ya no se renderizan."
+    },
+    "branch": { "type": "string", "description": "Branch revisado, ej. 'feat/warehouse-abm'." },
+    "baseBranch": { "type": "string", "description": "Branch contra el que se diffea, ej. 'develop'." },
+    "mergeBase": {
+      "type": "string",
+      "description": "SHA de `git merge-base baseBranch branch`. El diff es (mergeBase..branch), así que no se mueve si la base avanza."
+    },
+    "repo": { "type": "string", "description": "Path absoluto del repo." },
+    "branchSha": { "type": "string" },
+    "baseSha": { "type": "string" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "generatedMs": { "type": "integer", "minimum": 0 },
+    "timings": {
+      "type": "object",
+      "description": "Duración por fase en ms.",
+      "properties": {
+        "extractMs": { "type": "integer", "minimum": 0 },
+        "aiMs": { "type": "integer", "minimum": 0 },
+        "renderMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "agent": { "type": "string", "enum": ["claude", "cursor", "copilot"] },
+    "model": { "type": "string" },
+
+    "intent": {
+      "type": "string",
+      "description": "Intención general del diff en 2-4 oraciones: qué problema resuelve, no qué archivos toca."
+    },
+
+    "stats": {
+      "type": "object",
+      "required": ["filesChanged", "insertions", "deletions"],
+      "properties": {
+        "filesChanged": { "type": "integer", "minimum": 0 },
+        "filesIgnored": { "type": "integer", "minimum": 0 },
+        "filesTruncated": { "type": "integer", "minimum": 0 },
+        "insertions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 },
+        "hunks": { "type": "integer", "minimum": 0, "description": "Hunks @@ del diff. Comparado con blocks.length dice cuánto se agrupó." }
+      }
+    },
+
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Temas del diff. El orden del array refleja dependencias entre temas: si g2 usa lo que introduce g1, g1 va antes.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "title", "intent"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^g[0-9]+$" },
+          "kind": {
+            "type": "string",
+            "enum": ["feat", "fix", "refactor", "perf", "test", "chore", "docs", "infra"]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 72,
+            "description": "Resumen del tema en una línea, ej. 'feat(product): CRUD de depósitos locales'."
+          },
+          "intent": { "type": "string", "maxLength": 240, "description": "Por qué existe este tema." }
+        }
+      }
+    },
+
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Diccionario de hunks. Un bloque puede abarcar varios hunks contiguos del mismo archivo con el mismo motivo, y un archivo puede repartir sus bloques entre grupos distintos.",
+      "items": {
+        "type": "object",
+        "required": ["id", "group", "file", "lines", "op", "what"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^b[0-9]+$" },
+          "group": { "type": "string", "pattern": "^g[0-9]+$" },
+          "file": { "type": "string", "description": "Path exacto tal como vino en la tabla de archivos." },
+          "lines": {
+            "type": "string",
+            "description": "Rango de la post-imagen: 'L40-58' o 'L40'. Con guion adelante si es pre-imagen (líneas borradas): '-L88-95'."
+          },
+          "op": { "type": "string", "enum": ["add", "mod", "del", "rename"] },
+          "what": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Qué cambia este bloque. Qué comportamiento cambia, no una relectura de las líneas."
+          },
+          "why": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Por qué. Vacío solo si no es inferible; mejor vacío que inventado."
+          },
+          "source": {
+            "type": "string",
+            "enum": ["code", "commit", "pr", "issue", "inferred"],
+            "description": "De dónde sale el why. Separa lo declarado de lo deducido."
+          }
+        }
+      }
+    },
+
+    "findings": {
+      "type": "array",
+      "description": "Hallazgos en dos ejes: class=risk son riesgos para el merge, class=quality son mejoras de calidad.",
+      "items": {
+        "type": "object",
+        "required": ["id", "class", "severity", "blocking", "kind", "file", "what"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^f[0-9]+$" },
+          "class": { "type": "string", "enum": ["risk", "quality"] },
+          "severity": { "type": "string", "enum": ["high", "med", "low", "nit"] },
+          "blocking": { "type": "boolean", "description": "true = no debería mergearse así. Solo tiene sentido con class=risk." },
+          "kind": {
+            "type": "string",
+            "enum": ["bug", "race", "auth", "security", "api-break", "missing-test", "perf", "maintainability", "docs", "other"]
+          },
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"], "description": "Línea NUEVA del archivo (columna derecha / @@ +N)." },
+          "block": { "type": "string", "description": "Id del bloque al que pertenece, si cae en uno. Vacío si no." },
+          "what": { "type": "string", "maxLength": 300 },
+          "fix": { "type": "string", "maxLength": 300, "description": "Acción concreta. No 'revisar esto'." },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+        }
+      }
+    },
+
+    "skipped": {
+      "type": "array",
+      "description": "Archivos del diff que no se explican, con el motivo. Sirve para probar que no quedó nada sin mirar.",
+      "items": {
+        "type": "object",
+        "required": ["file", "reason"],
+        "properties": {
+          "file": { "type": "string" },
+          "reason": {
+            "type": "string",
+            "enum": ["generated", "lockfile", "format", "vendored", "binary", "trivial", "ignored"]
+          }
+        }
+      }
+    },
+
+    "files": {
+      "type": "array",
+      "description": "Diffs para renderizar. Los llena el extractor, no el modelo.",
+      "items": {
+        "type": "object",
+        "required": ["path", "changeType", "diff"],
+        "properties": {
+          "path": { "type": "string" },
+          "oldPath": { "type": "string" },
+          "changeType": { "type": "string", "enum": ["added", "modified", "deleted", "renamed"] },
+          "diff": { "type": "string" },
+          "diffChars": { "type": "integer", "minimum": 0 },
+          "truncated": { "type": "boolean" },
+          "modelChars": { "type": "integer", "minimum": 0 },
+          "group": {
+            "type": "string",
+            "description": "Grupo dominante (el que tiene más bloques del archivo). Define dónde se dibuja la card."
+          }
+        }
+      }
+    },
+
+    "prompts": {
+      "type": "array",
+      "description": "Prompts enviados, en orden. Puede haber lotes en paralelo, corrección JSON, o síntesis post-lotes.",
+      "items": {
+        "type": "object",
+        "required": ["step", "label", "prompt"],
+        "properties": {
+          "step": { "type": "string", "enum": ["review", "repair", "batch", "synthesis"] },
+          "label": { "type": "string" },
+          "prompt": { "type": "string" },
+          "chars": { "type": "integer", "minimum": 0 },
+          "ms": { "type": "integer", "minimum": 0 },
+          "skipped": { "type": "boolean" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+
+    "notes": {
+      "type": "array",
+      "description": "Avisos del pipeline sobre la corrida, ej. que el diff no entró en un solo turno.",
+      "items": { "type": "string" }
+    }
+  }
+}
