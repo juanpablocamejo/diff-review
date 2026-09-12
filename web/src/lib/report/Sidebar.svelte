@@ -5,6 +5,7 @@
 	import FileIcon from './FileIcon.svelte';
 	import { findingSeverityRank, maxFindingAccent } from './severity';
 	import { buildTreeRows, collectTreeDirPaths, type FileCount } from './tree';
+	import { plural } from './labels';
 
 	let {
 		collapsed,
@@ -292,7 +293,7 @@
 														class="count"
 														class:done={count.done === count.total}
 														style:--finding-sev={count.accent}
-														title="{count.total} hallazgo{count.total === 1 ? '' : 's'} en este tema{count.done ===
+														title="{plural(count.total, 'hallazgo', 'hallazgos')} en este tema{count.done ===
 														count.total
 															? ' · todos revisados'
 															: ''}">{count.done === count.total ? '✓' : count.total}</span
@@ -331,7 +332,7 @@
 															class="count"
 															class:done={fcount.done === fcount.total}
 															style:--finding-sev={fcount.accent}
-															title="{fcount.total} hallazgo{fcount.total === 1 ? '' : 's'}"
+															title={plural(fcount.total, 'hallazgo', 'hallazgos')}
 															>{fcount.done === fcount.total ? '✓' : fcount.total}</span
 														>
 													{/if}
@@ -373,7 +374,7 @@
 												class="count"
 												class:done={row.done}
 												style:--finding-sev={row.accent}
-												title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'} en esta carpeta{row.done
+												title="{plural(row.findings, 'hallazgo', 'hallazgos')} en esta carpeta{row.done
 													? ' · todos revisados'
 													: ''}">{row.done ? '✓' : row.findings}</span
 											>
@@ -406,7 +407,7 @@
 												class="count"
 												class:done={row.done}
 												style:--finding-sev={row.accent}
-												title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'}{row.done
+												title="{plural(row.findings, 'hallazgo', 'hallazgos')}{row.done
 													? ' · todos revisados'
 													: ''}">{row.done ? '✓' : row.findings}</span
 											>
@@ -445,7 +446,7 @@
 											class="count"
 											class:done={row.done}
 											style:--finding-sev={row.accent}
-											title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'}{row.done
+											title="{plural(row.findings, 'hallazgo', 'hallazgos')}{row.done
 												? ' · todos revisados'
 												: ''}">{row.done ? '✓' : row.findings}</span
 										>
@@ -463,7 +464,9 @@
 			<div class="panel findings-panel">
 				<div class="findings-head">
 					<h3>Hallazgos · {findings.length}</h3>
-					<span class="reviewed">{reviewedCount} de {findings.length} revisados</span>
+					<span class="reviewed"
+						>{reviewedCount} de {findings.length} {findings.length === 1 ? 'revisado' : 'revisados'}</span
+					>
 				</div>
 				<div class="progress">
 					<div class="progress-bar" style:width="{reviewedPct}%"></div>

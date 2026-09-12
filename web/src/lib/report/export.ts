@@ -1,6 +1,6 @@
 import { hunkCovers, lineInRange, parseUnifiedDiff, type DiffLine } from './diff';
 import { serializeReviewPayload } from './document';
-import { displayGroupTitle, findingKindLabel, kindLabel, severityLabel } from './labels';
+import { displayGroupTitle, findingKindLabel, kindLabel, plural, pluralWord, severityLabel } from './labels';
 import { findingSeverityRank } from './severity';
 import type {
 	FindingSeverity,
@@ -300,11 +300,11 @@ export function buildHtml(report: SavedReport, options: ExportOptions = {}): str
 	const findings = sortedFindings(doc);
 
 	const chips = [
-		stats.blocking ? `<span class="chip blocking">${stats.blocking} bloqueante${stats.blocking === 1 ? '' : 's'}</span>` : '',
-		stats.high ? `<span class="chip high">${stats.high} alta</span>` : '',
-		stats.med ? `<span class="chip med">${stats.med} media</span>` : '',
-		stats.low ? `<span class="chip low">${stats.low} baja</span>` : '',
-		stats.nit ? `<span class="chip nit">${stats.nit} detalle</span>` : ''
+		stats.blocking ? `<span class="chip blocking">${plural(stats.blocking, 'bloqueante', 'bloqueantes')}</span>` : '',
+		stats.high ? `<span class="chip high">${plural(stats.high, 'alta', 'altas')}</span>` : '',
+		stats.med ? `<span class="chip med">${plural(stats.med, 'media', 'medias')}</span>` : '',
+		stats.low ? `<span class="chip low">${plural(stats.low, 'baja', 'bajas')}</span>` : '',
+		stats.nit ? `<span class="chip nit">${plural(stats.nit, 'detalle', 'detalles')}</span>` : ''
 	]
 		.filter(Boolean)
 		.join('');
@@ -500,8 +500,8 @@ export function buildHtml(report: SavedReport, options: ExportOptions = {}): str
   <p class="sub">${escapeHtml(formatSavedAt(report.savedAt))}${mode === 'summary' ? ' · resumen' : ''}</p>
   ${repoLine}
   <div class="stats">
-    <span class="stat"><strong>${doc.groups.length}</strong> temas</span>
-    <span class="stat"><strong>${doc.findings.length}</strong> hallazgos</span>
+    <span class="stat"><strong>${doc.groups.length}</strong> ${pluralWord(doc.groups.length, 'tema', 'temas')}</span>
+    <span class="stat"><strong>${doc.findings.length}</strong> ${pluralWord(doc.findings.length, 'hallazgo', 'hallazgos')}</span>
     ${chips}
   </div>
   <section class="section">

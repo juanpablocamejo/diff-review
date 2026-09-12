@@ -6,6 +6,7 @@
 	import FileIcon from './FileIcon.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
 	import { maxFindingAccent } from './severity';
+	import { plural, pluralWord } from './labels';
 
 	let {
 		intentText,
@@ -156,10 +157,10 @@
 	>
 		{#if allDone}
 			<span class="count-badge done">✓</span>
-			<span class="count-label">{total} hallazgo{total === 1 ? '' : 's'}</span>
+			<span class="count-label">{plural(total, 'hallazgo', 'hallazgos')}</span>
 		{:else}
 			<span class="count-badge open">{total}</span>
-			<span class="count-label open">hallazgo{total === 1 ? '' : 's'}</span>
+			<span class="count-label open">{pluralWord(total, 'hallazgo', 'hallazgos')}</span>
 		{/if}
 		<span class="arrow">→</span>
 	</button>
@@ -276,7 +277,7 @@
 	<section class="group loose">
 		<header class="group-head">
 			<span class="kind-chip">sin tema</span>
-			<h2>Archivos que ningún bloque explica · {looseFileSections.length}</h2>
+			<h2>{plural(looseFileSections.length, 'Archivo que ningún bloque explica', 'Archivos que ningún bloque explica')}</h2>
 		</header>
 		{#each looseFileSections as file (file.path)}
 			<!-- Sin hallazgos arranca plegado para no colgar la página con cientos de diffs. -->

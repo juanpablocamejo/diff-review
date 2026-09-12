@@ -5,6 +5,7 @@
 	import FileIcon from './FileIcon.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
 	import type { PublishPlatform } from './prompts';
+	import { plural } from './labels';
 
 	let {
 		activeFinding,
@@ -88,7 +89,7 @@
 {#if showFixPrompt}
 	<section class="prompt-box fix">
 		<div class="prompt-head">
-			<h2 class="fix-title">Prompt de corrección · {fixSelectionCount} hallazgos</h2>
+			<h2 class="fix-title">Prompt de corrección · {plural(fixSelectionCount, 'hallazgo', 'hallazgos')}</h2>
 			<button type="button" class="close" onclick={onclosefixprompt}>Cerrar ✕</button>
 		</div>
 		<div class="mode-toggle">
@@ -114,7 +115,7 @@
 {#if showPublishPrompt}
 	<section class="prompt-box publish">
 		<div class="prompt-head">
-			<h2 class="publish-title">Publicar hallazgos · {fixSelectionCount}</h2>
+			<h2 class="publish-title">Publicar · {plural(fixSelectionCount, 'hallazgo', 'hallazgos')}</h2>
 			<button type="button" class="close" onclick={onclosepublishprompt}>Cerrar ✕</button>
 		</div>
 		<div class="mode-toggle">

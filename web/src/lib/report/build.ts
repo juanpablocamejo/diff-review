@@ -1,4 +1,4 @@
-import { changeLabel, displayGroupTitle, findingKindLabel, kindLabel, opLabel, severityLabel, skipLabel } from './labels';
+import { changeLabel, displayGroupTitle, findingKindLabel, kindLabel, opLabel, plural, severityLabel, skipLabel } from './labels';
 import { SEV_RANK } from './severity';
 import type {
 	BlockSide,
@@ -299,7 +299,7 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 		kindLabel: g.kindLabel,
 		kindColor: g.kindColor,
 		title: g.title,
-		meta: `${blocks.filter((b) => b.group === g.id).length} bloques · ${g.fileSections.length} archivos`,
+		meta: `${plural(blocks.filter((b) => b.group === g.id).length, 'bloque', 'bloques')} · ${plural(g.fileSections.length, 'archivo', 'archivos')}`,
 		// Un archivo puede caer en dos temas: sin el Set, su hallazgo se contaría dos veces.
 		findingIds: [...new Set(g.fileSections.flatMap((fs) => fs.allFindings.map((f) => f.id)))],
 		files: g.fileSections.map((fs) => ({
@@ -325,7 +325,7 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 		groupCount: groups.length,
 		findingCount: findings.length,
 		hasBlockers: blockerCount > 0,
-		blockerBannerText: `${blockerCount} hallazgo${blockerCount === 1 ? '' : 's'} bloquea${blockerCount === 1 ? '' : 'n'} el merge`,
+		blockerBannerText: `${plural(blockerCount, 'hallazgo', 'hallazgos')} ${blockerCount === 1 ? 'bloquea' : 'bloquean'} el merge`,
 		groupSections,
 		fileSectionsByPath,
 		looseFileSections,

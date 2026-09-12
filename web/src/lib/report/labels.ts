@@ -99,8 +99,14 @@ export function sourceLabel(source: string) {
 	return SOURCE_LABEL[source as WhySource] ?? source;
 }
 
+/** "1 archivo" / "3 archivos". En español, 0 usa plural. */
 export function plural(n: number, one: string, many: string) {
 	return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Solo la palabra flexionada (cuando el número va aparte). */
+export function pluralWord(n: number, one: string, many: string) {
+	return n === 1 ? one : many;
 }
 
 /**

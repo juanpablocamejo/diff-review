@@ -14,6 +14,7 @@
 		type SplitCell
 	} from './diff';
 	import type { BlockSide } from './types';
+	import { plural } from './labels';
 
 	type Accent = { id: string; side: BlockSide; start: number; end: number; accentColor: string };
 
@@ -229,12 +230,13 @@
 </script>
 
 {#snippet gapBar(gap: DiffGap)}
+	{@const revealStep = Math.min(CONTEXT_STEP, gap.hidden)}
 	<div class="gap-bar">
 		<div class="gap-actions">
 			{#if gap.canUp}
 				<button
 					type="button"
-					title="Mostrar {Math.min(CONTEXT_STEP, gap.hidden)} líneas hacia arriba"
+					title="Mostrar {plural(revealStep, 'línea', 'líneas')} hacia arriba"
 					disabled={!canExpand || linesState === 'loading'}
 					onclick={() => expandGap(gap, 'up')}>↑</button
 				>
@@ -242,7 +244,7 @@
 			{#if gap.canDown}
 				<button
 					type="button"
-					title="Mostrar {Math.min(CONTEXT_STEP, gap.hidden)} líneas hacia abajo"
+					title="Mostrar {plural(revealStep, 'línea', 'líneas')} hacia abajo"
 					disabled={!canExpand || linesState === 'loading'}
 					onclick={() => expandGap(gap, 'down')}>↓</button
 				>
@@ -251,7 +253,7 @@
 				<button
 					type="button"
 					class="all"
-					title="Mostrar las {gap.hidden} líneas del tramo"
+					title="Mostrar {plural(gap.hidden, 'línea', 'líneas')} del tramo"
 					disabled={!canExpand || linesState === 'loading'}
 					onclick={() => expandGap(gap, 'all')}>todas</button
 				>
@@ -263,7 +265,7 @@
 			{:else if linesState === 'loading'}
 				leyendo archivo…
 			{:else}
-				{gap.hidden.toLocaleString('es-AR')} línea{gap.hidden === 1 ? '' : 's'} sin mostrar · L{gap.start}–{gap.end}
+				{plural(gap.hidden, 'línea', 'líneas')} sin mostrar · L{gap.start}–{gap.end}
 			{/if}
 		</span>
 	</div>
@@ -273,9 +275,9 @@
 	{#if big}
 		<div class="collapse-bar">
 			<span>
-				{totalLines.toLocaleString('es-AR')} líneas
+				{plural(totalLines, 'línea', 'líneas')}
 				{#if !expanded && hiddenCount > 0}
-					· {hiddenCount} tramo{hiddenCount === 1 ? '' : 's'} sin bloques oculto{hiddenCount === 1 ? '' : 's'}
+					· {plural(hiddenCount, 'tramo sin bloques oculto', 'tramos sin bloques ocultos')}
 				{/if}
 			</span>
 			<button type="button" class="link" onclick={() => onToggleExpand?.()}>

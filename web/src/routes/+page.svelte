@@ -18,6 +18,7 @@
 	import { SAMPLE_DOCUMENT } from '$lib/report/sample';
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
 	import { validateDocument } from '$lib/report/validate';
+	import { plural } from '$lib/report/labels';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
 	let meta = $state<ReportMeta>({ source: 'local', repo: '', branch: '', base: 'develop' });
@@ -521,7 +522,7 @@
 				<p class="error-line">{folderError}</p>
 			{/if}
 			{#if branches.length}
-				<p class="ok-line">{branches.length} branch{branches.length === 1 ? '' : 'es'} encontrado{branches.length === 1 ? '' : 's'}.</p>
+				<p class="ok-line">{plural(branches.length, 'branch encontrado', 'branches encontrados')}.</p>
 			{/if}
 			<div class="repo-setup">
 				<label class="field repo-field">
@@ -660,7 +661,7 @@
 			{#if pendingDoc}
 				<div class="coverage-box">
 					<div class="coverage-head">
-						<strong>El modelo dejó {uncovered.length} archivo(s) sin explicar</strong>
+						<strong>El modelo dejó {plural(uncovered.length, 'archivo', 'archivos')} sin explicar</strong>
 						<span>no aparecen ni en "blocks" ni en "skipped"</span>
 					</div>
 					<details>
@@ -710,12 +711,12 @@
 								</span>
 								<span class="report-meta">
 									<span>vs {item.base || 'develop'}</span>
-									<span class="pill">{item.groupCount} tema{item.groupCount === 1 ? '' : 's'}</span>
+									<span class="pill">{plural(item.groupCount, 'tema', 'temas')}</span>
 									{#if item.blockerCount}
-										<span class="pill bad">{item.blockerCount} blocker{item.blockerCount === 1 ? '' : 's'}</span>
+										<span class="pill bad">{plural(item.blockerCount, 'blocker', 'blockers')}</span>
 									{/if}
 									{#if item.qualityCount}
-										<span class="pill">{item.qualityCount} calidad</span>
+										<span class="pill">{plural(item.qualityCount, 'calidad', 'calidad')}</span>
 									{/if}
 								</span>
 								{#if item.intent}
