@@ -523,7 +523,7 @@
 			{#if branches.length}
 				<p class="ok-line">{branches.length} branch{branches.length === 1 ? '' : 'es'} encontrado{branches.length === 1 ? '' : 's'}.</p>
 			{/if}
-			<div class="row">
+			<div class="repo-setup">
 				<label class="field repo-field">
 					<span>{meta.source === 'url' ? 'URL del repo' : 'Repo'}</span>
 					<div class="repo-row">
@@ -551,46 +551,48 @@
 						</button>
 					</div>
 				</label>
-				<label class="field">
-					<span>Branch a revisar</span>
-					{#if branches.length}
-						<select
-							value={meta.branch}
-							onchange={(e) => updateMeta({ branch: (e.currentTarget as HTMLSelectElement).value })}
-						>
-							{#each branches as b (b)}
-								<option value={b}>{b}</option>
-							{/each}
-						</select>
-					{:else}
-						<input
-							type="text"
-							placeholder="feature/PCM-14839"
-							value={meta.branch}
-							oninput={(e) => updateMeta({ branch: (e.currentTarget as HTMLInputElement).value })}
-						/>
-					{/if}
-				</label>
-				<label class="field">
-					<span>Base</span>
-					{#if branches.length}
-						<select
-							value={meta.base}
-							onchange={(e) => updateMeta({ base: (e.currentTarget as HTMLSelectElement).value })}
-						>
-							{#each branches as b (b)}
-								<option value={b}>{b}</option>
-							{/each}
-						</select>
-					{:else}
-						<input
-							type="text"
-							placeholder="develop"
-							value={meta.base}
-							oninput={(e) => updateMeta({ base: (e.currentTarget as HTMLInputElement).value })}
-						/>
-					{/if}
-				</label>
+				<div class="row branches-row">
+					<label class="field">
+						<span>Branch a revisar</span>
+						{#if branches.length}
+							<select
+								value={meta.branch}
+								onchange={(e) => updateMeta({ branch: (e.currentTarget as HTMLSelectElement).value })}
+							>
+								{#each branches as b (b)}
+									<option value={b}>{b}</option>
+								{/each}
+							</select>
+						{:else}
+							<input
+								type="text"
+								placeholder="feature/PCM-14839"
+								value={meta.branch}
+								oninput={(e) => updateMeta({ branch: (e.currentTarget as HTMLInputElement).value })}
+							/>
+						{/if}
+					</label>
+					<label class="field">
+						<span>Base</span>
+						{#if branches.length}
+							<select
+								value={meta.base}
+								onchange={(e) => updateMeta({ base: (e.currentTarget as HTMLSelectElement).value })}
+							>
+								{#each branches as b (b)}
+									<option value={b}>{b}</option>
+								{/each}
+							</select>
+						{:else}
+							<input
+								type="text"
+								placeholder="develop"
+								value={meta.base}
+								oninput={(e) => updateMeta({ base: (e.currentTarget as HTMLInputElement).value })}
+							/>
+						{/if}
+					</label>
+				</div>
 			</div>
 
 			<div class="section-head">
@@ -897,6 +899,12 @@
 		flex-wrap: wrap;
 	}
 
+	.repo-setup {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
 	.field {
 		display: flex;
 		flex-direction: column;
@@ -906,8 +914,14 @@
 	}
 
 	.repo-field {
-		flex: 2;
-		min-width: 280px;
+		flex: none;
+		width: 100%;
+		min-width: 0;
+	}
+
+	.branches-row .field {
+		flex: 1;
+		min-width: 160px;
 	}
 
 	.field span {
@@ -918,6 +932,16 @@
 	.repo-row {
 		display: flex;
 		gap: 6px;
+		min-width: 0;
+	}
+
+	.repo-row input[type='text'] {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.repo-row button {
+		flex-shrink: 0;
 	}
 
 	.source-toggle {

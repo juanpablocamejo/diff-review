@@ -374,14 +374,15 @@
 	.download-menu {
 		left: auto;
 		right: 0;
-		min-width: 240px;
+		min-width: 220px;
+		padding: 3px;
 	}
 
 	.menu-mode {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 0;
-		margin: 2px 2px 6px;
+		margin: 1px 1px 4px;
 		border: 1px solid var(--border);
 	}
 
@@ -391,7 +392,8 @@
 		color: var(--text-dim);
 		font-size: 11px;
 		font-weight: 600;
-		padding: 6px 8px;
+		padding: 4px 8px;
+		line-height: 1.2;
 	}
 
 	.menu-mode button + button {
@@ -404,10 +406,10 @@
 	}
 
 	.menu-mode-hint {
-		margin: 0 8px 8px;
-		font-size: 10.5px;
+		margin: 0 6px 4px;
+		font-size: 10px;
 		color: var(--text-faint);
-		line-height: 1.35;
+		line-height: 1.3;
 	}
 
 	.menu-item {
@@ -426,6 +428,15 @@
 		cursor: pointer;
 	}
 
+	.download-menu .menu-item {
+		flex-direction: row;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 10px;
+		padding: 3px 8px;
+		line-height: 1.2;
+	}
+
 	.menu-item:hover {
 		background: var(--accent-soft);
 	}
@@ -437,12 +448,18 @@
 	.menu-item .fmt {
 		font-weight: 600;
 		line-height: 1.2;
+		flex-shrink: 0;
 	}
 
 	.menu-item .hint {
 		font-size: 10.5px;
 		line-height: 1.2;
 		color: var(--text-faint);
+	}
+
+	.download-menu .menu-item .hint {
+		font-size: 10px;
+		text-align: right;
 	}
 
 	.mode-toggle {
