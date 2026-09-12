@@ -25,3 +25,4 @@ Thumbs.db
 # Dumps locales de review / chats de agente
 diff-review-output.json
 **/chat.md
+.npmrc
