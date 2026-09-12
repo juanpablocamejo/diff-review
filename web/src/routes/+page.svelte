@@ -13,7 +13,7 @@
 	} from '$lib/report/prompts';
 	import { uncoveredFiles } from '$lib/report/coverage';
 	import { coerceDocument, hasUsableDiffs, parseReportMeta } from '$lib/report/document';
-	import { hydrateFromGit, loadRepo, pickLocalFolder } from '$lib/report/git.remote';
+	import { hydrateFromGit, launchContext, loadRepo, pickLocalFolder } from '$lib/report/git.remote';
 	import { deleteReport, loadLastMeta, loadReportsIndex, saveLastMeta, saveReport } from '$lib/report/storage';
 	import { SAMPLE_DOCUMENT } from '$lib/report/sample';
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
@@ -41,31 +41,82 @@
 	let loadingRepo = $state(false);
 	let pickingFolder = $state(false);
 	let hydrating = $state(false);
+	/** Ruta local recordada al pasar a URL, para no perderla al volver. */
+	let lastLocalRepo = $state('');
 
 	let fileInput = $state<HTMLInputElement | null>(null);
 
 	const commandText = $derived(buildCommandText(meta));
 
 	onMount(() => {
-		meta = loadLastMeta();
+		const last = loadLastMeta();
+		meta = last;
+		if (last.source === 'local' && looksLikePath(last.repo)) lastLocalRepo = last.repo.trim();
 		promptText = buildPrompt(meta);
 		reports = loadReportsIndex();
-		if (meta.repo.trim()) void loadRepoBranches(meta.repo);
+		void bootstrapFromLaunch(last);
 	});
+
+	/** Si se lanzó desde un repo git, precarga esa ruta y el branch actual. */
+	async function bootstrapFromLaunch(last: ReportMeta) {
+		try {
+			const launch = await launchContext();
+			if (launch?.repo) {
+				const nextBranch =
+					launch.current && launch.current !== 'HEAD'
+						? launch.current
+						: launch.branches[0] || '';
+				const nextBase = launch.branches.includes(last.base) ? last.base : launch.defaultBase;
+				branches = launch.branches;
+				lastLocalRepo = launch.repo;
+				updateMeta({
+					source: 'local',
+					repo: launch.repo,
+					branch: nextBranch,
+					base: nextBase,
+					remoteUrl: launch.remoteUrl || undefined
+				});
+				return;
+			}
+		} catch {
+			/* sin CWD git: seguir con last-meta */
+		}
+		if (last.repo.trim()) void loadRepoBranches(last.repo, last.source);
+	}
 
 	function updateMeta(patch: Partial<ReportMeta>) {
 		meta = { ...meta, ...patch };
+		if (meta.source === 'local' && looksLikePath(meta.repo)) {
+			lastLocalRepo = meta.repo.trim();
+		}
 		saveLastMeta(meta);
 		if (!promptEdited) promptText = buildPrompt(meta);
 	}
 
 	function setSource(source: RepoSource) {
 		if (source === meta.source) return;
-		const keep =
-			source === 'url' ? looksLikeGitUrl(meta.repo) : looksLikePath(meta.repo);
 		branches = [];
 		folderError = '';
-		updateMeta({ source, repo: keep ? meta.repo : '' });
+		if (source === 'url') {
+			if (looksLikePath(meta.repo)) lastLocalRepo = meta.repo.trim();
+			const url =
+				(meta.remoteUrl || '').trim() ||
+				(looksLikeGitUrl(meta.repo) ? meta.repo.trim() : '');
+			updateMeta({
+				source,
+				repo: url,
+				...(url ? { remoteUrl: url } : {})
+			});
+			return;
+		}
+		const path = lastLocalRepo || (looksLikePath(meta.repo) ? meta.repo.trim() : '');
+		const remote =
+			(looksLikeGitUrl(meta.repo) ? meta.repo.trim() : '') || (meta.remoteUrl || '').trim();
+		updateMeta({
+			source,
+			repo: path,
+			...(remote ? { remoteUrl: remote } : {})
+		});
 	}
 
 	function onPromptInput(e: Event) {

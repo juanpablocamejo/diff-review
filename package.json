@@ -1,6 +1,6 @@
 {
   "name": "@jpkme/diff-review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local UI to prompt a coding agent for a branch review and browse the result.",
   "type": "module",
   "bin": {

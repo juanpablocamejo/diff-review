@@ -26,3 +26,4 @@ Thumbs.db
 diff-review-output.json
 **/chat.md
 .npmrc
+*.tgz

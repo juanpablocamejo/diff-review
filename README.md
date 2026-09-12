@@ -24,6 +24,8 @@ npx @jpkme/diff-review
 
 Abre `http://127.0.0.1:5190`. Opciones: `--port`, `--host`, `--no-open`.
 
+Si lo lanzás desde un repositorio git, la UI precarga esa ruta y el branch actual.
+
 ## Desarrollo (desde el repo)
 
 ```bash
@@ -35,7 +37,7 @@ npm start                # mismo que el bin global
 
 ## Flujo
 
-1. Pegá la ruta (o URL) del repo y elegí branch / base.
+1. Pegá la ruta (o URL) del repo y elegí branch / base — o lanzá `diff-review` desde el repo y se precarga solo.
 2. Copiá el prompt (o el comando de skill `/diff-review`).
 3. Corrélo en tu agente; que escriba `diff-review-output.json`.
 4. Arrastrá ese JSON a la dropzone. La UI hidrata los diffs con git.

@@ -1,5 +1,5 @@
 import { extractBranchDiff } from '$review/lib/extract.mjs';
-import { assertGitRepo, getRemoteUrl, listBranches, showFileLines } from '$review/lib/git.mjs';
+import { assertGitRepo, getRemoteUrl, listBranches, showFileLines, tryResolveGitRoot } from '$review/lib/git.mjs';
 import {
 	ensureRemoteWorktree,
 	listRemoteBranches,
@@ -49,6 +49,22 @@ export function loadRepoInfo(source: RepoSource | undefined, repo: string): Repo
 	const listed = listBranches(resolved);
 	const remoteUrl = getRemoteUrl(resolved) || undefined;
 	return { repo: resolved, source: 'local', remoteUrl, ...listed };
+}
+
+/**
+ * Repo + branch del directorio desde el que se lanzó `diff-review` (env DIFF_REVIEW_LAUNCH_CWD).
+ * En `npm run dev` cae a process.cwd(). Null si no hay git.
+ */
+export function loadLaunchRepoInfo(): RepoInfo | null {
+	const cwd = String(process.env.DIFF_REVIEW_LAUNCH_CWD || process.cwd() || '').trim();
+	if (!cwd) return null;
+	const root = tryResolveGitRoot(cwd);
+	if (!root) return null;
+	try {
+		return loadRepoInfo('local', root);
+	} catch {
+		return null;
+	}
 }
 
 export async function pickLocalFolder(): Promise<string | null> {

@@ -1,5 +1,6 @@
 declare module '$review/lib/git.mjs' {
 	export function assertGitRepo(repo: string): string;
+	export function tryResolveGitRoot(cwd: string): string | null;
 	export function listBranches(repo: string): {
 		branches: string[];
 		current: string;

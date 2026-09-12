@@ -2,47 +2,68 @@ import { hunkCovers, parseUnifiedDiff } from './diff';
 import { severityLabel } from './labels';
 import type { FindingSeverity, ReportMeta, ReviewDocument } from './types';
 
+/**
+ * Compact shape the agent must emit. Same contract as schema.json / the UI validator —
+ * not a substitute for it; just the prompt-facing example (filled meta via outputSchemaBlock).
+ */
 export const OUTPUT_SCHEMA_BLOCK = `{
   "meta": {
     "source": "local|url",
-    "repo": "ruta absoluta del repo o URL git",
-    "branch": "branch a revisar",
+    "repo": "<absolute path or git URL>",
+    "branch": "<branch under review>",
     "base": "develop",
-    "remoteUrl": "https://… o git@… (origin; opcional si source=url)"
+    "remoteUrl": "<origin URL; optional when source=url>"
   },
-  "intent": "2-4 oraciones: qué problema resuelve el branch y cómo. Sin listar archivos.",
+  "intent": "string",
   "groups": [
-    { "id": "g1", "kind": "feat|fix|refactor|perf|test|chore|docs|infra", "title": "scope: título en imperativo, máx 72 caracteres (sin repetir el kind)", "intent": "1-2 oraciones sobre este tema" }
+    {
+      "id": "g1",
+      "kind": "feat|fix|refactor|perf|test|chore|docs|infra",
+      "title": "string ≤72 chars, imperative, no kind prefix",
+      "intent": "string"
+    }
   ],
   "blocks": [
     {
-      "id": "b1", "group": "g1", "file": "path/relativo/al/archivo.ext", "lines": "L40-58",
-      "side": "new|old", "start": 40, "end": 58, "op": "add|mod|del|rename",
-      "what": "qué cambia, máx 120 caracteres", "why": "por qué, máx 120 caracteres",
+      "id": "b1",
+      "group": "g1",
+      "file": "relative/path.ext",
+      "lines": "L40-58",
+      "side": "new|old",
+      "start": 40,
+      "end": 58,
+      "op": "add|mod|del|rename",
+      "what": "string",
+      "why": "string",
       "source": "code|commit|pr|issue|inferred"
     }
   ],
   "findings": [
     {
-      "id": "f1", "class": "risk|quality", "severity": "high|med|low|nit",
+      "id": "f1",
+      "class": "risk|quality",
+      "severity": "high|med|low|nit",
       "blocking": false,
       "kind": "bug|race|auth|security|api-break|missing-test|perf|maintainability|docs|other",
-      "file": "path/relativo/al/archivo.ext", "line": 87, "block": "b1",
-      "what": "qué está mal, máx 120 caracteres", "fix": "cómo arreglarlo, máx 120 caracteres"
+      "file": "relative/path.ext",
+      "line": 87,
+      "block": "b1",
+      "what": "string",
+      "fix": "string"
     }
   ],
   "skipped": [
-    { "file": "path/relativo", "reason": "generated|lockfile|format|vendored|binary|trivial|ignored" }
+    { "file": "relative/path-or-glob", "reason": "generated|lockfile|format|vendored|binary|trivial|ignored" }
   ],
-  "notes": ["notas breves sobre limitaciones de la review, si aplica"]
+  "notes": ["optional short limitations"]
 }`;
 
-/** Schema con meta ya rellenada para que el agente la copie tal cual. */
+/** Schema with meta already filled so the agent copies it as-is. */
 export function outputSchemaBlock(meta: ReportMeta): string {
 	const source = meta.source === 'url' ? 'url' : 'local';
 	const repo =
-		meta.repo.trim() || (source === 'url' ? '<url del repo>' : '<ruta absoluta del repo>');
-	const branch = meta.branch.trim() || '<branch a revisar>';
+		meta.repo.trim() || (source === 'url' ? '<git URL>' : '<absolute repo path>');
+	const branch = meta.branch.trim() || '<branch under review>';
 	const base = meta.base.trim() || 'develop';
 	const remoteUrl = meta.remoteUrl?.trim() || (source === 'url' ? repo : '');
 	const metaLines = [
@@ -53,58 +74,78 @@ export function outputSchemaBlock(meta: ReportMeta): string {
 	];
 	if (remoteUrl) metaLines.push(`    "remoteUrl": ${JSON.stringify(remoteUrl)}`);
 	const metaBlock = `"meta": {\n${metaLines.join('\n')}\n  }`;
-	return OUTPUT_SCHEMA_BLOCK.replace(
-		/"meta": \{[\s\S]*?\n  \}/,
-		metaBlock
-	);
+	return OUTPUT_SCHEMA_BLOCK.replace(/"meta": \{[\s\S]*?\n  \}/, metaBlock);
 }
 
-const RULES = `- NO reportar: código preexistente fuera del diff, ruido de linter/formatter, preferencias de naming/estilo sin consecuencia real, comportamiento intencional del branch, reglas de lint silenciadas, "falta doc/cobertura" sin un escenario concreto roto.
-- Los hallazgos de calidad tienen que nombrar un costo concreto, no una sensación vaga.
-- "blocking": true SOLO si el branch no debería mergearse tal como está.
-- Un "block" por tramo de cambio con sentido propio (no uno por línea). Cada finding puntual usa el "block" de ese tramo; si es transversal, "block" queda vacío.`;
+const RULES = `- Coverage (hard): every path in the diff MUST appear in "blocks" and/or "skipped". Prefer a skipped glob when many files share one reason.
+- Do NOT invent files, hunks, or line ranges that are not in the diff.
+- Line anchors: "lines"/"start"/"end"/"line" MUST match the chosen "side" ("new" = post-image / right side of @@; "old" = pre-image, typically deletions). One block per coherent change span — not one per line. Point findings at that block; leave "block" empty only if cross-cutting.
+- Do NOT report: pre-existing code outside the diff; linter/formatter noise; naming/style prefs with no real consequence; intentional branch behavior; silenced lint rules; "missing docs/coverage" without a concrete broken scenario.
+- Quality findings must name a concrete cost, not a vague feeling.
+- Signal over volume: prefer fewer high-signal findings. Order findings by severity (high → nit). Use "nit" sparingly.
+- "blocking": true ONLY if the branch should not merge as-is. Use only with class "risk".
+- Write human-readable strings (intent, title, what, why, fix, notes) in Spanish. Keep enums/ids/paths/JSON keys exactly as in the schema.`;
 
-/** Nombre del archivo donde el agente debe escribir el JSON (intent/groups/blocks/findings; el diff lo arma la UI con git). */
+const WORKFLOW_LOCAL = (base: string, branch: string) =>
+	`Workflow:
+1. Resolve the merge-base of \`${base}\` and \`${branch}\`.
+2. Run exactly: \`git diff ${base}...${branch}\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
+3. Read enough surrounding code (types, callers, tests) to judge behavior — not only the hunk lines.
+4. Emit the JSON file. Do not modify the repo.`;
+
+const WORKFLOW_URL = (base: string, branch: string) =>
+	`Workflow:
+1. If the repo is not local, clone it (or use whatever access you have). Do not modify it.
+2. Resolve the merge-base of \`${base}\` and \`${branch}\`.
+3. Run exactly: \`git diff ${base}...${branch}\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
+4. Read enough surrounding code (types, callers, tests) to judge behavior — not only the hunk lines.
+5. Emit the JSON file.`;
+
+/** File where the agent must write the JSON (UI fills diffs via git). */
 export const OUTPUT_FILENAME = 'diff-review-output.json';
 
-export function buildPrompt(meta: ReportMeta): string {
-	const repo =
-		meta.repo.trim() || (meta.source === 'url' ? '<url del repo>' : '<ruta absoluta del repo>');
-	const branch = meta.branch.trim() || '<branch a revisar>';
-	const base = meta.base.trim() || 'develop';
-	const access =
-		meta.source === 'url'
-			? `El repo está en remoto. Si no lo tenés local, clonalo (o usá el acceso que tengas) y corré \`git diff ${base}...${branch}\` (o el diff que corresponda); leé los archivos que necesites para entender tipos, callers y tests. No modifiques nada.`
-			: `Tenés acceso al repo: corré \`git diff ${base}...${branch}\` (o el diff que corresponda) y leé los archivos que necesites para entender tipos, callers y tests. No modifiques nada.`;
-	return `Actuá como revisor de código senior, exigente pero justo.
-
-Repo: ${repo}
-Branch a revisar: ${branch}
-Base (merge-base): ${base}
-
-${access}
-
-Reglas:
-${RULES}
-
-Escribí el resultado en un archivo llamado \`${OUTPUT_FILENAME}\` en la raíz del repo. El archivo debe tener UN SOLO objeto JSON, sin texto antes ni después, sin bloques \`\`\`, con esta forma exacta:
+function outputInstructions(meta: ReportMeta): string {
+	return `Write the result to \`${OUTPUT_FILENAME}\` at the repo root.
+- One JSON object only: first character \`{\`, last character \`}\`.
+- No prose before/after, no markdown fences.
+- Shape (copy "meta" exactly as given):
 
 ${outputSchemaBlock(meta)}
 
-Incluí "meta" con exactamente source/repo/branch/base de arriba (y remoteUrl del origin si es local). Sirve para reabrir el reporte en otra máquina sin elegir el repo a mano.
+Include "meta" with the source/repo/branch/base above (and origin "remoteUrl" when local). That lets someone reopen the report elsewhere without re-picking the repo.
 
-NO incluyas diffs ni un array "files": la herramienta los calcula con git al abrir el reporte. Tampoco inventes hunks ni copies el parche al JSON.
+Do NOT include diffs or a "files" array — the tool computes them with git when opening the report. Do not invent hunks or paste patches into the JSON.
 
-Cuando termines, avisame que \`${OUTPUT_FILENAME}\` quedó escrito.`;
+When done, tell me that \`${OUTPUT_FILENAME}\` was written.`;
 }
 
-/** Cuántos archivos sin cubrir se listan en el prompt antes de cortar. */
+export function buildPrompt(meta: ReportMeta): string {
+	const repo =
+		meta.repo.trim() || (meta.source === 'url' ? '<git URL>' : '<absolute repo path>');
+	const branch = meta.branch.trim() || '<branch under review>';
+	const base = meta.base.trim() || 'develop';
+	const workflow = meta.source === 'url' ? WORKFLOW_URL(base, branch) : WORKFLOW_LOCAL(base, branch);
+
+	return `You are a senior code reviewer: strict but fair.
+
+Repo: ${repo}
+Branch under review: ${branch}
+Base (merge-base): ${base}
+
+${workflow}
+
+Rules:
+${RULES}
+
+${outputInstructions(meta)}`;
+}
+
+/** How many uncovered paths to list in the coverage prompt before truncating. */
 const COVERAGE_LIST_LIMIT = 120;
 
 /**
- * Prompt para la pasada que falta: el contrato exige que todo archivo del diff caiga en
- * `blocks` o en `skipped`, y estos quedaron afuera. Pide el JSON completo de nuevo (no un
- * parche) porque la UI ingiere un documento entero, no fusiona partes.
+ * Follow-up when files from the diff are missing from both blocks and skipped.
+ * Asks for a full JSON rewrite (UI ingests whole documents, does not merge patches).
  */
 export function buildCoveragePromptText(meta: ReportMeta, missing: string[]): string {
 	const branch = meta.branch.trim() || '<branch>';
@@ -112,18 +153,20 @@ export function buildCoveragePromptText(meta: ReportMeta, missing: string[]): st
 	const shown = missing.slice(0, COVERAGE_LIST_LIMIT);
 	const rest = missing.length - shown.length;
 	const list = shown.map((path) => `- ${path}`).join('\n');
-	const tail = rest > 0 ? `\n- … y ${rest} más (están todos en el diff)` : '';
+	const tail = rest > 0 ? `\n- … and ${rest} more (all are in the diff)` : '';
 	return [
-		`La review de \`${branch}\` contra \`${base}\` quedó incompleta: ${missing.length} archivo(s) del diff no aparecen ni en "blocks" ni en "skipped".`,
+		`The review of \`${branch}\` against \`${base}\` is incomplete: ${missing.length} file(s) from the diff appear in neither "blocks" nor "skipped".`,
 		'',
-		'Completá la cobertura de estos archivos:',
+		'Cover these paths:',
 		list + tail,
 		'',
-		'Para cada uno: si el cambio dice algo, agregá un "block" con su tema, su rango de líneas y what/why; si es ruido (generado, lockfile, formato, vendored, binario, trivial), sumalo a "skipped" con su razón. Podés usar un glob en "skipped" cuando sean varios del mismo tipo.',
+		'For each: if the change matters, add a "block" (theme, line range, what/why). If it is noise (generated, lockfile, format, vendored, binary, trivial), add it to "skipped" with the reason. Use a skipped glob when many share one reason.',
 		'',
-		'No rehagas lo ya hecho: mantené los "meta", "blocks", "findings", "groups" e "intent" que ya habías escrito y agregá lo que falta.',
+		'Do not redo finished work: keep existing "meta", "intent", "groups", "blocks", and "findings"; only add what is missing.',
 		'',
-		`Reescribí \`${OUTPUT_FILENAME}\` con el JSON completo (un solo objeto, mismo formato, sin texto alrededor).`
+		`Human-readable strings in Spanish. Enums/ids/paths unchanged.`,
+		'',
+		`Rewrite \`${OUTPUT_FILENAME}\` with the full JSON object (same shape, first char \`{\`, last char \`}\`, no surrounding text).`
 	].join('\n');
 }
 
@@ -151,39 +194,48 @@ export function buildSkillMarkdown(agent: SkillAgent): string {
 	const cfg = SKILL_AGENTS[agent];
 	const ext = cfg.filename.split('.').pop();
 	return `---
-description: Genera un reporte de code review en el JSON que espera diff-review
+description: Produce a code-review JSON report for the diff-review app
 ---
 
 # /diff-review
 
-Uso: /diff-review repo=<repo> branch=<branch> base=<base>
-Argumentos: ${cfg.argToken}
+Usage: /diff-review repo=<repo> branch=<branch> base=<base>
+Arguments: ${cfg.argToken}
 
-Actuá como revisor de código senior, exigente pero justo. Corré \`git diff <base>...<branch>\` (o el diff que corresponda) y leé los archivos que necesites para entender tipos, callers y tests. No modifiques nada.
+You are a senior code reviewer: strict but fair.
 
-Reglas:
+Workflow:
+1. Resolve the merge-base of \`<base>\` and \`<branch>\`.
+2. Run exactly: \`git diff <base>...<branch>\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
+3. Read enough surrounding code (types, callers, tests) to judge behavior — not only the hunk lines.
+4. Emit the JSON file. Do not modify the repo.
+
+Rules:
 ${RULES}
 
-Escribí el resultado en un archivo llamado \`${OUTPUT_FILENAME}\` en la raíz del repo. El archivo debe tener UN SOLO objeto JSON, sin texto antes ni después, sin bloques \`\`\`, con esta forma exacta:
+Write the result to \`${OUTPUT_FILENAME}\` at the repo root.
+- One JSON object only: first character \`{\`, last character \`}\`.
+- No prose before/after, no markdown fences.
+- Shape:
 
 ${OUTPUT_SCHEMA_BLOCK}
 
-Incluí "meta" con source/repo/branch/base de los argumentos. Si el repo es local, agregá también "remoteUrl" con la URL de origin (así otra persona puede abrir el JSON sin tener la misma carpeta).
+Include "meta" with source/repo/branch/base from the arguments. If the repo is local, also set "remoteUrl" to origin (so someone else can open the JSON without the same folder).
 
-NO incluyas diffs ni un array "files": la herramienta los calcula con git al abrir el reporte.
+Do NOT include diffs or a "files" array — the tool computes them with git when opening the report.
 
-Cuando termines, avisá que \`${OUTPUT_FILENAME}\` quedó escrito.
+When done, say that \`${OUTPUT_FILENAME}\` was written.
 
-> Este archivo define dos comandos. Si tu herramienta requiere un archivo por comando, separá esta sección en un segundo archivo "diff-review-fix.${ext}".
+> This file defines two commands. If your tool needs one file per command, split the section below into a second file "diff-review-fix.${ext}".
 
 # /diff-review-fix
 
-Uso: /diff-review-fix <id1,id2,...> repo=<repo> branch=<branch>
-Argumentos: ${cfg.argToken}
+Usage: /diff-review-fix <id1,id2,...> repo=<repo> branch=<branch>
+Arguments: ${cfg.argToken}
 
-Se te va a pasar una lista de hallazgos (archivo:línea, qué está mal, fix sugerido y a veces el diff del bloque). Aplicá SOLO esas correcciones, no toques nada más. Si falta contexto, releé el archivo antes de tocarlo.
+You will receive a list of findings (file:line, what is wrong, suggested fix, sometimes the block diff). Apply ONLY those fixes — touch nothing else. If you need more context, re-read the file before editing.
 
-Al terminar, resumí en una lista qué cambiaste por cada hallazgo.`;
+When done, summarize in a list what you changed for each finding.`;
 }
 
 export function buildFixCommandText(meta: ReportMeta, ids: string[]): string {
@@ -193,7 +245,7 @@ export function buildFixCommandText(meta: ReportMeta, ids: string[]): string {
 	return parts.join(' ');
 }
 
-/** Findings con su número de orden (1-based, según el orden original del documento) para citarlos en los prompts. */
+/** Findings with 1-based index (document order) for citing in prompts. */
 export type NumberedFinding = {
 	number: number;
 	file: string;
@@ -220,7 +272,9 @@ export function buildFixPromptText(
 			const file = filesByPath.get(block.file);
 			if (file?.diff) {
 				const hunks = parseUnifiedDiff(file.diff);
-				const hunk = hunks.find((h) => hunkCovers(h, { side: block.side, start: block.start, end: block.end }));
+				const hunk = hunks.find((h) =>
+					hunkCovers(h, { side: block.side, start: block.start, end: block.end })
+				);
 				if (hunk) {
 					const body = hunk.lines
 						.map((l) => (l.kind === 'add' ? '+' : l.kind === 'del' ? '-' : ' ') + l.text)
@@ -230,22 +284,22 @@ export function buildFixPromptText(
 			}
 		}
 		const label = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
-		let out = `${i + 1}. [${label}] ${f.file}${f.line ? ':' + f.line : ''}\nQué: ${f.what}\nFix sugerido: ${f.fix}`;
+		let out = `${i + 1}. [${label}] ${f.file}${f.line ? ':' + f.line : ''}\nWhat: ${f.what}\nSuggested fix: ${f.fix}`;
 		if (diffSnippet) out += `\n\n\`\`\`diff\n${diffSnippet}\n\`\`\``;
 		return out;
 	});
 
-	return `Actuá como el mismo revisor que generó estos hallazgos. Aplicá SOLO las correcciones listadas abajo, sin tocar nada más. Si un fix requiere más contexto, releé el archivo antes de tocarlo.
+	return `You are the same reviewer who produced these findings. Apply ONLY the fixes listed below — touch nothing else. If a fix needs more context, re-read the file before editing.
 
 Repo: ${meta.repo || '—'}
 Branch: ${meta.branch || '—'}
 Base: ${meta.base || 'develop'}
 
-Hallazgos a corregir (${selectedFindings.length}):
+Findings to fix (${selectedFindings.length}):
 
 ${chunks.join('\n\n')}
 
-Cuando termines, resumí en una lista qué cambiaste por cada hallazgo.`;
+When done, summarize in a list what you changed for each finding.`;
 }
 
 export type PublishPlatform = 'github' | 'gitlab';

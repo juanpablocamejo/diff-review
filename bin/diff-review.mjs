@@ -126,13 +126,16 @@ O reinstalá el paquete (el tarball de npm incluye el build).`);
 
 	const origin = `http://${opts.host}:${opts.port}`;
 	const nodeBin = resolveNodeBin();
+	/** CWD del usuario al invocar el CLI (el server corre desde web/build). */
+	const launchCwd = process.cwd();
 	const child = spawn(nodeBin, [entry], {
 		cwd: buildDir,
 		env: {
 			...process.env,
 			HOST: opts.host,
 			PORT: String(opts.port),
-			ORIGIN: origin
+			ORIGIN: origin,
+			DIFF_REVIEW_LAUNCH_CWD: launchCwd
 		},
 		stdio: ['ignore', 'pipe', 'inherit'],
 		windowsHide: false

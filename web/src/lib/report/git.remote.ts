@@ -4,6 +4,7 @@ import {
 	describeGitError,
 	hydrateReviewPayload,
 	loadFileLines,
+	loadLaunchRepoInfo,
 	loadRepoInfo,
 	pickLocalFolder as pickLocalFolderSync
 } from '$lib/server/git-review';
@@ -34,6 +35,16 @@ export const loadRepo = query(
 		}
 	}
 );
+
+/** Repo del CWD de lanzamiento, o null si no hay git. */
+export const launchContext = query(async (): Promise<RepoInfo | null> => {
+	try {
+		return loadLaunchRepoInfo();
+	} catch (err) {
+		console.error('[diff-review git] launch context', describeGitError(err), err);
+		return null;
+	}
+});
 
 export const pickLocalFolder = command('unchecked', async (_input: null): Promise<string | null> => {
 	try {
