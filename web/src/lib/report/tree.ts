@@ -1,7 +1,14 @@
 import type { FileNavItem } from './build';
 
-/** Hallazgos de un archivo y cuántos ya tienen decisión tomada. */
-export type FileCount = { total: number; done: number };
+/** Hallazgos de un archivo, cuántos ya tienen decisión, y color de la severidad máxima. */
+export type FileCount = {
+	total: number;
+	done: number;
+	/** Color CSS de la severidad más grave (ignorado si total === 0). */
+	accent: string;
+	/** Menor = más grave; para agregar carpetas. */
+	rank: number;
+};
 
 export type TreeRow =
 	| {
@@ -14,6 +21,7 @@ export type TreeRow =
 			findings: number;
 			/** Todos los hallazgos que cuelgan de la carpeta ya tienen decisión. */
 			done: boolean;
+			accent: string;
 			open: boolean;
 	  }
 	| {
@@ -26,6 +34,7 @@ export type TreeRow =
 			navigable: boolean;
 			findings: number;
 			done: boolean;
+			accent: string;
 			skipReasonLabel?: string;
 	  };
 
@@ -37,10 +46,22 @@ type Node = {
 	fileCount: number;
 	findingCount: number;
 	doneCount: number;
+	maxAccent: string;
+	maxRank: number;
 };
 
 function emptyNode(name: string, path: string): Node {
-	return { name, path, dirs: new Map(), files: [], fileCount: 0, findingCount: 0, doneCount: 0 };
+	return {
+		name,
+		path,
+		dirs: new Map(),
+		files: [],
+		fileCount: 0,
+		findingCount: 0,
+		doneCount: 0,
+		maxAccent: 'var(--text-faint)',
+		maxRank: Number.POSITIVE_INFINITY
+	};
 }
 
 /**
@@ -58,25 +79,37 @@ function compress(node: Node) {
 	}
 }
 
-function tally(node: Node, counts: Map<string, FileCount>): { files: number; findings: number; done: number } {
+function tally(node: Node, counts: Map<string, FileCount>): { files: number; findings: number; done: number; rank: number; accent: string } {
 	let files = node.files.length;
 	let findings = 0;
 	let done = 0;
+	let rank = Number.POSITIVE_INFINITY;
+	let accent = 'var(--text-faint)';
 	for (const file of node.files) {
 		const count = counts.get(file.path);
 		findings += count?.total ?? 0;
 		done += count?.done ?? 0;
+		if (count?.total && count.rank < rank) {
+			rank = count.rank;
+			accent = count.accent;
+		}
 	}
 	for (const child of node.dirs.values()) {
 		const sub = tally(child, counts);
 		files += sub.files;
 		findings += sub.findings;
 		done += sub.done;
+		if (sub.findings && sub.rank < rank) {
+			rank = sub.rank;
+			accent = sub.accent;
+		}
 	}
 	node.fileCount = files;
 	node.findingCount = findings;
 	node.doneCount = done;
-	return { files, findings, done };
+	node.maxRank = rank;
+	node.maxAccent = accent;
+	return { files, findings, done, rank, accent };
 }
 
 /** Arma el bosque comprimido a partir de los paths (misma lógica que el render). */
@@ -139,6 +172,7 @@ export function buildTreeRows(
 				files: dir.fileCount,
 				findings: dir.findingCount,
 				done: dir.findingCount > 0 && dir.doneCount === dir.findingCount,
+				accent: dir.maxAccent,
 				open
 			});
 			if (open) walk(dir, depth + 1);
@@ -155,6 +189,7 @@ export function buildTreeRows(
 				navigable: file.navigable,
 				findings: count?.total ?? 0,
 				done: !!count?.total && count.done === count.total,
+				accent: count?.accent ?? 'var(--text-faint)',
 				skipReasonLabel: file.skipReasonLabel
 			});
 		}

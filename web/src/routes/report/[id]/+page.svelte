@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { downloadReport, type ExportFormat, type ExportMode } from '$lib/report/export';
 	import ReportView from '$lib/report/ReportView.svelte';
 	import { deleteReport, loadReportById } from '$lib/report/storage';
 	import type { SavedReport } from '$lib/report/types';
@@ -17,28 +18,54 @@
 	// Paneles laterales: viven acá con el resto de los controles de vista del header.
 	let sidebarCollapsed = $state(false);
 	let showExplanations = $state(true);
+	let downloadOpen = $state(false);
+	let kebabOpen = $state(false);
+	let exportMode = $state<ExportMode>('full');
 
 	$effect(() => {
 		report = loadReportById(params.id);
+		downloadOpen = false;
+		kebabOpen = false;
 	});
 
-	function download() {
+	function closeMenus() {
+		downloadOpen = false;
+		kebabOpen = false;
+	}
+
+	function toggleDownload() {
+		downloadOpen = !downloadOpen;
+		kebabOpen = false;
+	}
+
+	function toggleKebab() {
+		kebabOpen = !kebabOpen;
+		downloadOpen = false;
+	}
+
+	function exportAs(format: ExportFormat) {
 		if (!report) return;
-		const blob = new Blob([JSON.stringify(report.document, null, 2)], { type: 'application/json;charset=utf-8' });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = `${(report.meta.branch || 'reporte').replace(/[^a-z0-9.-]+/gi, '-')}.json`;
-		a.click();
-		URL.revokeObjectURL(url);
+		downloadOpen = false;
+		downloadReport(report, format, { mode: exportMode });
 	}
 
 	function remove() {
 		if (!report) return;
+		const label = report.meta.branch || 'este reporte';
+		if (!confirm(`¿Eliminar “${label}”? No se puede deshacer.`)) return;
 		deleteReport(report.id);
 		void goto(resolve('/'));
 	}
 </script>
+
+<svelte:window
+	onclick={() => {
+		if (downloadOpen || kebabOpen) closeMenus();
+	}}
+	onkeydown={(e) => {
+		if (e.key === 'Escape') closeMenus();
+	}}
+/>
 
 <div class="page">
 	<header class="chrome">
@@ -54,6 +81,33 @@
 					<span class="crumb-sep">›</span>
 					<span class="crumb-base">{report.meta.base || 'develop'}</span>
 				</span>
+				<div class="menu-wrap">
+					<button
+						type="button"
+						class="icon-btn kebab"
+						title="Más acciones"
+						aria-label="Más acciones"
+						aria-expanded={kebabOpen}
+						aria-haspopup="menu"
+						onclick={(e) => {
+							e.stopPropagation();
+							toggleKebab();
+						}}
+					>
+						<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+							<circle cx="8" cy="3.5" r="1.25" fill="currentColor" />
+							<circle cx="8" cy="8" r="1.25" fill="currentColor" />
+							<circle cx="8" cy="12.5" r="1.25" fill="currentColor" />
+						</svg>
+					</button>
+					{#if kebabOpen}
+						<div class="menu" role="menu" tabindex="-1">
+							<button type="button" class="menu-item danger" role="menuitem" onclick={remove}>
+								Eliminar reporte…
+							</button>
+						</div>
+					{/if}
+				</div>
 			{/if}
 		</div>
 
@@ -120,8 +174,77 @@
 
 		<div class="chrome-right">
 			{#if report}
-				<button type="button" class="ghost" onclick={download}>Descargar JSON</button>
-				<button type="button" class="ghost danger" onclick={remove}>Eliminar</button>
+				<div class="menu-wrap">
+					<button
+						type="button"
+						class="ghost download-btn"
+						aria-expanded={downloadOpen}
+						aria-haspopup="menu"
+						onclick={(e) => {
+							e.stopPropagation();
+							toggleDownload();
+						}}
+					>
+						<svg class="dl-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+							<path
+								d="M8 2.5v7.2M5.2 7.2 8 10l2.8-2.8M3.5 12.5h9"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.5"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							/>
+						</svg>
+						Descargar
+						<svg class="caret" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+							<path
+								d="M2.5 4.5 6 8l3.5-3.5"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.5"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							/>
+						</svg>
+					</button>
+					{#if downloadOpen}
+						<div class="menu download-menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+							<div class="menu-mode" role="group" aria-label="Modo de exportación">
+								<button
+									type="button"
+									class:on={exportMode === 'summary'}
+									onclick={() => (exportMode = 'summary')}>Resumen</button
+								>
+								<button
+									type="button"
+									class:on={exportMode === 'full'}
+									onclick={() => (exportMode = 'full')}>Completo</button
+								>
+							</div>
+							<p class="menu-mode-hint">
+								{exportMode === 'full'
+									? 'Incluye snippets de diff por hallazgo (MD / HTML / PDF).'
+									: 'Solo texto e intención, sin diffs.'}
+							</p>
+							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('json')}>
+								<span class="fmt">JSON</span>
+								<span class="hint">para volver a importar</span>
+							</button>
+							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('md')}>
+								<span class="fmt">Markdown</span>
+								<span class="hint">para leer / pegar</span>
+							</button>
+							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('html')}>
+								<span class="fmt">HTML</span>
+								<span class="hint">página autocontenida</span>
+							</button>
+							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('pdf')}>
+								<span class="fmt">PDF</span>
+								<span class="hint">imprimir / guardar</span>
+							</button>
+						</div>
+					{/if}
+				</div>
 			{/if}
 			<ThemeToggle />
 		</div>
@@ -231,6 +354,97 @@
 		white-space: nowrap;
 	}
 
+	.menu-wrap {
+		position: relative;
+		flex-shrink: 0;
+	}
+
+	.menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
+		z-index: 40;
+		min-width: 180px;
+		padding: 4px;
+		border: 1px solid var(--border);
+		background: var(--bg-card);
+		box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
+	}
+
+	.download-menu {
+		left: auto;
+		right: 0;
+		min-width: 240px;
+	}
+
+	.menu-mode {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0;
+		margin: 2px 2px 6px;
+		border: 1px solid var(--border);
+	}
+
+	.menu-mode button {
+		border: 0;
+		background: transparent;
+		color: var(--text-dim);
+		font-size: 11px;
+		font-weight: 600;
+		padding: 6px 8px;
+	}
+
+	.menu-mode button + button {
+		border-left: 1px solid var(--border);
+	}
+
+	.menu-mode button.on {
+		background: var(--accent-soft);
+		color: var(--text);
+	}
+
+	.menu-mode-hint {
+		margin: 0 8px 8px;
+		font-size: 10.5px;
+		color: var(--text-faint);
+		line-height: 1.35;
+	}
+
+	.menu-item {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0;
+		width: 100%;
+		padding: 4px 8px;
+		border: 0;
+		background: transparent;
+		color: var(--text);
+		font-size: 12px;
+		line-height: 1.25;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.menu-item:hover {
+		background: var(--accent-soft);
+	}
+
+	.menu-item.danger {
+		color: var(--danger);
+	}
+
+	.menu-item .fmt {
+		font-weight: 600;
+		line-height: 1.2;
+	}
+
+	.menu-item .hint {
+		font-size: 10.5px;
+		line-height: 1.2;
+		color: var(--text-faint);
+	}
+
 	.mode-toggle {
 		display: flex;
 		border: 1px solid var(--border);
@@ -284,6 +498,18 @@
 		color: var(--text);
 	}
 
+	.icon-btn.kebab {
+		width: 24px;
+		height: 24px;
+		border-color: transparent;
+		background: transparent;
+	}
+
+	.icon-btn.kebab:hover {
+		border-color: var(--border);
+		background: var(--bg-card);
+	}
+
 	/* Los glifos de panel dibujan medio cuadrado: a 13px no se distinguen entre sí. */
 	.icon-btn.panel {
 		font-size: 15px;
@@ -310,8 +536,14 @@
 		color: var(--text);
 	}
 
-	.ghost.danger {
-		color: var(--danger);
+	.download-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.download-btn .caret {
+		opacity: 0.7;
 	}
 
 	.hint {

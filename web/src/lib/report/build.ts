@@ -1,4 +1,5 @@
 import { changeLabel, displayGroupTitle, findingKindLabel, kindLabel, opLabel, severityLabel, skipLabel } from './labels';
+import { SEV_RANK } from './severity';
 import type {
 	BlockSide,
 	ChangeType,
@@ -74,6 +75,12 @@ export type FileNavItem = {
 	skipReasonLabel?: string;
 };
 
+/** Archivo hijo de un tema en el índice del sidebar. */
+export type GroupNavFile = {
+	path: string;
+	changeMark: string;
+};
+
 export type GroupNavItem = {
 	id: string;
 	number: number;
@@ -83,6 +90,8 @@ export type GroupNavItem = {
 	meta: string;
 	/** Hallazgos del tema, para que el sidebar cuente los que ya tienen decisión. */
 	findingIds: string[];
+	/** Archivos del tema, en el mismo orden que Explore. */
+	files: GroupNavFile[];
 };
 
 export type ReportModel = {
@@ -107,8 +116,6 @@ export type ReportModel = {
 	skippedList: { path: string; reasonLabel: string }[];
 };
 
-const SEV_RANK: Record<FindingSeverity, number> = { high: 0, med: 1, low: 2, nit: 3 };
-
 function severityColor(severity: FindingSeverity) {
 	return `var(--sev-${severity})`;
 }
@@ -132,7 +139,7 @@ function buildFindingCard(f: ReviewFinding, number: number): FindingCard {
 		line: f.line,
 		accentColor,
 		badgeColor: accentColor,
-		badge: f.blocking ? 'BLOQUEA' : severityLabel(f.severity).toUpperCase(),
+		badge: f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase(),
 		kindLabel: findingKindLabel(f.kind),
 		fileLine: f.file + (f.line ? ':' + f.line : '')
 	};
@@ -294,7 +301,11 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 		title: g.title,
 		meta: `${blocks.filter((b) => b.group === g.id).length} bloques · ${g.fileSections.length} archivos`,
 		// Un archivo puede caer en dos temas: sin el Set, su hallazgo se contaría dos veces.
-		findingIds: [...new Set(g.fileSections.flatMap((fs) => fs.allFindings.map((f) => f.id)))]
+		findingIds: [...new Set(g.fileSections.flatMap((fs) => fs.allFindings.map((f) => f.id)))],
+		files: g.fileSections.map((fs) => ({
+			path: fs.path,
+			changeMark: CHANGE_MARK[fs.changeType]
+		}))
 	}));
 
 	const findingsNav = findings

@@ -6,14 +6,34 @@ los diffs con `git` y te deja triager hallazgos.
 
 No spawnea agentes ni corre reviews sola: el modelo lo manejás vos a mano.
 
-## Cómo usarla
+## Instalación
+
+Requiere **Node ≥ 20** y **git** en el PATH. En Windows/macOS/Linux x64 el diálogo
+de carpeta usa `@bindrs/rfd` (nativo); si el addon no está para tu plataforma, hay fallback.
 
 ```bash
-cd web && bun install
-bun run dev     # http://127.0.0.1:5190
+npm install -g diff-review
+diff-review
 ```
 
-Desde la raíz: `bun run web:install` y `bun run web:dev`.
+O sin instalar:
+
+```bash
+npx diff-review
+```
+
+Abre `http://127.0.0.1:5190`. Opciones: `--port`, `--host`, `--no-open`.
+
+## Desarrollo (desde el repo)
+
+```bash
+npm run web:install
+npm run web:dev          # UI en modo dev
+npm run build            # build de producción → web/build
+npm start                # mismo que el bin global
+```
+
+## Flujo
 
 1. Pegá la ruta (o URL) del repo y elegí branch / base.
 2. Copiá el prompt (o el comando de skill `/diff-review`).
@@ -26,7 +46,7 @@ Desde la raíz: `bun run web:install` y `bun run web:dev`.
 
 Al abrir un reporte, el backend local corre `git` contra el repo que indicaste
 para armar los diffs y, si pedís contexto faltante, leer el archivo en la punta
-del branch. Por eso corre en localhost con adapter Node, no como SaaS.
+del branch. Por eso corre en localhost, no como SaaS.
 
 Los reportes y el triage viven en **localStorage** del navegador.
 
@@ -60,9 +80,19 @@ y minificados.
 
 ```
 .
+├── bin/          # CLI (diff-review)
 ├── schema.json   # contrato del JSON que escribe el agente
-├── lib/          # git, extract de diff, normalización del documento
-└── web/          # UI SvelteKit (prompts, viewer, triage)
+├── lib/          # git / extract (dev + tests; va embebido en el build)
+└── web/          # UI SvelteKit → web/build en el paquete npm
 ```
 
-Tests del pipeline: `node --test lib/*.test.mjs` (o `bun run test`).
+Tests del pipeline: `npm test` (`node --test lib/*.test.mjs`).
+
+## Publicar
+
+```bash
+npm run build    # o se corre solo en prepack
+npm publish
+```
+
+El tarball incluye `web/build` (sin depender de las deps de Svelte en runtime).

@@ -6,6 +6,11 @@ export function fileAnchor(path: string) {
 	return `fl-${path}`;
 }
 
+/** Archivo dentro de un tema: el mismo path puede repetirse en varios grupos. */
+export function groupFileAnchor(groupId: string, path: string) {
+	return `fl-${groupId}-${path}`;
+}
+
 export function blockAnchor(id: string) {
 	return `bk-${id}`;
 }

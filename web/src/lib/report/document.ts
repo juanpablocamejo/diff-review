@@ -1,4 +1,13 @@
-import type { ReviewBlock, ReviewDocument, ReviewFile, ReviewFinding, ReviewGroup, ReviewSkipped } from './types';
+import type {
+	ReportMeta,
+	RepoSource,
+	ReviewBlock,
+	ReviewDocument,
+	ReviewFile,
+	ReviewFinding,
+	ReviewGroup,
+	ReviewSkipped
+} from './types';
 
 function parseLineRange(value: unknown): { side: 'new' | 'old'; start: number; end: number } | null {
 	const raw = String(value ?? '').trim();
@@ -21,8 +30,57 @@ function str(value: unknown): string {
 	return String(value ?? '').trim();
 }
 
+function looksLikeGitUrl(value: string) {
+	return /^(https?:\/\/|git@|ssh:\/\/)/i.test(value) || /\.git$/i.test(value);
+}
+
 export function hasUsableDiffs(doc: ReviewDocument): boolean {
 	return (doc.files ?? []).some((f) => typeof f.diff === 'string' && f.diff.length > 0);
+}
+
+/**
+ * Lee meta del JSON (objeto `meta` o campos top-level legacy).
+ * Prioriza el archivo; completa con `fallback` (formulario) lo que falte.
+ */
+export function parseReportMeta(raw: unknown, fallback: Partial<ReportMeta> = {}): ReportMeta {
+	const rec = asRecord(raw);
+	const nested = asRecord(rec.meta);
+	const repo = str(nested.repo ?? rec.repo) || str(fallback.repo);
+	const branch = str(nested.branch ?? rec.branch) || str(fallback.branch);
+	const base =
+		str(nested.base ?? nested.baseBranch ?? rec.base ?? rec.baseBranch) ||
+		str(fallback.base) ||
+		'develop';
+	const remoteUrl =
+		str(nested.remoteUrl ?? nested.remote ?? rec.remoteUrl ?? rec.remote) || str(fallback.remoteUrl);
+	const sourceHint = str(nested.source ?? rec.source);
+	const source: RepoSource =
+		sourceHint === 'url' || sourceHint === 'local'
+			? sourceHint
+			: looksLikeGitUrl(repo)
+				? 'url'
+				: fallback.source === 'url'
+					? 'url'
+					: 'local';
+	return { source, repo, branch, base, remoteUrl: remoteUrl || undefined };
+}
+
+/** JSON reimportable: meta + documento (sin depender del formulario). */
+export function serializeReviewPayload(document: ReviewDocument, meta: ReportMeta): string {
+	return JSON.stringify(
+		{
+			meta: {
+				source: meta.source,
+				repo: meta.repo,
+				branch: meta.branch,
+				base: meta.base || 'develop',
+				...(meta.remoteUrl ? { remoteUrl: meta.remoteUrl } : {})
+			},
+			...document
+		},
+		null,
+		2
+	);
 }
 
 function coerceBlock(raw: unknown): ReviewBlock {

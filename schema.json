@@ -2,10 +2,29 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/juanpablocamejo/diff-review/schemas/review-document.json",
   "title": "Diff Review Document",
-  "description": "JSON que escribe el agente (intent/groups/blocks/findings/skipped). La UI completa files con git al abrir el reporte; no hace falta que el modelo incluya diffs.",
+  "description": "JSON que escribe el agente (meta/intent/groups/blocks/findings/skipped). La UI completa files con git al abrir el reporte; no hace falta que el modelo incluya diffs.",
   "type": "object",
   "required": ["intent", "groups", "blocks", "findings"],
   "properties": {
+    "meta": {
+      "type": "object",
+      "description": "Contexto del repo para reabrir el reporte sin rellenar el formulario. Copiá source/repo/branch/base del prompt.",
+      "required": ["source", "repo", "branch", "base"],
+      "properties": {
+        "source": { "type": "string", "enum": ["local", "url"] },
+        "repo": {
+          "type": "string",
+          "description": "Ruta absoluta local o URL git (https://… / git@…)."
+        },
+        "branch": { "type": "string", "description": "Branch bajo review." },
+        "base": { "type": "string", "description": "Branch base del merge-base (ej. develop)." },
+        "remoteUrl": {
+          "type": "string",
+          "description": "URL del remote (origin). Fallback si la carpeta local no existe en otra máquina."
+        }
+      }
+    },
+
     "intent": {
       "type": "string",
       "description": "Intención general del diff en 2-4 oraciones: qué problema resuelve, no qué archivos toca."

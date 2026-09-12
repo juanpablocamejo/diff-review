@@ -57,6 +57,19 @@ export function validateDocument(doc: unknown): string[] {
 	if (d.files != null && !Array.isArray(d.files)) errors.push('"files" debe ser un array.');
 	if (d.skipped != null && !Array.isArray(d.skipped)) errors.push('"skipped" debe ser un array.');
 	if (d.notes != null && !Array.isArray(d.notes)) errors.push('"notes" debe ser un array.');
+	if (d.meta != null) {
+		if (typeof d.meta !== 'object' || Array.isArray(d.meta)) {
+			errors.push('"meta" debe ser un objeto.');
+		} else {
+			const m = d.meta as Record<string, unknown>;
+			if (m.source != null && m.source !== 'local' && m.source !== 'url') {
+				errors.push('meta.source debe ser "local" o "url".');
+			}
+			for (const k of ['repo', 'branch', 'base', 'remoteUrl'] as const) {
+				if (m[k] != null && typeof m[k] !== 'string') errors.push(`meta.${k} debe ser string.`);
+			}
+		}
+	}
 
 	return errors;
 }

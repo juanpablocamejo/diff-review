@@ -5,12 +5,15 @@ declare module '$review/lib/git.mjs' {
 		current: string;
 		defaultBase: string;
 	};
+	export function getRemoteUrl(repo: string, preferred?: string): string;
 	export function showFileLines(repo: string, rev: string, path: string): string[] | null;
 }
 
 declare module '$review/lib/pick-folder.mjs' {
-	export function pickFolder(): string | null;
+	export function pickFolder(): Promise<string | null>;
 }
+
+/* pickFolder de producción vive en $lib/server/pick-folder */
 
 declare module '$review/lib/remote-repo.mjs' {
 	export function looksLikeGitUrl(value: string): boolean;

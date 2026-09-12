@@ -3,6 +3,13 @@ import { severityLabel } from './labels';
 import type { FindingSeverity, ReportMeta, ReviewDocument } from './types';
 
 export const OUTPUT_SCHEMA_BLOCK = `{
+  "meta": {
+    "source": "local|url",
+    "repo": "ruta absoluta del repo o URL git",
+    "branch": "branch a revisar",
+    "base": "develop",
+    "remoteUrl": "https://… o git@… (origin; opcional si source=url)"
+  },
   "intent": "2-4 oraciones: qué problema resuelve el branch y cómo. Sin listar archivos.",
   "groups": [
     { "id": "g1", "kind": "feat|fix|refactor|perf|test|chore|docs|infra", "title": "scope: título en imperativo, máx 72 caracteres (sin repetir el kind)", "intent": "1-2 oraciones sobre este tema" }
@@ -29,6 +36,28 @@ export const OUTPUT_SCHEMA_BLOCK = `{
   ],
   "notes": ["notas breves sobre limitaciones de la review, si aplica"]
 }`;
+
+/** Schema con meta ya rellenada para que el agente la copie tal cual. */
+export function outputSchemaBlock(meta: ReportMeta): string {
+	const source = meta.source === 'url' ? 'url' : 'local';
+	const repo =
+		meta.repo.trim() || (source === 'url' ? '<url del repo>' : '<ruta absoluta del repo>');
+	const branch = meta.branch.trim() || '<branch a revisar>';
+	const base = meta.base.trim() || 'develop';
+	const remoteUrl = meta.remoteUrl?.trim() || (source === 'url' ? repo : '');
+	const metaLines = [
+		`    "source": ${JSON.stringify(source)},`,
+		`    "repo": ${JSON.stringify(repo)},`,
+		`    "branch": ${JSON.stringify(branch)},`,
+		`    "base": ${JSON.stringify(base)}${remoteUrl ? ',' : ''}`
+	];
+	if (remoteUrl) metaLines.push(`    "remoteUrl": ${JSON.stringify(remoteUrl)}`);
+	const metaBlock = `"meta": {\n${metaLines.join('\n')}\n  }`;
+	return OUTPUT_SCHEMA_BLOCK.replace(
+		/"meta": \{[\s\S]*?\n  \}/,
+		metaBlock
+	);
+}
 
 const RULES = `- NO reportar: código preexistente fuera del diff, ruido de linter/formatter, preferencias de naming/estilo sin consecuencia real, comportamiento intencional del branch, reglas de lint silenciadas, "falta doc/cobertura" sin un escenario concreto roto.
 - Los hallazgos de calidad tienen que nombrar un costo concreto, no una sensación vaga.
@@ -60,7 +89,9 @@ ${RULES}
 
 Escribí el resultado en un archivo llamado \`${OUTPUT_FILENAME}\` en la raíz del repo. El archivo debe tener UN SOLO objeto JSON, sin texto antes ni después, sin bloques \`\`\`, con esta forma exacta:
 
-${OUTPUT_SCHEMA_BLOCK}
+${outputSchemaBlock(meta)}
+
+Incluí "meta" con exactamente source/repo/branch/base de arriba (y remoteUrl del origin si es local). Sirve para reabrir el reporte en otra máquina sin elegir el repo a mano.
 
 NO incluyas diffs ni un array "files": la herramienta los calcula con git al abrir el reporte. Tampoco inventes hunks ni copies el parche al JSON.
 
@@ -90,7 +121,7 @@ export function buildCoveragePromptText(meta: ReportMeta, missing: string[]): st
 		'',
 		'Para cada uno: si el cambio dice algo, agregá un "block" con su tema, su rango de líneas y what/why; si es ruido (generado, lockfile, formato, vendored, binario, trivial), sumalo a "skipped" con su razón. Podés usar un glob en "skipped" cuando sean varios del mismo tipo.',
 		'',
-		'No rehagas lo ya hecho: mantené los "blocks", "findings", "groups" e "intent" que ya habías escrito y agregá lo que falta.',
+		'No rehagas lo ya hecho: mantené los "meta", "blocks", "findings", "groups" e "intent" que ya habías escrito y agregá lo que falta.',
 		'',
 		`Reescribí \`${OUTPUT_FILENAME}\` con el JSON completo (un solo objeto, mismo formato, sin texto alrededor).`
 	].join('\n');
@@ -136,6 +167,8 @@ ${RULES}
 Escribí el resultado en un archivo llamado \`${OUTPUT_FILENAME}\` en la raíz del repo. El archivo debe tener UN SOLO objeto JSON, sin texto antes ni después, sin bloques \`\`\`, con esta forma exacta:
 
 ${OUTPUT_SCHEMA_BLOCK}
+
+Incluí "meta" con source/repo/branch/base de los argumentos. Si el repo es local, agregá también "remoteUrl" con la URL de origin (así otra persona puede abrir el JSON sin tener la misma carpeta).
 
 NO incluyas diffs ni un array "files": la herramienta los calcula con git al abrir el reporte.
 
@@ -196,7 +229,7 @@ export function buildFixPromptText(
 				}
 			}
 		}
-		const label = f.blocking ? 'BLOQUEA' : severityLabel(f.severity).toUpperCase();
+		const label = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
 		let out = `${i + 1}. [${label}] ${f.file}${f.line ? ':' + f.line : ''}\nQué: ${f.what}\nFix sugerido: ${f.fix}`;
 		if (diffSnippet) out += `\n\n\`\`\`diff\n${diffSnippet}\n\`\`\``;
 		return out;
@@ -225,7 +258,7 @@ export function buildPublishText(
 	const label = platform === 'gitlab' ? 'MR' : 'PR';
 	const chunks = selectedFindings.map((f) => {
 		const loc = f.file + (f.line ? ':' + f.line : '');
-		const badge = f.blocking ? 'BLOQUEA' : severityLabel(f.severity).toUpperCase();
+		const badge = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
 		return `**#${f.number} · ${badge}** \`${loc}\`\n\n${f.what}\n\n**Sugerencia:** ${f.fix}`;
 	});
 	return `### Hallazgos de code review${meta.branch ? ' — ' + meta.branch : ''}\n\n${chunks.join('\n\n---\n\n')}\n\n_Generado a partir del review automático. Comentario para ${label}._`;

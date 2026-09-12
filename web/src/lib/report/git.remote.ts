@@ -15,6 +15,7 @@ export type RepoInfo = {
 	branches: string[];
 	current: string;
 	defaultBase: string;
+	remoteUrl?: string;
 };
 
 function fail(err: unknown): never {
@@ -36,7 +37,7 @@ export const loadRepo = query(
 
 export const pickLocalFolder = command('unchecked', async (_input: null): Promise<string | null> => {
 	try {
-		return pickLocalFolderSync();
+		return await pickLocalFolderSync();
 	} catch (err) {
 		fail(err);
 	}

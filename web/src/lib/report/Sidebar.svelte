@@ -3,6 +3,7 @@
 	import { groupAnchor } from './anchors';
 	import type { FileNavItem, GroupNavItem } from './build';
 	import FileIcon from './FileIcon.svelte';
+	import { findingSeverityRank, maxFindingAccent } from './severity';
 	import { buildTreeRows, collectTreeDirPaths, type FileCount } from './tree';
 
 	let {
@@ -14,7 +15,9 @@
 		findings,
 		activeFindingId,
 		onselectfinding,
-		onselectfile
+		onselectfile,
+		/** Archivo visible en Explore (tema + path), para resaltar en el acordeón. */
+		activeExploreFile = null
 	}: {
 		collapsed: boolean;
 		mode: 'explore' | 'findings';
@@ -24,7 +27,8 @@
 		findings: DecoratedFinding[];
 		activeFindingId: string | null;
 		onselectfinding: (id: string) => void;
-		onselectfile: (path: string) => void;
+		onselectfile: (path: string, groupId?: string) => void;
+		activeExploreFile?: { groupId: string; path: string } | null;
 	} = $props();
 
 	const reviewedCount = $derived(findings.filter((f) => f.decided).length);
@@ -35,13 +39,41 @@
 	let collapsedDirs = $state<string[]>([]);
 	/** Árbol con carpetas, o lista plana de paths. */
 	let filesLayout = $state<'tree' | 'list'>('tree');
+	/** Acordeón de temas: un solo tema abierto a la vez. */
+	let expandedGroupId = $state<string | null>(null);
+
+	/** Al scrollear el panel, abrir el tema del archivo visible. */
+	$effect(() => {
+		const g = activeExploreFile?.groupId;
+		if (g && exploreIndex === 'temas') expandedGroupId = g;
+	});
+
+	$effect(() => {
+		if (!activeExploreFile) return;
+		queueMicrotask(() => {
+			document.querySelector('.group-files .tree-row.file.active')?.scrollIntoView({
+				block: 'nearest',
+				behavior: 'smooth'
+			});
+		});
+	});
 
 	const fileCounts = $derived.by(() => {
 		const counts = new Map<string, FileCount>();
 		for (const f of findings) {
-			const entry = counts.get(f.file) ?? { total: 0, done: 0 };
+			const rank = findingSeverityRank(f);
+			const entry = counts.get(f.file) ?? {
+				total: 0,
+				done: 0,
+				accent: f.accentColor,
+				rank
+			};
 			entry.total += 1;
 			if (f.decided) entry.done += 1;
+			if (rank < entry.rank) {
+				entry.rank = rank;
+				entry.accent = f.accentColor;
+			}
 			counts.set(f.file, entry);
 		}
 		return counts;
@@ -65,20 +97,25 @@
 					navigable: file.navigable,
 					findings: count?.total ?? 0,
 					done: !!count?.total && count.done === count.total,
+					accent: count?.accent ?? 'var(--text-faint)',
 					skipReasonLabel: file.skipReasonLabel
 				};
 			})
 	);
 
 	const groupCounts = $derived.by(() => {
-		const decided = new Set(findings.filter((f) => f.decided).map((f) => f.id));
+		const byId = new Map(findings.map((f) => [f.id, f]));
 		return new Map(
-			groupsNav.map((g) => [
-				g.id,
-				{ total: g.findingIds.length, done: g.findingIds.filter((id) => decided.has(id)).length }
-			])
+			groupsNav.map((g) => {
+				const groupFindings = g.findingIds.map((id) => byId.get(id)).filter(Boolean) as DecoratedFinding[];
+				const total = groupFindings.length;
+				const done = groupFindings.filter((f) => f.decided).length;
+				return [g.id, { total, done, accent: maxFindingAccent(groupFindings) }] as const;
+			})
 		);
 	});
+
+	const findingsMaxAccent = $derived(maxFindingAccent(findings));
 
 	function toggleDir(key: string) {
 		collapsedDirs = collapsedDirs.includes(key)
@@ -88,6 +125,24 @@
 
 	function toggleExpandAll() {
 		collapsedDirs = allExpanded ? allDirPaths : [];
+	}
+
+	function toggleGroup(id: string) {
+		expandedGroupId = expandedGroupId === id ? null : id;
+	}
+
+	function openGroup(id: string) {
+		expandedGroupId = id;
+	}
+
+	function fileName(path: string) {
+		const slash = path.lastIndexOf('/');
+		return slash >= 0 ? path.slice(slash + 1) : path;
+	}
+
+	function fileDir(path: string) {
+		const slash = path.lastIndexOf('/');
+		return slash >= 0 ? path.slice(0, slash) : '';
 	}
 
 	/** Indent por nivel y slot compartido chevron/ícono (estilo explorer de Cursor/VS Code). */
@@ -112,124 +167,187 @@
 				<span class="mode-label">
 					Hallazgos
 					{#if findings.length}
-						<span class="count-badge">{findings.length}</span>
+						<span class="count-badge" style:--finding-sev={findingsMaxAccent}>{findings.length}</span>
 					{/if}
 				</span>
 			</button>
 		</div>
 
 		{#if mode === 'explore'}
-			<div class="panel">
-				<div class="index-tabs">
-					<button type="button" class:on={exploreIndex === 'temas'} onclick={() => (exploreIndex = 'temas')}
-						>Temas · {groupsNav.length}</button
-					>
-					<button type="button" class:on={exploreIndex === 'archivos'} onclick={() => (exploreIndex = 'archivos')}
-						>Archivos · {fileNav.length}</button
-					>
+			<div class="panel explore-panel">
+				<div class="panel-chrome">
+					<div class="index-tabs">
+						<button type="button" class:on={exploreIndex === 'temas'} onclick={() => (exploreIndex = 'temas')}
+							>Temas · {groupsNav.length}</button
+						>
+						<button type="button" class:on={exploreIndex === 'archivos'} onclick={() => (exploreIndex = 'archivos')}
+							>Archivos · {fileNav.length}</button
+						>
+					</div>
+
+					{#if exploreIndex === 'archivos'}
+						<div class="files-toolbar">
+							<div class="seg" role="group" aria-label="Vista de archivos">
+								<button
+									type="button"
+									class="tool"
+									class:on={filesLayout === 'tree'}
+									title="Vista en árbol"
+									aria-label="Vista en árbol"
+									aria-pressed={filesLayout === 'tree'}
+									onclick={() => (filesLayout = 'tree')}
+								>
+									<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+										<path
+											d="M3 2.5h3.2v3.2H3V2.5Zm0 4.4h3.2v3.2H3V6.9Zm0 4.4h3.2v3.2H3v-3.2ZM7.6 4.1H13M7.6 8.5H13M7.6 12.9H13M6.2 4.1v8.8"
+											stroke="currentColor"
+											stroke-width="1.5"
+											stroke-linecap="round"
+											stroke-linejoin="round"
+										/>
+									</svg>
+								</button>
+								<button
+									type="button"
+									class="tool"
+									class:on={filesLayout === 'list'}
+									title="Vista en lista"
+									aria-label="Vista en lista"
+									aria-pressed={filesLayout === 'list'}
+									onclick={() => (filesLayout = 'list')}
+								>
+									<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+										<path
+											d="M3 4h10M3 8h10M3 12h10"
+											stroke="currentColor"
+											stroke-width="1.5"
+											stroke-linecap="round"
+										/>
+									</svg>
+								</button>
+							</div>
+							{#if filesLayout === 'tree'}
+								<button
+									type="button"
+									class="tool"
+									disabled={allDirPaths.length === 0}
+									title={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
+									aria-label={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
+									onclick={toggleExpandAll}
+								>
+									{#if allExpanded}
+										<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+											<path
+												d="M4.5 7.2 8 3.8l3.5 3.4M4.5 12.2 8 8.8l3.5 3.4"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+											/>
+										</svg>
+									{:else}
+										<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+											<path
+												d="M4.5 3.8 8 7.2l3.5-3.4M4.5 8.8 8 12.2l3.5-3.4"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+											/>
+										</svg>
+									{/if}
+								</button>
+							{/if}
+						</div>
+					{/if}
 				</div>
 
-				{#if exploreIndex === 'temas'}
-					<div class="nav-list">
-						{#each groupsNav as g (g.id)}
-							{@const count = groupCounts.get(g.id)}
-							<a href={`#${groupAnchor(g.id)}`} class="group-link">
-								<span class="row">
-									<span class="number">#{g.number}</span>
-									<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
-									<span class="title">{g.title}</span>
-									{#if count?.total}
-										<span
-											class="count"
-											class:done={count.done === count.total}
-											title="{count.total} hallazgo{count.total === 1 ? '' : 's'} en este tema{count.done ===
-											count.total
-												? ' · todos revisados'
-												: ''}">{count.done === count.total ? '✓' : count.total}</span
+				<div class="panel-scroll">
+					{#if exploreIndex === 'temas'}
+						<div class="nav-list">
+							{#each groupsNav as g (g.id)}
+								{@const count = groupCounts.get(g.id)}
+								{@const open = expandedGroupId === g.id}
+								<div class="group-item" class:open>
+									<div class="group-head-row">
+										<button
+											type="button"
+											class="group-caret"
+											aria-expanded={open}
+											aria-label={open ? 'Ocultar archivos del tema' : 'Mostrar archivos del tema'}
+											onclick={() => toggleGroup(g.id)}
 										>
+											<span class="caret">{open ? '▾' : '▸'}</span>
+										</button>
+										<a
+											href={`#${groupAnchor(g.id)}`}
+											class="group-link"
+											onclick={() => openGroup(g.id)}
+										>
+											<span class="row">
+												<span class="number">#{g.number}</span>
+												<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
+												{#if count?.total}
+													<span
+														class="count"
+														class:done={count.done === count.total}
+														style:--finding-sev={count.accent}
+														title="{count.total} hallazgo{count.total === 1 ? '' : 's'} en este tema{count.done ===
+														count.total
+															? ' · todos revisados'
+															: ''}">{count.done === count.total ? '✓' : count.total}</span
+													>
+												{/if}
+											</span>
+											<span class="title">{g.title}</span>
+											<span class="meta">{g.meta}</span>
+										</a>
+									</div>
+									{#if open}
+										<div class="group-files">
+											{#each g.files as file (file.path)}
+												{@const fcount = fileCounts.get(file.path)}
+												{@const dir = fileDir(file.path)}
+												{@const active =
+													activeExploreFile?.groupId === g.id && activeExploreFile?.path === file.path}
+												<button
+													type="button"
+													class="tree-row file"
+													class:active
+													data-active-explore={active ? '1' : undefined}
+													onclick={() => onselectfile(file.path, g.id)}
+												>
+													<span class="tree-slot">
+														<FileIcon path={file.path} />
+													</span>
+													<span class="name-line">
+														<span class="name" title={file.path}>{fileName(file.path)}</span>
+														{#if dir}
+															<span class="dir" title={dir}>{dir}</span>
+														{/if}
+													</span>
+													{#if fcount?.total}
+														<span
+															class="count"
+															class:done={fcount.done === fcount.total}
+															style:--finding-sev={fcount.accent}
+															title="{fcount.total} hallazgo{fcount.total === 1 ? '' : 's'}"
+															>{fcount.done === fcount.total ? '✓' : fcount.total}</span
+														>
+													{/if}
+													<span
+														class="mark"
+														class:add={file.changeMark === 'A'}
+														class:del={file.changeMark === 'D'}>{file.changeMark}</span
+													>
+												</button>
+											{/each}
+										</div>
 									{/if}
-								</span>
-								<span class="meta">{g.meta}</span>
-							</a>
-						{/each}
-					</div>
-				{:else}
-					<div class="files-toolbar">
-						<div class="seg" role="group" aria-label="Vista de archivos">
-							<button
-								type="button"
-								class="tool"
-								class:on={filesLayout === 'tree'}
-								title="Vista en árbol"
-								aria-label="Vista en árbol"
-								aria-pressed={filesLayout === 'tree'}
-								onclick={() => (filesLayout = 'tree')}
-							>
-								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-									<path
-										d="M3 2.5h3.2v3.2H3V2.5Zm0 4.4h3.2v3.2H3V6.9Zm0 4.4h3.2v3.2H3v-3.2ZM7.6 4.1H13M7.6 8.5H13M7.6 12.9H13M6.2 4.1v8.8"
-										stroke="currentColor"
-										stroke-width="1.5"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-									/>
-								</svg>
-							</button>
-							<button
-								type="button"
-								class="tool"
-								class:on={filesLayout === 'list'}
-								title="Vista en lista"
-								aria-label="Vista en lista"
-								aria-pressed={filesLayout === 'list'}
-								onclick={() => (filesLayout = 'list')}
-							>
-								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-									<path
-										d="M3 4h10M3 8h10M3 12h10"
-										stroke="currentColor"
-										stroke-width="1.5"
-										stroke-linecap="round"
-									/>
-								</svg>
-							</button>
+								</div>
+							{/each}
 						</div>
-						{#if filesLayout === 'tree'}
-							<button
-								type="button"
-								class="tool"
-								disabled={allDirPaths.length === 0}
-								title={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
-								aria-label={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
-								onclick={toggleExpandAll}
-							>
-								{#if allExpanded}
-								<!-- colapsar todo: doble chevron ↑ -->
-								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-									<path
-										d="M4.5 7.2 8 3.8l3.5 3.4M4.5 12.2 8 8.8l3.5 3.4"
-										stroke="currentColor"
-										stroke-width="1.5"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-									/>
-								</svg>
-							{:else}
-								<!-- expandir todo: doble chevron ↓ -->
-								<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-									<path
-										d="M4.5 3.8 8 7.2l3.5-3.4M4.5 8.8 8 12.2l3.5-3.4"
-										stroke="currentColor"
-										stroke-width="1.5"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-									/>
-								</svg>
-							{/if}
-							</button>
-						{/if}
-					</div>
-					{#if filesLayout === 'tree'}
+					{:else if filesLayout === 'tree'}
 						<div class="tree">
 							{#each treeRows as row (row.key)}
 								{#if row.kind === 'dir'}
@@ -254,6 +372,7 @@
 											<span
 												class="count"
 												class:done={row.done}
+												style:--finding-sev={row.accent}
 												title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'} en esta carpeta{row.done
 													? ' · todos revisados'
 													: ''}">{row.done ? '✓' : row.findings}</span
@@ -286,6 +405,7 @@
 											<span
 												class="count"
 												class:done={row.done}
+												style:--finding-sev={row.accent}
 												title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'}{row.done
 													? ' · todos revisados'
 													: ''}">{row.done ? '✓' : row.findings}</span
@@ -324,6 +444,7 @@
 										<span
 											class="count"
 											class:done={row.done}
+											style:--finding-sev={row.accent}
 											title="{row.findings} hallazgo{row.findings === 1 ? '' : 's'}{row.done
 												? ' · todos revisados'
 												: ''}">{row.done ? '✓' : row.findings}</span
@@ -336,7 +457,7 @@
 							{/each}
 						</div>
 					{/if}
-				{/if}
+				</div>
 			</div>
 		{:else}
 			<div class="panel findings-panel">
@@ -370,7 +491,9 @@
 								{/if}
 							</span>
 							<span class="what" style:text-decoration={f.strike}>{f.what}</span>
-							<span class="file-line">{f.fileLine}</span>
+							<span class="file-line" title={f.fileLine}
+								>{fileName(f.file)}{f.line != null ? `:${f.line}` : ''}</span
+							>
 						</button>
 					{/each}
 				</div>
@@ -383,10 +506,12 @@
 	.sidebar {
 		border-right: 1px solid var(--border);
 		background: var(--bg-elev);
-		overflow-y: auto;
-		overflow-x: hidden;
+		overflow: hidden;
 		min-height: 0;
+		height: 100%;
 		padding: 14px 0;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.sidebar.collapsed {
@@ -398,6 +523,7 @@
 		border: 1px solid var(--border);
 		margin: 0 14px 12px;
 		overflow: hidden;
+		flex-shrink: 0;
 	}
 
 	.mode-toggle button {
@@ -437,13 +563,35 @@
 		font-weight: 700;
 		line-height: 1;
 		padding: 2px 6px;
-		border: 1px solid var(--border);
-		background: var(--bg-card);
-		color: var(--text-dim);
+		border: 1px solid color-mix(in srgb, var(--finding-sev, var(--border)) 45%, transparent);
+		background: color-mix(in srgb, var(--finding-sev, var(--bg-card)) 18%, transparent);
+		color: var(--finding-sev, var(--text-dim));
 	}
 
 	.panel {
 		padding: 0 14px 10px;
+	}
+
+	.explore-panel {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		padding: 0 0 10px;
+		overflow: hidden;
+	}
+
+	.panel-chrome {
+		flex-shrink: 0;
+		padding: 0 14px;
+	}
+
+	.panel-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+		padding: 0 14px;
 	}
 
 	h3 {
@@ -680,8 +828,8 @@
 		font-weight: 700;
 		line-height: 1;
 		padding: 2px 5px;
-		color: var(--danger);
-		border: 1px solid var(--danger-border);
+		color: var(--finding-sev, var(--danger));
+		border: 1px solid color-mix(in srgb, var(--finding-sev, var(--danger-border)) 55%, transparent);
 	}
 
 	.tree-row .count.done,
@@ -694,18 +842,62 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		padding: 6px 8px;
+		flex: 1;
+		min-width: 0;
+		padding: 6px 8px 6px 0;
 		font-size: 12.5px;
 		color: var(--text);
 		text-decoration: none;
 	}
 
 	.group-link:hover {
+		background: transparent;
+	}
+
+	.group-item {
+		border-radius: 0;
+	}
+
+	.group-item.open > .group-head-row {
 		background: var(--bg-card);
+	}
+
+	.group-head-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 0;
+	}
+
+	.group-head-row:hover {
+		background: var(--bg-card);
+	}
+
+	.group-caret {
+		flex-shrink: 0;
+		width: 20px;
+		padding: 8px 0 0;
+		border: 0;
+		background: transparent;
+		color: var(--text-faint);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+	}
+
+	.group-caret:hover {
+		color: var(--text);
+	}
+
+	.group-files {
+		display: flex;
+		flex-direction: column;
+		padding: 0 0 4px 8px;
 	}
 
 	.row {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 6px;
 		align-items: center;
 	}
@@ -726,15 +918,33 @@
 		flex-shrink: 0;
 	}
 
+	.group-link .title {
+		display: block;
+		line-height: 1.35;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+
+	.group-link .row > .count {
+		margin-left: auto;
+	}
+
 	.meta {
 		font-size: 11px;
 		color: var(--text-faint);
+		padding-left: 0;
+	}
+
+	.group-files .tree-row.file.active {
+		background: var(--accent-soft);
 	}
 
 	.findings-panel {
+		flex: 1;
+		min-height: 0;
 		display: flex;
 		flex-direction: column;
-		height: calc(100vh - 160px);
+		overflow: hidden;
 	}
 
 	.findings-head {

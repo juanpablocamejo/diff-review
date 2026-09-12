@@ -30,7 +30,8 @@ export function loadLastMeta(): ReportMeta {
 		source,
 		repo: String(parsed.repo || ''),
 		branch: String(parsed.branch || ''),
-		base: String(parsed.base || 'develop')
+		base: String(parsed.base || 'develop'),
+		remoteUrl: parsed.remoteUrl ? String(parsed.remoteUrl) : undefined
 	};
 }
 
@@ -42,7 +43,8 @@ export function saveLastMeta(meta: ReportMeta) {
 				source: meta.source === 'url' ? 'url' : 'local',
 				repo: meta.repo,
 				branch: meta.branch,
-				base: meta.base
+				base: meta.base,
+				...(meta.remoteUrl ? { remoteUrl: meta.remoteUrl } : {})
 			})
 		);
 	} catch {

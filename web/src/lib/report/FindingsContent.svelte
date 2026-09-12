@@ -73,6 +73,16 @@
 		onsetpublishplatform: (platform: PublishPlatform) => void;
 		oncopypublish: () => void;
 	} = $props();
+
+	function fileName(path: string) {
+		const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+		return slash >= 0 ? path.slice(slash + 1) : path;
+	}
+
+	function fileDir(path: string) {
+		const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+		return slash >= 0 ? path.slice(0, slash) : '';
+	}
 </script>
 
 {#if showFixPrompt}
@@ -129,7 +139,16 @@
 			<div class="detail-head-left">
 				<span class="number">#{activeFinding.number}</span>
 				<span class="badge" style:color={activeFinding.badgeColor}>{activeFinding.badge}</span>
-				<span class="file-line">{activeFinding.fileLine}</span>
+				<span class="file-line" title={activeFinding.fileLine}>
+					<span class="file-name"
+						>{fileName(activeFinding.file)}{activeFinding.line != null
+							? `:${activeFinding.line}`
+							: ''}</span
+					>
+					{#if fileDir(activeFinding.file)}
+						<span class="file-dir">{fileDir(activeFinding.file)}</span>
+					{/if}
+				</span>
 			</div>
 			<div class="decision-group">
 				<button type="button" class:on={activeFinding.decided && !activeFinding.fixSelected} onclick={onignore}
@@ -342,9 +361,27 @@
 	}
 
 	.file-line {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		min-width: 0;
+		font-family: var(--mono);
+	}
+
+	.file-name {
+		font-size: 12px;
+		color: var(--text);
+		font-weight: 600;
+		flex-shrink: 0;
+	}
+
+	.file-dir {
 		font-size: 11px;
 		color: var(--text-faint);
-		font-family: var(--mono);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
 	}
 
 	.decision-group {

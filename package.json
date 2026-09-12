@@ -1,17 +1,49 @@
 {
   "name": "diff-review",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
   "description": "Local UI to prompt a coding agent for a branch review and browse the result.",
+  "type": "module",
+  "bin": {
+    "diff-review": "bin/diff-review.mjs"
+  },
+  "files": [
+    "bin",
+    "web/build",
+    "schema.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test lib/*.test.mjs",
-    "web:install": "bun --cwd web install",
-    "web:dev": "bun --cwd web run dev",
-    "web:build": "bun --cwd web run build",
-    "web:check": "bun --cwd web run type-check"
+    "web:install": "npm --prefix web install",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "web:check": "npm --prefix web run type-check",
+    "build": "npm run web:build",
+    "prepack": "npm run build",
+    "start": "node bin/diff-review.mjs",
+    "diff-review": "node bin/diff-review.mjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "keywords": [
+    "code-review",
+    "git",
+    "diff",
+    "local",
+    "sveltekit"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juanpablocamejo/diff-review.git"
+  },
+  "bugs": {
+    "url": "https://github.com/juanpablocamejo/diff-review/issues"
+  },
+  "homepage": "https://github.com/juanpablocamejo/diff-review#readme",
+  "license": "MIT",
+  "dependencies": {
+    "@bindrs/rfd": "^2.2.2"
   }
 }

@@ -1,6 +1,5 @@
 import { extractBranchDiff } from '$review/lib/extract.mjs';
-import { assertGitRepo, listBranches, showFileLines } from '$review/lib/git.mjs';
-import { pickFolder } from '$review/lib/pick-folder.mjs';
+import { assertGitRepo, getRemoteUrl, listBranches, showFileLines } from '$review/lib/git.mjs';
 import {
 	ensureRemoteWorktree,
 	listRemoteBranches,
@@ -9,6 +8,7 @@ import {
 } from '$review/lib/remote-repo.mjs';
 import { buildReview } from '$review/lib/review.mjs';
 import type { ReviewDocument, ReviewFile, RepoSource } from '$lib/report/types';
+import { pickFolder } from './pick-folder';
 
 export type RepoInfo = {
 	repo: string;
@@ -16,6 +16,8 @@ export type RepoInfo = {
 	branches: string[];
 	current: string;
 	defaultBase: string;
+	/** Presente en repos locales con remote configurado. */
+	remoteUrl?: string;
 };
 
 export function describeGitError(err: unknown): string {
@@ -41,14 +43,15 @@ export function loadRepoInfo(source: RepoSource | undefined, repo: string): Repo
 	if (resolvedSource === 'url') {
 		const url = normalizeGitUrl(repo);
 		const listed = listRemoteBranches(url);
-		return { repo: url, source: 'url', ...listed };
+		return { repo: url, source: 'url', remoteUrl: url, ...listed };
 	}
 	const resolved = assertGitRepo(repo);
 	const listed = listBranches(resolved);
-	return { repo: resolved, source: 'local', ...listed };
+	const remoteUrl = getRemoteUrl(resolved) || undefined;
+	return { repo: resolved, source: 'local', remoteUrl, ...listed };
 }
 
-export function pickLocalFolder(): string | null {
+export async function pickLocalFolder(): Promise<string | null> {
 	return pickFolder();
 }
 

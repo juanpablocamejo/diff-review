@@ -97,6 +97,8 @@ export type ReportMeta = {
 	repo: string;
 	branch: string;
 	base: string;
+	/** Remote git URL (origin); fallback si la carpeta local no existe en otra máquina. */
+	remoteUrl?: string;
 };
 
 /** Documento completo tal como se guarda en localStorage. */

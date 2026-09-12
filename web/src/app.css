@@ -36,8 +36,8 @@
 
 	/* Severidad de hallazgos. */
 	--sev-high: #ff9a9a;
-	--sev-med: #e2c67e;
-	--sev-low: #6ea8fe;
+	--sev-med: #f08a5a;
+	--sev-low: #c4b86a;
 	--sev-nit: #7f8aa3;
 
 	/* Diff. */
@@ -100,8 +100,8 @@
 	--kind-infra: #c1690f;
 
 	--sev-high: #c92a2a;
-	--sev-med: #a5720a;
-	--sev-low: #2f6fe0;
+	--sev-med: #c44d1a;
+	--sev-low: #8b7d2e;
 	--sev-nit: #6b7280;
 
 	--diff-add-bg: #e6f7ec;

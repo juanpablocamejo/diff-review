@@ -1,10 +1,11 @@
 <script lang="ts">
 	import type { FileSection, GroupSectionModel } from './build';
 	import type { DecoratedFinding } from './decorate';
-	import { fileAnchor, groupAnchor } from './anchors';
+	import { fileAnchor, groupAnchor, groupFileAnchor } from './anchors';
 	import DiffView from './DiffView.svelte';
 	import FileIcon from './FileIcon.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
+	import { maxFindingAccent } from './severity';
 
 	let {
 		intentText,
@@ -30,7 +31,8 @@
 		onopenfindings,
 		onresizeexplanation,
 		onresizesplit,
-		onrequestlines
+		onrequestlines,
+		onactivefile
 	}: {
 		intentText: string;
 		notes: string[];
@@ -57,9 +59,82 @@
 		onresizeexplanation: (dx: number) => void;
 		onresizesplit: (ratio: number) => void;
 		onrequestlines?: (path: string) => Promise<string[] | null>;
+		/** Archivo más visible al scrollear Explore (para el sidebar). */
+		onactivefile?: (file: { groupId: string; path: string } | null) => void;
 	} = $props();
+
+	let exploreRoot = $state<HTMLElement | null>(null);
+
+	function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
+		let p = el?.parentElement ?? null;
+		while (p) {
+			const style = getComputedStyle(p);
+			if (/(auto|scroll)/.test(style.overflowY) || /(auto|scroll)/.test(style.overflow)) return p;
+			p = p.parentElement;
+		}
+		return null;
+	}
+
+	$effect(() => {
+		const rootEl = exploreRoot;
+		const notify = onactivefile;
+		if (!rootEl || !notify) return;
+
+		const scrollRoot = scrollParentOf(rootEl);
+		const visible = new Map<Element, number>();
+
+		const publish = () => {
+			let best: { el: Element; ratio: number } | null = null;
+			for (const [el, ratio] of visible) {
+				if (!best || ratio > best.ratio) best = { el, ratio };
+			}
+			if (!best || best.ratio <= 0) {
+				notify(null);
+				return;
+			}
+			const groupId = (best.el as HTMLElement).dataset.groupId;
+			const path = (best.el as HTMLElement).dataset.path;
+			if (groupId && path) notify({ groupId, path });
+			else notify(null);
+		};
+
+		const observer = new IntersectionObserver(
+			(entries) => {
+				for (const entry of entries) {
+					if (entry.isIntersecting && entry.intersectionRatio > 0) {
+						visible.set(entry.target, entry.intersectionRatio);
+					} else {
+						visible.delete(entry.target);
+					}
+				}
+				publish();
+			},
+			{
+				root: scrollRoot,
+				rootMargin: '-12% 0px -55% 0px',
+				threshold: [0, 0.1, 0.25, 0.5, 0.75, 1]
+			}
+		);
+
+		const watch = () => {
+			observer.disconnect();
+			visible.clear();
+			rootEl.querySelectorAll<HTMLElement>('[data-explore-file]').forEach((el) => observer.observe(el));
+		};
+
+		watch();
+		const mo = new MutationObserver(watch);
+		mo.observe(rootEl, { childList: true, subtree: true });
+
+		return () => {
+			mo.disconnect();
+			observer.disconnect();
+			notify(null);
+		};
+	});
 </script>
 
+<div class="explore" bind:this={exploreRoot}>
 {#if hasBlockers}
 	<p class="blocker-bar">{blockerBannerText}</p>
 {/if}
@@ -72,12 +147,38 @@
 	{/each}
 </section>
 
-{#snippet fileBlock(file: FileSection, defaultOpen = true)}
+{#snippet findingsControl(total: number, allDone: boolean, maxAccent: string, path: string)}
+	<button
+		type="button"
+		class="findings-control"
+		style:--finding-sev={allDone ? null : maxAccent}
+		onclick={() => onopenfindings(path)}
+	>
+		{#if allDone}
+			<span class="count-badge done">✓</span>
+			<span class="count-label">{total} hallazgo{total === 1 ? '' : 's'}</span>
+		{:else}
+			<span class="count-badge open">{total}</span>
+			<span class="count-label open">hallazgo{total === 1 ? '' : 's'}</span>
+		{/if}
+		<span class="arrow">→</span>
+	</button>
+{/snippet}
+
+{#snippet fileBlock(file: FileSection, defaultOpen = true, groupId: string | null = null)}
 		{@const open = fileOpen[file.path] ?? defaultOpen}
 		{@const total = file.allFindings.length}
 		{@const doneCount = file.allFindings.filter((f) => decided[f.id]).length}
 		{@const allDone = total > 0 && doneCount === total}
-		<div id={fileAnchor(file.path)} class="file-section" class:collapsed={!open}>
+		{@const maxAccent = maxFindingAccent(file.allFindings)}
+		<div
+			id={groupId ? groupFileAnchor(groupId, file.path) : fileAnchor(file.path)}
+			class="file-section"
+			class:collapsed={!open}
+			data-explore-file={groupId ? '' : undefined}
+			data-group-id={groupId ?? undefined}
+			data-path={file.path}
+		>
 			<div
 				class="file-head"
 				style:grid-template-columns={showExplanations ? `minmax(0,1fr) 6px ${explanationWidth}px` : 'minmax(0,1fr)'}
@@ -94,32 +195,14 @@
 						<span class="change-label">{file.changeLabel}</span>
 					</button>
 					{#if total > 0 && !showExplanations}
-						<button type="button" class="findings-control" onclick={() => onopenfindings(file.path)}>
-							{#if allDone}
-								<span class="count-badge done">✓</span>
-								<span class="count-label">{total} hallazgo{total === 1 ? '' : 's'}</span>
-							{:else}
-								<span class="count-badge open">{total}</span>
-								<span class="count-label open">hallazgo{total === 1 ? '' : 's'}</span>
-							{/if}
-							<span class="arrow">→</span>
-						</button>
+						{@render findingsControl(total, allDone, maxAccent, file.path)}
 					{/if}
 				</div>
 				{#if showExplanations}
 					<div class="file-head-gutter"></div>
 					<div class="file-head-explain">
 						{#if total > 0}
-							<button type="button" class="findings-control" onclick={() => onopenfindings(file.path)}>
-								{#if allDone}
-									<span class="count-badge done">✓</span>
-									<span class="count-label">{total} hallazgo{total === 1 ? '' : 's'}</span>
-								{:else}
-									<span class="count-badge open">{total}</span>
-									<span class="count-label open">hallazgo{total === 1 ? '' : 's'}</span>
-								{/if}
-								<span class="arrow">→</span>
-							</button>
+							{@render findingsControl(total, allDone, maxAccent, file.path)}
 						{/if}
 					</div>
 				{/if}
@@ -152,7 +235,7 @@
 						<ResizeHandle ondrag={onresizeexplanation} />
 						<div class="explain-col">
 							{#each file.rows as row (row.id)}
-								<div class="explain-row" style:border-left-color={row.accentColor}>
+								<div class="explain-row">
 									<div class="explain-top">
 										<span class="lines">{row.lines}</span>
 										<span class="op">{row.opLabel}</span>
@@ -172,15 +255,19 @@
 
 {#each groupSections as g, gi (g.id)}
 	<section id={groupAnchor(g.id)} class="group" style:border-top={gi > 0 ? '1px solid var(--border-soft)' : 'none'}>
-		<header class="group-head">
-			<span class="number">#{g.number}</span>
-			<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
-			<h2>{g.title}</h2>
-		</header>
-		<p class="group-intent">{g.intentText}</p>
+		<div class="group-sticky">
+			<header class="group-head">
+				<span class="number">#{g.number}</span>
+				<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
+				<h2>{g.title}</h2>
+			</header>
+			{#if g.intentText}
+				<p class="group-intent">{g.intentText}</p>
+			{/if}
+		</div>
 
 		{#each g.fileSections as file (file.path)}
-			{@render fileBlock(file, true)}
+			{@render fileBlock(file, true, g.id)}
 		{/each}
 	</section>
 {/each}
@@ -223,8 +310,13 @@
 		</div>
 	</section>
 {/if}
+</div>
 
 <style>
+	.explore {
+		display: contents;
+	}
+
 	.blocker-bar {
 		margin: 0;
 		padding: 10px 14px;
@@ -272,10 +364,25 @@
 		padding: 18px 0 6px;
 	}
 
+	.group-sticky {
+		position: sticky;
+		/* Compensa el padding de .content para que no quede hueco arriba al scrollear. */
+		top: -14px;
+		z-index: 4;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin: 0 -20px;
+		padding: 14px 20px 12px;
+		background: var(--bg);
+		border-bottom: 1px solid var(--border-soft);
+	}
+
 	.group-head {
 		display: flex;
 		align-items: baseline;
 		gap: 10px;
+		flex-wrap: wrap;
 	}
 
 	.group-head .number {
@@ -287,11 +394,12 @@
 
 	.group-head h2 {
 		margin: 0;
-		font-size: 16px;
+		font-size: 15px;
 		font-weight: 650;
 		color: var(--text);
 		text-transform: none;
 		letter-spacing: normal;
+		line-height: 1.3;
 	}
 
 	.kind-chip {
@@ -305,9 +413,10 @@
 
 	.group-intent {
 		margin: 0;
-		font-size: 13px;
+		font-size: 12.5px;
 		color: var(--text-dim);
-		line-height: 1.5;
+		line-height: 1.45;
+		max-width: 80ch;
 	}
 
 	.loose .kind-chip {
@@ -415,8 +524,8 @@
 	}
 
 	.count-badge.open {
-		background: var(--accent-soft);
-		color: var(--publish-text);
+		background: color-mix(in srgb, var(--finding-sev) 22%, transparent);
+		color: var(--finding-sev);
 	}
 
 	.count-label {
@@ -430,7 +539,7 @@
 
 	.arrow {
 		font-size: 14px;
-		color: var(--accent);
+		color: var(--finding-sev, var(--accent));
 	}
 
 	.file-grid {
@@ -457,7 +566,6 @@
 	.explain-row {
 		padding: 10px 14px;
 		border-bottom: 1px solid var(--border-soft);
-		border-left: 3px solid transparent;
 	}
 
 	.explain-top {

@@ -12,9 +12,9 @@
 		type SkillAgent
 	} from '$lib/report/prompts';
 	import { uncoveredFiles } from '$lib/report/coverage';
-	import { coerceDocument, hasUsableDiffs } from '$lib/report/document';
+	import { coerceDocument, hasUsableDiffs, parseReportMeta } from '$lib/report/document';
 	import { hydrateFromGit, loadRepo, pickLocalFolder } from '$lib/report/git.remote';
-	import { loadLastMeta, loadReportsIndex, saveLastMeta, saveReport } from '$lib/report/storage';
+	import { deleteReport, loadLastMeta, loadReportsIndex, saveLastMeta, saveReport } from '$lib/report/storage';
 	import { SAMPLE_DOCUMENT } from '$lib/report/sample';
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
 	import { validateDocument } from '$lib/report/validate';
@@ -34,6 +34,7 @@
 	let uncovered = $state<string[]>([]);
 	let coverageCopied = $state(false);
 	let reports = $state<SavedReportSummary[]>([]);
+	let reportMenuId = $state<string | null>(null);
 
 	let branches = $state<string[]>([]);
 	let folderError = $state('');
@@ -65,11 +66,6 @@
 		branches = [];
 		folderError = '';
 		updateMeta({ source, repo: keep ? meta.repo : '' });
-	}
-
-	function regeneratePrompt() {
-		promptText = buildPrompt(meta);
-		promptEdited = false;
 	}
 
 	function onPromptInput(e: Event) {
@@ -188,7 +184,8 @@
 				source: result.source,
 				repo: result.repo,
 				branch: nextBranch,
-				base: nextBase
+				base: nextBase,
+				remoteUrl: result.remoteUrl || (result.source === 'url' ? result.repo : meta.remoteUrl)
 			});
 		} catch (err) {
 			branches = [];
@@ -242,18 +239,8 @@
 		reader.readAsText(file);
 	}
 
-	function payloadMeta(raw: unknown): Pick<ReportMeta, 'repo' | 'branch' | 'base' | 'source'> {
-		const rec = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-		const repo = meta.repo.trim() || String(rec.repo || '').trim();
-		const source =
-			meta.source ||
-			(looksLikeGitUrl(repo) ? 'url' : 'local');
-		return {
-			source,
-			repo,
-			branch: meta.branch.trim() || String(rec.branch || '').trim(),
-			base: (meta.base || 'develop').trim() || String(rec.baseBranch || rec.base || 'develop').trim()
-		};
+	function payloadMeta(raw: unknown): ReportMeta {
+		return parseReportMeta(raw, meta);
 	}
 
 	async function ingestPayload(raw: unknown) {
@@ -266,74 +253,140 @@
 		let doc = coerceDocument(raw);
 		const ctx = payloadMeta(raw);
 
-		if (ctx.repo && ctx.branch) {
-			if (ctx.source === 'local' && !looksLikePath(ctx.repo)) {
-				dropErrors = [
-					`"${ctx.repo}" no es una ruta. Pegá la ruta absoluta del repo (ej. C:\\tienda-argenta\\tienda-argenta-2) o cambiá a URL remota.`
-				];
-				return;
-			}
-			if (ctx.source === 'url' && !looksLikeGitUrl(ctx.repo)) {
-				dropErrors = [
-					`"${ctx.repo}" no parece una URL git. Usá https://… / git@… o cambiá a carpeta local.`
-				];
-				return;
-			}
-			hydrating = true;
-			dropErrors = [];
-			try {
-				doc = await hydrateFromGit({
-					repo: ctx.repo,
-					branch: ctx.branch,
-					base: ctx.base || 'develop',
-					source: ctx.source,
-					payload: {
-						intent: doc.intent,
-						groups: doc.groups,
-						blocks: doc.blocks,
-						findings: doc.findings,
-						skipped: doc.skipped,
-						notes: doc.notes
-					}
-				});
-			} catch (err) {
-				if (!hasUsableDiffs(doc)) {
-					dropErrors = ['No se pudo calcular el diff con git: ' + errMessage(err)];
-					hydrating = false;
-					return;
-				}
-				doc = {
-					...doc,
-					notes: [...doc.notes, 'No se pudo refrescar el diff con git: ' + errMessage(err)]
-				};
-			} finally {
-				hydrating = false;
-			}
-		} else if (!hasUsableDiffs(doc)) {
-			dropErrors = [
-				ctx.source === 'url'
-					? 'Indicá la URL del repo y el branch para que la herramienta calcule el diff con git.'
-					: 'Indicá la ruta absoluta del repo y el branch para que la herramienta calcule el diff con git.'
-			];
-			return;
-		}
-
-		if (ctx.repo || ctx.branch) {
+		// Autocompletar el formulario con lo que vino en el JSON.
+		if (ctx.repo || ctx.branch || ctx.base || ctx.remoteUrl) {
 			updateMeta({
 				source: ctx.source,
 				repo: ctx.repo || meta.repo,
 				branch: ctx.branch || meta.branch,
-				base: ctx.base || meta.base
+				base: ctx.base || meta.base,
+				remoteUrl: ctx.remoteUrl || meta.remoteUrl
 			});
 		}
+
+		const payload = {
+			intent: doc.intent,
+			groups: doc.groups,
+			blocks: doc.blocks,
+			findings: doc.findings,
+			skipped: doc.skipped,
+			notes: doc.notes
+		};
+
+		type Attempt = { source: RepoSource; repo: string };
+		const attempts: Attempt[] = [];
+		const pushAttempt = (source: RepoSource, repo: string) => {
+			const r = repo.trim();
+			if (!r) return;
+			if (attempts.some((a) => a.source === source && a.repo === r)) return;
+			attempts.push({ source, repo: r });
+		};
+
+		if (ctx.branch) {
+			if (ctx.source === 'local' && looksLikePath(ctx.repo)) pushAttempt('local', ctx.repo);
+			else if (ctx.source === 'url' && looksLikeGitUrl(ctx.repo)) pushAttempt('url', ctx.repo);
+			else if (looksLikeGitUrl(ctx.repo)) pushAttempt('url', ctx.repo);
+			else if (looksLikePath(ctx.repo)) pushAttempt('local', ctx.repo);
+
+			const remote = (ctx.remoteUrl || '').trim();
+			if (remote && looksLikeGitUrl(remote)) pushAttempt('url', remote);
+		}
+
+		if (attempts.length && ctx.branch) {
+			hydrating = true;
+			dropErrors = [];
+			const errors: string[] = [];
+			let hydrated = false;
+			let discoveredRemote = ctx.remoteUrl;
+			try {
+				for (const attempt of attempts) {
+					try {
+						doc = await hydrateFromGit({
+							repo: attempt.repo,
+							branch: ctx.branch,
+							base: ctx.base || 'develop',
+							source: attempt.source,
+							payload
+						});
+						hydrated = true;
+						if (attempt.source === 'url') {
+							discoveredRemote = discoveredRemote || attempt.repo;
+						} else if (!discoveredRemote) {
+							try {
+								const info = await loadRepo({ source: 'local', repo: attempt.repo });
+								if (info.remoteUrl) discoveredRemote = info.remoteUrl;
+							} catch {
+								/* sin remote */
+							}
+						}
+						break;
+					} catch (err) {
+						errors.push(`${attempt.source === 'url' ? 'URL' : 'local'}: ${errMessage(err)}`);
+					}
+				}
+				if (!hydrated) {
+					if (!hasUsableDiffs(doc)) {
+						dropErrors = [
+							'No se pudo calcular el diff con git.',
+							...errors.map((e) => `· ${e}`)
+						];
+						return;
+					}
+					doc = {
+						...doc,
+						notes: [...doc.notes, 'No se pudo refrescar el diff con git: ' + errors.join(' | ')]
+					};
+				}
+			} finally {
+				hydrating = false;
+			}
+
+			if (discoveredRemote) {
+				updateMeta({ remoteUrl: discoveredRemote });
+			}
+
+			const reportMeta: ReportMeta = {
+				source: ctx.source,
+				repo: ctx.repo || meta.repo,
+				branch: ctx.branch || meta.branch,
+				base: ctx.base || meta.base,
+				remoteUrl: discoveredRemote || meta.remoteUrl
+			};
+
+			const missing = uncoveredFiles(doc);
+			if (missing.length) {
+				pendingDoc = doc;
+				uncovered = missing;
+				dropErrors = [];
+				updateMeta(reportMeta);
+				return;
+			}
+			openNewReport(doc, reportMeta);
+			return;
+		} else if (!hasUsableDiffs(doc)) {
+			dropErrors = [
+				'Indicá repo (ruta o URL) y branch, o incluí meta.remoteUrl en el JSON, para calcular el diff con git.'
+			];
+			return;
+		}
+
+		const reportMeta: ReportMeta = {
+			source: ctx.source,
+			repo: ctx.repo || meta.repo,
+			branch: ctx.branch || meta.branch,
+			base: ctx.base || meta.base,
+			remoteUrl: ctx.remoteUrl || meta.remoteUrl
+		};
+
 		const missing = uncoveredFiles(doc);
 		if (missing.length) {
 			pendingDoc = doc;
 			uncovered = missing;
 			dropErrors = [];
+			updateMeta(reportMeta);
 			return;
 		}
-		openNewReport(doc);
+		openNewReport(doc, reportMeta);
 	}
 
 	function openNewReport(doc: ReviewDocument, reportMeta = meta) {
@@ -358,7 +411,28 @@
 		if (Number.isNaN(d.getTime())) return iso;
 		return d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 	}
+
+	function toggleReportMenu(id: string) {
+		reportMenuId = reportMenuId === id ? null : id;
+	}
+
+	function removeReport(item: SavedReportSummary) {
+		const label = item.branch || 'este reporte';
+		if (!confirm(`¿Eliminar “${label}”? No se puede deshacer.`)) return;
+		deleteReport(item.id);
+		reports = loadReportsIndex();
+		reportMenuId = null;
+	}
 </script>
+
+<svelte:window
+	onclick={() => {
+		if (reportMenuId) reportMenuId = null;
+	}}
+	onkeydown={(e) => {
+		if (e.key === 'Escape') reportMenuId = null;
+	}}
+/>
 
 <div class="page">
 	<header class="topbar">
@@ -470,7 +544,6 @@
 
 			<div class="section-head">
 				<h2>2. Prompt</h2>
-				<button type="button" class="link" onclick={regeneratePrompt}>↺ Regenerar desde el contexto</button>
 			</div>
 			<div class="mode-toggle">
 				<button type="button" class:on={promptViewMode === 'full'} onclick={() => (promptViewMode = 'full')}
@@ -508,7 +581,10 @@
 			{/if}
 
 			<h2 class="result-head">3. Resultado</h2>
-			<p class="hint-text">Soltá acá el <code>{OUTPUT_FILENAME}</code> que generó el agente. El diff lo completa git.</p>
+			<p class="hint-text"
+				>Soltá acá el <code>{OUTPUT_FILENAME}</code> que generó el agente. Si trae <code>meta</code>, se
+				autocompletan repo y branches.</p
+			>
 			<div
 				class="dropzone"
 				class:drag={dragOver}
@@ -573,7 +649,7 @@
 			{#if reports.length}
 				<ul class="report-list">
 					{#each reports as item (item.id)}
-						<li>
+						<li class="report-item">
 							<a class="report-card" href={resolve(`/report/${item.id}`)}>
 								<span class="report-top">
 									<strong>{item.branch || '—'}</strong>
@@ -593,6 +669,42 @@
 									<p class="report-intent">{item.intent}</p>
 								{/if}
 							</a>
+							<div class="report-actions">
+								<button
+									type="button"
+									class="kebab"
+									title="Más acciones"
+									aria-label="Más acciones para {item.branch || 'reporte'}"
+									aria-expanded={reportMenuId === item.id}
+									aria-haspopup="menu"
+									onclick={(e) => {
+										e.preventDefault();
+										e.stopPropagation();
+										toggleReportMenu(item.id);
+									}}
+								>
+									<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+										<circle cx="8" cy="3.5" r="1.25" fill="currentColor" />
+										<circle cx="8" cy="8" r="1.25" fill="currentColor" />
+										<circle cx="8" cy="12.5" r="1.25" fill="currentColor" />
+									</svg>
+								</button>
+								{#if reportMenuId === item.id}
+									<div class="report-menu" role="menu" tabindex="-1">
+										<button
+											type="button"
+											class="menu-item danger"
+											role="menuitem"
+											onclick={(e) => {
+												e.stopPropagation();
+												removeReport(item);
+											}}
+										>
+											Eliminar…
+										</button>
+									</div>
+								{/if}
+							</div>
 						</li>
 					{/each}
 				</ul>
@@ -1007,18 +1119,83 @@
 		gap: 8px;
 	}
 
-	.report-card {
-		display: block;
-		padding: 12px 14px;
+	.report-item {
+		position: relative;
+		display: flex;
+		align-items: stretch;
 		border: 1px solid var(--border);
 		background: var(--bg-card);
+	}
+
+	.report-item:hover {
+		border-color: #33507a;
+		background: var(--bg-card-hover);
+	}
+
+	.report-card {
+		display: block;
+		flex: 1;
+		min-width: 0;
+		padding: 12px 8px 12px 14px;
 		text-decoration: none;
 		color: var(--text);
 	}
 
-	.report-card:hover {
-		border-color: #33507a;
-		background: var(--bg-card-hover);
+	.report-actions {
+		position: relative;
+		flex-shrink: 0;
+		padding: 8px 8px 0 0;
+	}
+
+	.kebab {
+		width: 26px;
+		height: 26px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--text-faint);
+		padding: 0;
+		cursor: pointer;
+	}
+
+	.kebab:hover {
+		border-color: var(--border);
+		color: var(--text);
+		background: var(--bg);
+	}
+
+	.report-menu {
+		position: absolute;
+		top: calc(100% - 2px);
+		right: 8px;
+		z-index: 20;
+		min-width: 140px;
+		padding: 4px;
+		border: 1px solid var(--border);
+		background: var(--bg-card);
+		box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
+	}
+
+	.report-menu .menu-item {
+		display: block;
+		width: 100%;
+		padding: 8px 10px;
+		border: 0;
+		background: transparent;
+		color: var(--text);
+		font-size: 12.5px;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.report-menu .menu-item:hover {
+		background: var(--accent-soft);
+	}
+
+	.report-menu .menu-item.danger {
+		color: var(--danger);
 	}
 
 	.report-top {

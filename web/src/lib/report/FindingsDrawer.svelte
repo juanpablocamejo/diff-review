@@ -23,6 +23,19 @@
 	} = $props();
 
 	const open = $derived(!!filePath);
+
+	function fileName(path: string) {
+		const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+		return slash >= 0 ? path.slice(slash + 1) : path;
+	}
+
+	function fileDir(path: string) {
+		const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+		return slash >= 0 ? path.slice(0, slash) : '';
+	}
+
+	const name = $derived(filePath ? fileName(filePath) : '');
+	const dir = $derived(filePath ? fileDir(filePath) : '');
 </script>
 
 {#if open}
@@ -32,9 +45,14 @@
 <div class="drawer" class:open>
 	{#if filePath}
 		<div class="drawer-head">
-			<span class="drawer-title">
+			<span class="drawer-title" title={filePath}>
 				<FileIcon path={filePath} />
-				<span class="path">{filePath}</span>
+				<span class="file-ref">
+					<span class="name">{name}</span>
+					{#if dir}
+						<span class="dir">{dir}</span>
+					{/if}
+				</span>
 			</span>
 			<button type="button" class="close" onclick={onclose}>✕</button>
 		</div>
@@ -130,7 +148,23 @@
 		flex: 1;
 	}
 
-	.path {
+	.file-ref {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.name {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--text);
+		font-family: var(--mono);
+		flex-shrink: 0;
+	}
+
+	.dir {
 		font-size: 11px;
 		color: var(--text-faint);
 		font-family: var(--mono);
