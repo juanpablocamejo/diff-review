@@ -1,5 +1,5 @@
 {
-  "name": "diff-review",
+  "name": "@jpkme/diff-review",
   "version": "0.1.0",
   "description": "Local UI to prompt a coding agent for a branch review and browse the result.",
   "type": "module",
@@ -20,7 +20,7 @@
     "web:build": "npm --prefix web run build",
     "web:check": "npm --prefix web run type-check",
     "build": "npm run web:build",
-    "prepack": "npm run build",
+    "prepack": "npm run web:install && npm run build",
     "start": "node bin/diff-review.mjs",
     "diff-review": "node bin/diff-review.mjs"
   },
@@ -34,6 +34,7 @@
     "local",
     "sveltekit"
   ],
+  "author": "jpkme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/juanpablocamejo/diff-review.git"
@@ -43,6 +44,9 @@
   },
   "homepage": "https://github.com/juanpablocamejo/diff-review#readme",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@bindrs/rfd": "^2.2.2"
   }

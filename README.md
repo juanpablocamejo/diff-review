@@ -12,14 +12,14 @@ Requiere **Node ≥ 20** y **git** en el PATH. En Windows/macOS/Linux x64 el di�
 de carpeta usa `@bindrs/rfd` (nativo); si el addon no está para tu plataforma, hay fallback.
 
 ```bash
-npm install -g diff-review
+npm install -g @jpkme/diff-review
 diff-review
 ```
 
 O sin instalar:
 
 ```bash
-npx diff-review
+npx @jpkme/diff-review
 ```
 
 Abre `http://127.0.0.1:5190`. Opciones: `--port`, `--host`, `--no-open`.
@@ -91,8 +91,9 @@ Tests del pipeline: `npm test` (`node --test lib/*.test.mjs`).
 ## Publicar
 
 ```bash
-npm run build    # o se corre solo en prepack
+npm run build    # o se corre solo en prepack (incluye web:install)
 npm publish
 ```
 
+Paquete: `@jpkme/diff-review` (el comando global sigue siendo `diff-review`).
 El tarball incluye `web/build` (sin depender de las deps de Svelte en runtime).
