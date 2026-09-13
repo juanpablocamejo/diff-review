@@ -518,7 +518,7 @@ export function buildHtml(report: SavedReport, options: ExportOptions = {}): str
     ${findingsHtml}
   </section>
   ${skippedHtml}
-  <p class="footer">Generado con diff-review${mode === 'full' ? ' · export completo con snippets de diff' : ' · export resumen'}</p>
+  <p class="footer">Generado con diff-review</p>
 </body>
 </html>`;
 }

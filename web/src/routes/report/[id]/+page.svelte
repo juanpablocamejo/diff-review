@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { downloadReport, type ExportFormat, type ExportMode } from '$lib/report/export';
+	import { downloadReport, type ExportFormat } from '$lib/report/export';
 	import ReportView from '$lib/report/ReportView.svelte';
 	import { deleteReport, loadReportById } from '$lib/report/storage';
 	import type { SavedReport } from '$lib/report/types';
@@ -20,7 +20,6 @@
 	let showExplanations = $state(true);
 	let downloadOpen = $state(false);
 	let kebabOpen = $state(false);
-	let exportMode = $state<ExportMode>('full');
 
 	$effect(() => {
 		report = loadReportById(params.id);
@@ -46,7 +45,7 @@
 	function exportAs(format: ExportFormat) {
 		if (!report) return;
 		downloadOpen = false;
-		downloadReport(report, format, { mode: exportMode });
+		downloadReport(report, format);
 	}
 
 	function remove() {
@@ -209,23 +208,6 @@
 					</button>
 					{#if downloadOpen}
 						<div class="menu download-menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-							<div class="menu-mode" role="group" aria-label="Modo de exportación">
-								<button
-									type="button"
-									class:on={exportMode === 'summary'}
-									onclick={() => (exportMode = 'summary')}>Resumen</button
-								>
-								<button
-									type="button"
-									class:on={exportMode === 'full'}
-									onclick={() => (exportMode = 'full')}>Completo</button
-								>
-							</div>
-							<p class="menu-mode-hint">
-								{exportMode === 'full'
-									? 'Incluye snippets de diff por hallazgo (MD / HTML / PDF).'
-									: 'Solo texto e intención, sin diffs.'}
-							</p>
 							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('json')}>
 								<span class="fmt">JSON</span>
 								<span class="hint">para volver a importar</span>
@@ -375,43 +357,10 @@
 		left: auto;
 		right: 0;
 		min-width: 220px;
-		padding: 2px;
-	}
-
-	.menu-mode {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
+		padding: 4px;
+		display: flex;
+		flex-direction: column;
 		gap: 0;
-		margin: 1px 1px 2px;
-		border: 1px solid var(--border);
-	}
-
-	.menu-mode button {
-		border: 0;
-		background: transparent;
-		color: var(--text-dim);
-		font-size: 11px;
-		font-weight: 600;
-		padding: 3px 8px;
-		line-height: 1.15;
-		min-height: 0;
-		appearance: none;
-	}
-
-	.menu-mode button + button {
-		border-left: 1px solid var(--border);
-	}
-
-	.menu-mode button.on {
-		background: var(--accent-soft);
-		color: var(--text);
-	}
-
-	.menu-mode-hint {
-		margin: 0 6px 2px;
-		font-size: 10px;
-		color: var(--text-faint);
-		line-height: 1.25;
 	}
 
 	.menu-item {
@@ -430,9 +379,14 @@
 		cursor: pointer;
 	}
 
-	/* Altura fija + hover con la misma especificidad que el fondo base. */
+	/*
+	 * Hit-box = caja visible: overflow hidden evita que el texto del ítem anterior
+	 * capture el pointer sobre el siguiente (hover “atrasado”).
+	 */
 	.download-menu button.menu-item {
 		box-sizing: border-box;
+		position: relative;
+		z-index: 0;
 		display: flex;
 		flex-direction: row;
 		align-items: center;
@@ -440,10 +394,10 @@
 		gap: 8px;
 		margin: 0;
 		padding: 0 10px;
-		min-height: 0;
+		min-height: 44px;
 		height: 44px;
 		border: 0;
-		border-radius: 0;
+		border-radius: 2px;
 		background: transparent;
 		color: var(--text);
 		font: inherit;
@@ -455,9 +409,11 @@
 		cursor: pointer;
 		appearance: none;
 		-webkit-appearance: none;
+		overflow: hidden;
 	}
 
 	.download-menu button.menu-item:hover {
+		z-index: 1;
 		background: var(--accent-soft);
 	}
 
@@ -471,19 +427,23 @@
 
 	.menu-item .fmt {
 		font-weight: 600;
-		line-height: 1;
+		line-height: 1.2;
 		flex-shrink: 0;
 	}
 
 	.menu-item .hint {
 		font-size: 10.5px;
-		line-height: 1;
+		line-height: 1.2;
 		color: var(--text-faint);
+	}
+
+	.download-menu .menu-item .fmt,
+	.download-menu .menu-item .hint {
+		pointer-events: none;
 	}
 
 	.download-menu .menu-item .hint {
 		font-size: 10px;
-		line-height: 1;
 		text-align: right;
 		white-space: nowrap;
 		overflow: hidden;
