@@ -1,81 +1,18 @@
 import { hunkCovers, parseUnifiedDiff } from './diff';
 import { severityLabel } from './labels';
 import type { FindingSeverity, ReportMeta, ReviewDocument } from './types';
+import {
+	buildPrompt as buildPromptCore,
+	makeOutputFilename,
+	formatOutputStamp,
+	isOutputFilename,
+	OUTPUT_FILENAME_LEGACY,
+	OUTPUT_SCHEMA_BLOCK
+} from '$review/lib/prompt.mjs';
 
-/**
- * Compact shape the agent must emit. Same contract as schema.json / the UI validator —
- * not a substitute for it; just the prompt-facing example (filled meta via outputSchemaBlock).
- */
-export const OUTPUT_SCHEMA_BLOCK = `{
-  "meta": {
-    "source": "local|url",
-    "repo": "<absolute path or git URL>",
-    "branch": "<branch under review>",
-    "base": "develop",
-    "remoteUrl": "<origin URL; optional when source=url>"
-  },
-  "intent": "string",
-  "groups": [
-    {
-      "id": "g1",
-      "kind": "feat|fix|refactor|perf|test|chore|docs|infra",
-      "title": "string ≤72 chars, imperative, no kind prefix",
-      "intent": "string"
-    }
-  ],
-  "blocks": [
-    {
-      "id": "b1",
-      "group": "g1",
-      "file": "relative/path.ext",
-      "lines": "L40-58",
-      "side": "new|old",
-      "start": 40,
-      "end": 58,
-      "op": "add|mod|del|rename",
-      "what": "string",
-      "why": "string",
-      "source": "code|commit|pr|issue|inferred"
-    }
-  ],
-  "findings": [
-    {
-      "id": "f1",
-      "class": "risk|quality",
-      "severity": "high|med|low|nit",
-      "blocking": false,
-      "kind": "bug|race|auth|security|api-break|missing-test|perf|maintainability|docs|other",
-      "file": "relative/path.ext",
-      "line": 87,
-      "block": "b1",
-      "what": "string",
-      "fix": "string"
-    }
-  ],
-  "skipped": [
-    { "file": "relative/path-or-glob", "reason": "generated|lockfile|format|vendored|binary|trivial|ignored" }
-  ],
-  "notes": ["optional short limitations"]
-}`;
-
-/** Schema with meta already filled so the agent copies it as-is. */
-export function outputSchemaBlock(meta: ReportMeta): string {
-	const source = meta.source === 'url' ? 'url' : 'local';
-	const repo =
-		meta.repo.trim() || (source === 'url' ? '<git URL>' : '<absolute repo path>');
-	const branch = meta.branch.trim() || '<branch under review>';
-	const base = meta.base.trim() || 'develop';
-	const remoteUrl = meta.remoteUrl?.trim() || (source === 'url' ? repo : '');
-	const metaLines = [
-		`    "source": ${JSON.stringify(source)},`,
-		`    "repo": ${JSON.stringify(repo)},`,
-		`    "branch": ${JSON.stringify(branch)},`,
-		`    "base": ${JSON.stringify(base)}${remoteUrl ? ',' : ''}`
-	];
-	if (remoteUrl) metaLines.push(`    "remoteUrl": ${JSON.stringify(remoteUrl)}`);
-	const metaBlock = `"meta": {\n${metaLines.join('\n')}\n  }`;
-	return OUTPUT_SCHEMA_BLOCK.replace(/"meta": \{[\s\S]*?\n  \}/, metaBlock);
-}
+export { makeOutputFilename, formatOutputStamp, isOutputFilename, OUTPUT_SCHEMA_BLOCK };
+/** Legacy fijo; preferí `makeOutputFilename()` / `outputFilename` de sesión. */
+export const OUTPUT_FILENAME = OUTPUT_FILENAME_LEGACY;
 
 const RULES = `- Coverage (hard): every path in the diff MUST appear in "blocks" and/or "skipped". Prefer a skipped glob when many files share one reason.
 - Do NOT invent files, hunks, or line ranges that are not in the diff.
@@ -86,58 +23,10 @@ const RULES = `- Coverage (hard): every path in the diff MUST appear in "blocks"
 - "blocking": true ONLY if the branch should not merge as-is. Use only with class "risk".
 - Write human-readable strings (intent, title, what, why, fix, notes) in Spanish. Keep enums/ids/paths/JSON keys exactly as in the schema.`;
 
-const WORKFLOW_LOCAL = (base: string, branch: string) =>
-	`Workflow:
-1. Resolve the merge-base of \`${base}\` and \`${branch}\`.
-2. Run exactly: \`git diff ${base}...${branch}\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
-3. Read enough surrounding code (types, callers, tests) to judge behavior — not only the hunk lines.
-4. Emit the JSON file. Do not modify the repo.`;
-
-const WORKFLOW_URL = (base: string, branch: string) =>
-	`Workflow:
-1. If the repo is not local, clone it (or use whatever access you have). Do not modify it.
-2. Resolve the merge-base of \`${base}\` and \`${branch}\`.
-3. Run exactly: \`git diff ${base}...${branch}\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
-4. Read enough surrounding code (types, callers, tests) to judge behavior — not only the hunk lines.
-5. Emit the JSON file.`;
-
-/** File where the agent must write the JSON (UI fills diffs via git). */
-export const OUTPUT_FILENAME = 'diff-review-output.json';
-
-function outputInstructions(meta: ReportMeta): string {
-	return `Write the result to \`${OUTPUT_FILENAME}\` at the repo root.
-- One JSON object only: first character \`{\`, last character \`}\`.
-- No prose before/after, no markdown fences.
-- Shape (copy "meta" exactly as given):
-
-${outputSchemaBlock(meta)}
-
-Include "meta" with the source/repo/branch/base above (and origin "remoteUrl" when local). That lets someone reopen the report elsewhere without re-picking the repo.
-
-Do NOT include diffs or a "files" array — the tool computes them with git when opening the report. Do not invent hunks or paste patches into the JSON.
-
-When done, tell me that \`${OUTPUT_FILENAME}\` was written.`;
-}
-
-export function buildPrompt(meta: ReportMeta): string {
-	const repo =
-		meta.repo.trim() || (meta.source === 'url' ? '<git URL>' : '<absolute repo path>');
-	const branch = meta.branch.trim() || '<branch under review>';
-	const base = meta.base.trim() || 'develop';
-	const workflow = meta.source === 'url' ? WORKFLOW_URL(base, branch) : WORKFLOW_LOCAL(base, branch);
-
-	return `You are a senior code reviewer: strict but fair.
-
-Repo: ${repo}
-Branch under review: ${branch}
-Base (merge-base): ${base}
-
-${workflow}
-
-Rules:
-${RULES}
-
-${outputInstructions(meta)}`;
+export function buildPrompt(meta: ReportMeta, opts?: { outputFilename?: string }): string {
+	return buildPromptCore(meta, {
+		outputFilename: opts?.outputFilename || makeOutputFilename()
+	});
 }
 
 /** How many uncovered paths to list in the coverage prompt before truncating. */
@@ -147,9 +36,14 @@ const COVERAGE_LIST_LIMIT = 120;
  * Follow-up when files from the diff are missing from both blocks and skipped.
  * Asks for a full JSON rewrite (UI ingests whole documents, does not merge patches).
  */
-export function buildCoveragePromptText(meta: ReportMeta, missing: string[]): string {
+export function buildCoveragePromptText(
+	meta: ReportMeta,
+	missing: string[],
+	opts?: { outputFilename?: string }
+): string {
 	const branch = meta.branch.trim() || '<branch>';
 	const base = (meta.base || 'develop').trim();
+	const out = opts?.outputFilename || makeOutputFilename();
 	const shown = missing.slice(0, COVERAGE_LIST_LIMIT);
 	const rest = missing.length - shown.length;
 	const list = shown.map((path) => `- ${path}`).join('\n');
@@ -166,7 +60,7 @@ export function buildCoveragePromptText(meta: ReportMeta, missing: string[]): st
 		'',
 		`Human-readable strings in Spanish. Enums/ids/paths unchanged.`,
 		'',
-		`Rewrite \`${OUTPUT_FILENAME}\` with the full JSON object (same shape, first char \`{\`, last char \`}\`, no surrounding text).`
+		`Rewrite \`${out}\` with the full JSON object (same shape, first char \`{\`, last char \`}\`, no surrounding text).`
 	].join('\n');
 }
 
@@ -213,7 +107,7 @@ Workflow:
 Rules:
 ${RULES}
 
-Write the result to \`${OUTPUT_FILENAME}\` at the repo root.
+Write the result to \`diff-report_{branchTip}-{baseTip}_YYYYMMDD-HHmmss.json\` at the repo root (10-char tip SHAs; pick a fresh stamp when you run).
 - One JSON object only: first character \`{\`, last character \`}\`.
 - No prose before/after, no markdown fences.
 - Shape:
@@ -224,7 +118,7 @@ Include "meta" with source/repo/branch/base from the arguments. If the repo is l
 
 Do NOT include diffs or a "files" array — the tool computes them with git when opening the report.
 
-When done, say that \`${OUTPUT_FILENAME}\` was written.
+When done, say that the JSON file was written.
 
 > This file defines two commands. If your tool needs one file per command, split the section below into a second file "diff-review-fix.${ext}".
 

@@ -2,18 +2,32 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import {
 		buildCommandText,
 		buildCoveragePromptText,
 		buildPrompt,
 		buildSkillMarkdown,
-		OUTPUT_FILENAME,
+		formatOutputStamp,
+		isOutputFilename,
+		makeOutputFilename,
 		skillFilename,
 		type SkillAgent
 	} from '$lib/report/prompts';
 	import { uncoveredFiles } from '$lib/report/coverage';
 	import { coerceDocument, hasUsableDiffs, parseReportMeta } from '$lib/report/document';
-	import { hydrateFromGit, launchContext, loadRepo, pickLocalFolder } from '$lib/report/git.remote';
+	import {
+		detectOutput,
+		hydrateFromGit,
+		launchContext,
+		loadDetectedOutput,
+		loadRepo,
+		outputName,
+		pendingImport,
+		pickLocalFolder,
+		pickReviewFile
+	} from '$lib/report/git.remote';
+	import type { DetectedOutput } from '$lib/report/git.remote';
 	import { deleteReport, loadLastMeta, loadReportsIndex, saveLastMeta, saveReport } from '$lib/report/storage';
 	import { SAMPLE_DOCUMENT } from '$lib/report/sample';
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
@@ -22,9 +36,12 @@
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
 	let meta = $state<ReportMeta>({ source: 'local', repo: '', branch: '', base: 'develop' });
+	let outputStamp = $state(formatOutputStamp());
+	let outputFilename = $state(makeOutputFilename({ stamp: outputStamp }));
 	let promptText = $state('');
 	let promptEdited = $state(false);
 	let copied = $state(false);
+	let promptNotify = $state(false);
 	let promptViewMode = $state<'full' | 'command'>('full');
 	let commandCopied = $state(false);
 
@@ -41,25 +58,55 @@
 	let folderError = $state('');
 	let loadingRepo = $state(false);
 	let pickingFolder = $state(false);
+	let pickingFile = $state(false);
 	let hydrating = $state(false);
 	/** Ruta local recordada al pasar a URL, para no perderla al volver. */
 	let lastLocalRepo = $state('');
 
 	let fileInput = $state<HTMLInputElement | null>(null);
+	let detectedOutput = $state<DetectedOutput | null>(null);
+	let autoImporting = $state(false);
+	/** Evita re-importar el mismo archivo (path+mtime). */
+	let consumedDetectionKey = $state('');
+	let nameRefreshSeq = 0;
 
 	const commandText = $derived(buildCommandText(meta));
+	const canWatchRepo = $derived(meta.source === 'local' && looksLikePath(meta.repo));
 
 	onMount(() => {
 		const last = loadLastMeta();
 		meta = last;
 		if (last.source === 'local' && looksLikePath(last.repo)) lastLocalRepo = last.repo.trim();
-		promptText = buildPrompt(meta);
+		const params = page.url.searchParams;
+		const outParam = params.get('out')?.trim();
+		if (outParam && isOutputFilename(outParam)) {
+			outputFilename = outParam;
+		}
+		promptText = buildPrompt(meta, { outputFilename });
 		reports = loadReportsIndex();
-		void bootstrapFromLaunch(last);
+		void bootstrapFromLaunch(last, {
+			wantImport: params.get('import') === '1',
+			wantNotify: params.get('notify') === 'prompt',
+			keepOutName: Boolean(outParam && isOutputFilename(outParam))
+		});
+
+		const timer = setInterval(() => {
+			void pollDetectedOutput({ auto: true });
+		}, 1500);
+		void pollDetectedOutput({ auto: true });
+		return () => clearInterval(timer);
 	});
 
+	function clearLaunchQuery() {
+		if (![...page.url.searchParams.keys()].length) return;
+		void goto(resolve('/'), { replaceState: true, noScroll: true, keepFocus: true });
+	}
+
 	/** Si se lanzó desde un repo git, precarga esa ruta y el branch actual. */
-	async function bootstrapFromLaunch(last: ReportMeta) {
+	async function bootstrapFromLaunch(
+		last: ReportMeta,
+		opts: { wantImport: boolean; wantNotify: boolean; keepOutName: boolean }
+	) {
 		try {
 			const launch = await launchContext();
 			if (launch?.repo) {
@@ -77,21 +124,76 @@
 					base: nextBase,
 					remoteUrl: launch.remoteUrl || undefined
 				});
-				return;
+				if (!opts.keepOutName) await refreshOutputFilename();
+			} else if (last.repo.trim()) {
+				void loadRepoBranches(last.repo, last.source);
+				if (!opts.keepOutName && last.source === 'local') await refreshOutputFilename();
 			}
 		} catch {
-			/* sin CWD git: seguir con last-meta */
+			if (last.repo.trim()) void loadRepoBranches(last.repo, last.source);
 		}
-		if (last.repo.trim()) void loadRepoBranches(last.repo, last.source);
+
+		if (opts.wantNotify) {
+			copyToClipboard(promptText, (v) => {
+				copied = v;
+				promptNotify = true;
+				setTimeout(() => (promptNotify = false), 2800);
+			});
+		}
+
+		if (opts.wantImport) {
+			try {
+				const pending = await pendingImport();
+				if (pending?.payload) {
+					if (pending.filename) outputFilename = pending.filename;
+					await ingestPayload(pending.payload);
+				}
+			} catch {
+				dropErrors = ['No se pudo importar el JSON pendiente del CLI.'];
+			}
+		}
+
+		clearLaunchQuery();
+	}
+
+	async function refreshOutputFilename() {
+		if (meta.source !== 'local' || !looksLikePath(meta.repo) || !meta.branch.trim()) {
+			outputFilename = makeOutputFilename({ stamp: outputStamp });
+			if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
+			return;
+		}
+		const seq = ++nameRefreshSeq;
+		try {
+			const info = await outputName({
+				repo: meta.repo.trim(),
+				branch: meta.branch.trim(),
+				base: meta.base.trim() || 'develop',
+				stamp: outputStamp
+			});
+			if (seq !== nameRefreshSeq) return;
+			outputFilename = info.filename;
+			if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
+		} catch {
+			if (seq !== nameRefreshSeq) return;
+			outputFilename = makeOutputFilename({ stamp: outputStamp });
+			if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
+		}
 	}
 
 	function updateMeta(patch: Partial<ReportMeta>) {
+		const prev = meta;
 		meta = { ...meta, ...patch };
 		if (meta.source === 'local' && looksLikePath(meta.repo)) {
 			lastLocalRepo = meta.repo.trim();
 		}
 		saveLastMeta(meta);
-		if (!promptEdited) promptText = buildPrompt(meta);
+		if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
+		const tipsChanged =
+			prev.repo !== meta.repo ||
+			prev.branch !== meta.branch ||
+			prev.base !== meta.base ||
+			prev.source !== meta.source;
+		if (tipsChanged && meta.source === 'local') void refreshOutputFilename();
 	}
 
 	function setSource(source: RepoSource) {
@@ -139,7 +241,7 @@
 	}
 
 	function copyCoveragePrompt() {
-		copyToClipboard(buildCoveragePromptText(meta, uncovered), (v) => (coverageCopied = v));
+		copyToClipboard(buildCoveragePromptText(meta, uncovered, { outputFilename }), (v) => (coverageCopied = v));
 	}
 
 	function copyCommand() {
@@ -258,19 +360,83 @@
 	function onDrop(e: DragEvent) {
 		e.preventDefault();
 		dragOver = false;
-		if (hydrating) return;
+		if (hydrating || pickingFile || autoImporting) return;
 		const file = e.dataTransfer?.files?.[0];
 		if (file) handleFile(file);
 	}
-	function triggerFileInput() {
-		if (hydrating) return;
+
+	async function triggerFileInput() {
+		if (hydrating || pickingFile || autoImporting) return;
+		if (canWatchRepo) {
+			pickingFile = true;
+			folderError = '';
+			try {
+				const picked = await pickReviewFile({ directory: meta.repo.trim() });
+				if (!picked?.payload) return;
+				if (picked.filename) outputFilename = picked.filename;
+				await ingestPayload(picked.payload);
+			} catch (err) {
+				dropErrors = ['No se pudo abrir el archivo: ' + errMessage(err)];
+				fileInput?.click();
+			} finally {
+				pickingFile = false;
+			}
+			return;
+		}
 		fileInput?.click();
 	}
+
 	function onFileInputChange(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
 		if (file) handleFile(file);
 		input.value = '';
+	}
+
+	function detectionKey(hit: DetectedOutput) {
+		return `${hit.path}::${hit.mtimeMs}`;
+	}
+
+	async function pollDetectedOutput(opts: { auto: boolean }) {
+		if (!canWatchRepo || hydrating || pickingFile) return;
+		try {
+			const hit = await detectOutput({
+				repo: meta.repo.trim(),
+				preferredName: outputFilename
+			});
+			detectedOutput = hit;
+			if (!opts.auto || !hit || autoImporting) return;
+			// Solo auto-avanza el archivo que pedimos en el prompt de esta sesión.
+			if (hit.filename !== outputFilename) return;
+			const key = detectionKey(hit);
+			if (key === consumedDetectionKey) return;
+			await openDetectedOutput(hit, { auto: true });
+		} catch {
+			/* silencioso: el poll sigue */
+		}
+	}
+
+	async function openDetectedOutput(hit: DetectedOutput, opts?: { auto?: boolean }) {
+		if (hydrating || autoImporting || pickingFile) return;
+		autoImporting = true;
+		dropErrors = [];
+		try {
+			const loaded = await loadDetectedOutput({
+				repo: meta.repo.trim(),
+				filename: hit.filename
+			});
+			if (!loaded?.payload) {
+				if (!opts?.auto) dropErrors = ['No se pudo leer ' + hit.filename];
+				return;
+			}
+			outputFilename = hit.filename;
+			const ok = await ingestPayload(loaded.payload);
+			if (ok) consumedDetectionKey = detectionKey(hit);
+		} catch (err) {
+			dropErrors = ['No se pudo abrir ' + hit.filename + ': ' + errMessage(err)];
+		} finally {
+			autoImporting = false;
+		}
 	}
 
 	function handleFile(file: File) {
@@ -295,11 +461,11 @@
 		return parseReportMeta(raw, meta);
 	}
 
-	async function ingestPayload(raw: unknown) {
+	async function ingestPayload(raw: unknown): Promise<boolean> {
 		const errors = validateDocument(raw);
 		if (errors.length) {
 			dropErrors = errors;
-			return;
+			return false;
 		}
 
 		let doc = coerceDocument(raw);
@@ -382,7 +548,7 @@
 							'No se pudo calcular el diff con git.',
 							...errors.map((e) => `· ${e}`)
 						];
-						return;
+						return false;
 					}
 					doc = {
 						...doc,
@@ -411,15 +577,15 @@
 				uncovered = missing;
 				dropErrors = [];
 				updateMeta(reportMeta);
-				return;
+				return true;
 			}
 			openNewReport(doc, reportMeta);
-			return;
+			return true;
 		} else if (!hasUsableDiffs(doc)) {
 			dropErrors = [
 				'Indicá repo (ruta o URL) y branch, o incluí meta.remoteUrl en el JSON, para calcular el diff con git.'
 			];
-			return;
+			return false;
 		}
 
 		const reportMeta: ReportMeta = {
@@ -436,9 +602,10 @@
 			uncovered = missing;
 			dropErrors = [];
 			updateMeta(reportMeta);
-			return;
+			return true;
 		}
 		openNewReport(doc, reportMeta);
+		return true;
 	}
 
 	function openNewReport(doc: ReviewDocument, reportMeta = meta) {
@@ -487,6 +654,9 @@
 />
 
 <div class="page">
+	{#if promptNotify}
+		<div class="toast" role="status">Prompt copiado al portapapeles.</div>
+	{/if}
 	<header class="topbar">
 		<a href={resolve('/')} class="brand">
 			<span class="brand-dot"></span>
@@ -636,20 +806,63 @@
 
 			<h2 class="result-head">3. Resultado</h2>
 			<p class="hint-text"
-				>Soltá acá el <code>{OUTPUT_FILENAME}</code> que generó el agente. Si trae <code>meta</code>, se
-				autocompletan repo y branches.</p
-			>
+				>Soltá acá el <code>{outputFilename}</code> que generó el agente. Si trae <code>meta</code>, se
+				autocompletan repo y branches.
+				{#if canWatchRepo}
+					Con repo local, si el archivo aparece en la raíz lo abrimos solos.
+				{/if}
+			</p>
+			{#if canWatchRepo && detectedOutput && detectedOutput.filename === outputFilename && !hydrating && !autoImporting}
+				<p class="detect-banner">
+					Listo: <button type="button" class="file-link" onclick={() => void openDetectedOutput(detectedOutput!)}
+						>{detectedOutput.filename}</button
+					>
+					{#if autoImporting}
+						<span>abriendo…</span>
+					{:else}
+						<span>(se abre solo; podés hacer click si no)</span>
+					{/if}
+				</p>
+			{:else if canWatchRepo && detectedOutput && detectedOutput.filename !== outputFilename && !hydrating}
+				<p class="detect-banner">
+					Encontré otro reporte:
+					<button type="button" class="file-link" onclick={() => void openDetectedOutput(detectedOutput!)}
+						>{detectedOutput.filename}</button
+					>
+				</p>
+			{:else if canWatchRepo && !detectedOutput && !hydrating && !autoImporting}
+				<p class="detect-wait">Esperando <code>{outputFilename}</code> en la raíz del repo…</p>
+			{/if}
+			{#if autoImporting}
+				<p class="detect-wait">Detecté el JSON — abriendo reporte…</p>
+			{/if}
 			<div
 				class="dropzone"
 				class:drag={dragOver}
-				class:busy={hydrating}
+				class:busy={hydrating || pickingFile || autoImporting}
 				ondragover={onDragOver}
 				ondragleave={onDragLeave}
 				ondrop={onDrop}
 				role="presentation"
 			>
-				<p>{hydrating ? 'Calculando diff con git…' : 'Arrastrá el archivo .json acá'}</p>
-				<button type="button" onclick={triggerFileInput} disabled={hydrating}>Elegir archivo</button>
+				<p>
+					{#if hydrating}
+						Calculando diff con git…
+					{:else if pickingFile}
+						Eligiendo archivo…
+					{:else if autoImporting}
+						Importando JSON…
+					{:else}
+						Arrastrá el archivo .json acá
+					{/if}
+				</p>
+				<button
+					type="button"
+					onclick={() => void triggerFileInput()}
+					disabled={hydrating || pickingFile || autoImporting}
+				>
+					{pickingFile ? 'Abriendo…' : 'Elegir archivo'}
+				</button>
 				<input
 					type="file"
 					accept="application/json,.json"
@@ -674,9 +887,9 @@
 					</details>
 					<p class="hint-text">
 						Pasale este prompt al mismo agente que corrió la review: tiene el diff en contexto y solo
-						tiene que completar lo que falta. Después soltá de nuevo el <code>{OUTPUT_FILENAME}</code>.
+						tiene que completar lo que falta. Después soltá de nuevo el <code>{outputFilename}</code>.
 					</p>
-					<textarea readonly rows="7" value={buildCoveragePromptText(meta, uncovered)}></textarea>
+					<textarea readonly rows="7" value={buildCoveragePromptText(meta, uncovered, { outputFilename })}></textarea>
 					<div class="coverage-actions">
 						<button type="button" class="primary" onclick={copyCoveragePrompt}>
 							{coverageCopied ? 'Copiado ✓' : 'Copiar prompt de corrección'}
@@ -774,6 +987,20 @@
 		min-height: 100vh;
 		display: flex;
 		flex-direction: column;
+	}
+
+	.toast {
+		position: fixed;
+		top: 16px;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 40;
+		padding: 10px 16px;
+		border: 1px solid var(--border);
+		background: var(--bg-card);
+		color: var(--text);
+		font-size: 13px;
+		box-shadow: 0 8px 24px color-mix(in srgb, #000 16%, transparent);
 	}
 
 	.topbar {
@@ -880,6 +1107,23 @@
 		font-family: var(--mono);
 		font-size: 12px;
 		color: var(--text);
+	}
+
+	.detect-banner,
+	.detect-wait {
+		margin: 0 0 10px;
+		font-size: 13px;
+		color: var(--text-dim);
+	}
+
+	button.file-link {
+		border: 0;
+		padding: 0;
+		background: transparent;
+		color: var(--accent);
+		font: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 
 	.error-line {
@@ -1201,6 +1445,7 @@
 		align-items: stretch;
 		border: 1px solid var(--border);
 		background: var(--bg-card);
+		overflow: visible;
 	}
 
 	.report-item:hover {
@@ -1244,9 +1489,10 @@
 
 	.report-menu {
 		position: absolute;
-		top: calc(100% - 2px);
+		bottom: calc(100% - 2px);
+		top: auto;
 		right: 8px;
-		z-index: 20;
+		z-index: 30;
 		min-width: 140px;
 		padding: 4px;
 		border: 1px solid var(--border);

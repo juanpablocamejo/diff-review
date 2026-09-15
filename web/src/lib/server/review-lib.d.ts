@@ -8,6 +8,63 @@ declare module '$review/lib/git.mjs' {
 	};
 	export function getRemoteUrl(repo: string, preferred?: string): string;
 	export function showFileLines(repo: string, rev: string, path: string): string[] | null;
+	export function resolveRev(repo: string, ref: string): string;
+	export function branchTips(
+		repo: string,
+		branch: string,
+		base: string
+	): { branchSha: string; baseSha: string };
+	export function fingerprint(branchSha: string, baseSha: string): string | null;
+	export function reportId(branchSha: string, baseSha: string): string;
+}
+
+declare module '$review/lib/output-name.mjs' {
+	export const OUTPUT_PREFIX: string;
+	export const OUTPUT_PREFIX_LEGACY: string;
+	export const OUTPUT_FILENAME_LEGACY: string;
+	export const OUTPUT_FILENAME_RE: RegExp;
+	export function formatOutputStamp(when?: Date): string;
+	export function makeOutputFilename(input?: {
+		branchSha?: string;
+		baseSha?: string;
+		stamp?: string;
+		when?: Date;
+	}): string;
+	export function isOutputFilename(name: string): boolean;
+}
+
+declare module '$review/lib/prompt.mjs' {
+	export const OUTPUT_SCHEMA_BLOCK: string;
+	export const OUTPUT_FILENAME_LEGACY: string;
+	export function formatOutputStamp(when?: Date): string;
+	export function makeOutputFilename(input?: {
+		branchSha?: string;
+		baseSha?: string;
+		stamp?: string;
+		when?: Date;
+	}): string;
+	export function isOutputFilename(name: string): boolean;
+	export function outputSchemaBlock(meta: {
+		source?: string;
+		repo?: string;
+		branch?: string;
+		base?: string;
+		remoteUrl?: string;
+	}): string;
+	export function buildPrompt(
+		meta: {
+			source?: string;
+			repo?: string;
+			branch?: string;
+			base?: string;
+			remoteUrl?: string;
+		},
+		opts?: { outputFilename?: string }
+	): string;
+}
+
+declare module '$review/lib/json-payload.mjs' {
+	export function decodePayload(text: string): unknown;
 }
 
 declare module '$review/lib/pick-folder.mjs' {

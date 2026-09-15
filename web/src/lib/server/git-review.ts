@@ -1,5 +1,17 @@
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { extractBranchDiff } from '$review/lib/extract.mjs';
-import { assertGitRepo, getRemoteUrl, listBranches, showFileLines, tryResolveGitRoot } from '$review/lib/git.mjs';
+import {
+	assertGitRepo,
+	branchTips,
+	fingerprint,
+	getRemoteUrl,
+	listBranches,
+	showFileLines,
+	tryResolveGitRoot
+} from '$review/lib/git.mjs';
+import { decodePayload } from '$review/lib/json-payload.mjs';
+import { formatOutputStamp, isOutputFilename, makeOutputFilename } from '$review/lib/output-name.mjs';
 import {
 	ensureRemoteWorktree,
 	listRemoteBranches,
@@ -8,6 +20,7 @@ import {
 } from '$review/lib/remote-repo.mjs';
 import { buildReview } from '$review/lib/review.mjs';
 import type { ReviewDocument, ReviewFile, RepoSource } from '$lib/report/types';
+import { pickJsonFile, type PickedFile } from './pick-file';
 import { pickFolder } from './pick-folder';
 
 export type RepoInfo = {
@@ -67,8 +80,167 @@ export function loadLaunchRepoInfo(): RepoInfo | null {
 	}
 }
 
+export type PendingImport = { filename: string; payload: unknown };
+
+/**
+ * JSON dejado por el CLI (env DIFF_REVIEW_IMPORT_FILE). Se consume una sola vez.
+ */
+export function takePendingImport(): PendingImport | null {
+	const raw = String(process.env.DIFF_REVIEW_IMPORT_FILE || '').trim();
+	if (!raw) return null;
+	delete process.env.DIFF_REVIEW_IMPORT_FILE;
+	const filePath = resolve(raw);
+	const name = basename(filePath);
+	if (!isOutputFilename(name)) return null;
+	if (!existsSync(filePath)) return null;
+	try {
+		const text = readFileSync(filePath, 'utf8');
+		const payload = decodePayload(text);
+		return { filename: name, payload };
+	} catch {
+		return null;
+	}
+}
+
+export type DetectedOutput = { filename: string; path: string; mtimeMs: number };
+
+/**
+ * Busca un JSON de review en la raíz del repo local.
+ * Prefiere `preferredName` si existe; si no, el más reciente que matchee el patrón.
+ */
+export function detectReviewOutput(repo: string, preferredName?: string): DetectedOutput | null {
+	const raw = String(repo || '').trim();
+	if (!raw || looksLikeGitUrl(raw)) return null;
+	let root: string;
+	try {
+		root = assertGitRepo(raw);
+	} catch {
+		return null;
+	}
+
+	const preferred = String(preferredName || '').trim();
+	if (preferred && isOutputFilename(preferred)) {
+		const preferredPath = join(root, preferred);
+		if (existsSync(preferredPath)) {
+			try {
+				const st = statSync(preferredPath);
+				return { filename: preferred, path: preferredPath, mtimeMs: st.mtimeMs };
+			} catch {
+				/* seguir al listado */
+			}
+		}
+	}
+
+	let best: DetectedOutput | null = null;
+	try {
+		for (const name of readdirSync(root)) {
+			if (!isOutputFilename(name)) continue;
+			const full = join(root, name);
+			try {
+				const st = statSync(full);
+				if (!st.isFile()) continue;
+				if (!best || st.mtimeMs > best.mtimeMs) {
+					best = { filename: name, path: full, mtimeMs: st.mtimeMs };
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+	} catch {
+		return null;
+	}
+	return best;
+}
+
+/** Lee y parsea un JSON de review en la raíz del repo (solo nombres válidos). */
+export function readReviewOutput(repo: string, filename: string): PendingImport | null {
+	const raw = String(repo || '').trim();
+	const name = basename(String(filename || '').trim());
+	if (!raw || !name || !isOutputFilename(name) || looksLikeGitUrl(raw)) return null;
+	let root: string;
+	try {
+		root = assertGitRepo(raw);
+	} catch {
+		return null;
+	}
+	const filePath = join(root, name);
+	if (!existsSync(filePath)) return null;
+	try {
+		const text = readFileSync(filePath, 'utf8');
+		return { filename: name, payload: decodePayload(text) };
+	} catch {
+		return null;
+	}
+}
+
 export async function pickLocalFolder(): Promise<string | null> {
 	return pickFolder();
+}
+
+export type OutputNameInfo = {
+	filename: string;
+	stamp: string;
+	fingerprint: string | null;
+	branchSha?: string;
+	baseSha?: string;
+};
+
+/** Nombre de salida con tips cortos del branch y la base (repo local). */
+export function resolveOutputName(
+	repo: string,
+	branch: string,
+	base: string,
+	stamp?: string
+): OutputNameInfo {
+	const outStamp = String(stamp || '').trim() || formatOutputStamp();
+	const raw = String(repo || '').trim();
+	const b = String(branch || '').trim();
+	const baseRef = String(base || '').trim() || 'develop';
+	if (!raw || looksLikeGitUrl(raw) || !b) {
+		return {
+			filename: makeOutputFilename({ stamp: outStamp }),
+			stamp: outStamp,
+			fingerprint: null
+		};
+	}
+	try {
+		const root = assertGitRepo(raw);
+		const tips = branchTips(root, b, baseRef);
+		const fp = fingerprint(tips.branchSha, tips.baseSha);
+		return {
+			filename: makeOutputFilename({
+				branchSha: tips.branchSha,
+				baseSha: tips.baseSha,
+				stamp: outStamp
+			}),
+			stamp: outStamp,
+			fingerprint: fp,
+			branchSha: tips.branchSha,
+			baseSha: tips.baseSha
+		};
+	} catch {
+		return {
+			filename: makeOutputFilename({ stamp: outStamp }),
+			stamp: outStamp,
+			fingerprint: null
+		};
+	}
+}
+
+/** Diálogo nativo de JSON; abre en la raíz del repo si es local. */
+export async function pickReviewJsonFile(defaultDir?: string): Promise<PickedFile | null> {
+	const dir = String(defaultDir || '').trim();
+	let start = dir;
+	if (dir && !looksLikeGitUrl(dir)) {
+		try {
+			start = assertGitRepo(dir);
+		} catch {
+			start = dir;
+		}
+	} else {
+		start = '';
+	}
+	return pickJsonFile(start || undefined);
 }
 
 function resolveWorktree(source: RepoSource, repo: string, branch: string, base: string): string {

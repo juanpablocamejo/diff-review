@@ -22,7 +22,23 @@ O sin instalar:
 npx @jpkme/diff-review
 ```
 
-Abre `http://127.0.0.1:5190`. Opciones: `--port`, `--host`, `--no-open`.
+### Modos
+
+Desde un **repo git**, el default es terminal-first:
+
+1. Loguea repo / branch y copia el prompt al portapapeles.
+2. Espera el JSON (`diff-report_{branchTip}-{baseTip}_YYYYMMDD-HHmmss.json`) en la raíz del repo.
+3. Valida y abre el viewer con el reporte ya importado.
+
+Si el branch actual y la base son iguales (diff vacío), abre la UI directamente para que elijas otra base o branch.
+
+Para abrir la UI primero (sin esperar el JSON):
+
+```bash
+diff-review --ui
+```
+
+Opciones: `--port`, `--host`, `--base`, `--branch`, `--no-open`.
 
 Si lo lanzás desde un repositorio git, la UI precarga esa ruta y el branch actual.
 
@@ -35,12 +51,12 @@ npm run build            # build de producción → web/build
 npm start                # mismo que el bin global
 ```
 
-## Flujo
+## Flujo (UI)
 
-1. Pegá la ruta (o URL) del repo y elegí branch / base — o lanzá `diff-review` desde el repo y se precarga solo.
+1. Pegá la ruta (o URL) del repo y elegí branch / base — o lanzá `diff-review` / `diff-review --ui` desde el repo.
 2. Copiá el prompt (o el comando de skill `/diff-review`).
-3. Corrélo en tu agente; que escriba `diff-review-output.json`.
-4. Arrastrá ese JSON a la dropzone. La UI hidrata los diffs con git.
+3. Corrélo en tu agente; que escriba `diff-report_{tips}_{stamp}.json` (también acepta el legacy `diff-review-output….json`).
+4. Arrastrá ese JSON a la dropzone (o dejá que el CLI lo importe solo). La UI hidrata los diffs con git.
 
 "Ver ejemplo" carga un reporte de muestra sin tocar un repo.
 
@@ -84,7 +100,7 @@ y minificados.
 .
 ├── bin/          # CLI (diff-review)
 ├── schema.json   # contrato del JSON que escribe el agente
-├── lib/          # git / extract (dev + tests; va embebido en el build)
+├── lib/          # git / extract / prompt (dev + tests; va en el paquete)
 └── web/          # UI SvelteKit → web/build en el paquete npm
 ```
 
