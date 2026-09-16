@@ -99,6 +99,12 @@ export type ReportMeta = {
 	base: string;
 	/** Remote git URL (origin); fallback si la carpeta local no existe en otra máquina. */
 	remoteUrl?: string;
+	/** ISO-8601; informativo (lo llena el agente). */
+	generatedAt?: string;
+	/** Nombre del tool/agente; informativo. */
+	agent?: string;
+	/** Id del modelo; informativo. */
+	model?: string;
 };
 
 /** Documento completo tal como se guarda en localStorage. */

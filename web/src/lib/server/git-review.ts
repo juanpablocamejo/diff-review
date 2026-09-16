@@ -11,7 +11,7 @@ import {
 	tryResolveGitRoot
 } from '$review/lib/git.mjs';
 import { decodePayload } from '$review/lib/json-payload.mjs';
-import { formatOutputStamp, isOutputFilename, makeOutputFilename } from '$review/lib/output-name.mjs';
+import { isOutputFilename, makeOutputFilename } from '$review/lib/output-name.mjs';
 import {
 	ensureRemoteWorktree,
 	listRemoteBranches,
@@ -179,27 +179,19 @@ export async function pickLocalFolder(): Promise<string | null> {
 
 export type OutputNameInfo = {
 	filename: string;
-	stamp: string;
 	fingerprint: string | null;
 	branchSha?: string;
 	baseSha?: string;
 };
 
 /** Nombre de salida con tips cortos del branch y la base (repo local). */
-export function resolveOutputName(
-	repo: string,
-	branch: string,
-	base: string,
-	stamp?: string
-): OutputNameInfo {
-	const outStamp = String(stamp || '').trim() || formatOutputStamp();
+export function resolveOutputName(repo: string, branch: string, base: string): OutputNameInfo {
 	const raw = String(repo || '').trim();
 	const b = String(branch || '').trim();
 	const baseRef = String(base || '').trim() || 'develop';
 	if (!raw || looksLikeGitUrl(raw) || !b) {
 		return {
-			filename: makeOutputFilename({ stamp: outStamp }),
-			stamp: outStamp,
+			filename: makeOutputFilename({}),
 			fingerprint: null
 		};
 	}
@@ -210,18 +202,15 @@ export function resolveOutputName(
 		return {
 			filename: makeOutputFilename({
 				branchSha: tips.branchSha,
-				baseSha: tips.baseSha,
-				stamp: outStamp
+				baseSha: tips.baseSha
 			}),
-			stamp: outStamp,
 			fingerprint: fp,
 			branchSha: tips.branchSha,
 			baseSha: tips.baseSha
 		};
 	} catch {
 		return {
-			filename: makeOutputFilename({ stamp: outStamp }),
-			stamp: outStamp,
+			filename: makeOutputFilename({}),
 			fingerprint: null
 		};
 	}

@@ -26,11 +26,11 @@ npx @jpkme/diff-review
 
 Desde un **repo git**, el default es terminal-first:
 
-1. Loguea repo / branch y copia el prompt al portapapeles.
-2. Espera el JSON (`diff-report_{branchTip}-{baseTip}_YYYYMMDD-HHmmss.json`) en la raíz del repo.
+1. Elegís **branch** y **base** con prompts en la terminal (`@clack/prompts`; tipeá para filtrar).
+2. Copia el prompt al portapapeles y espera el JSON (`diff-rev_{branchTip}_{baseTip}.json`).
 3. Valida y abre el viewer con el reporte ya importado.
 
-Si el branch actual y la base son iguales (diff vacío), abre la UI directamente para que elijas otra base o branch.
+Si pasás `--branch` y `--base` juntos, saltea los selects. Si quedan iguales (diff vacío), abre la UI.
 
 Para abrir la UI primero (sin esperar el JSON):
 
@@ -55,7 +55,7 @@ npm start                # mismo que el bin global
 
 1. Pegá la ruta (o URL) del repo y elegí branch / base — o lanzá `diff-review` / `diff-review --ui` desde el repo.
 2. Copiá el prompt (o el comando de skill `/diff-review`).
-3. Corrélo en tu agente; que escriba `diff-report_{tips}_{stamp}.json` (también acepta el legacy `diff-review-output….json`).
+3. Corrélo en tu agente; que escriba `diff-rev_{branchTip}_{baseTip}.json` (también acepta nombres legacy).
 4. Arrastrá ese JSON a la dropzone (o dejá que el CLI lo importe solo). La UI hidrata los diffs con git.
 
 "Ver ejemplo" carga un reporte de muestra sin tocar un repo.

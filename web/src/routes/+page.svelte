@@ -8,7 +8,6 @@
 		buildCoveragePromptText,
 		buildPrompt,
 		buildSkillMarkdown,
-		formatOutputStamp,
 		isOutputFilename,
 		makeOutputFilename,
 		skillFilename,
@@ -36,8 +35,7 @@
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
 	let meta = $state<ReportMeta>({ source: 'local', repo: '', branch: '', base: 'develop' });
-	let outputStamp = $state(formatOutputStamp());
-	let outputFilename = $state(makeOutputFilename({ stamp: outputStamp }));
+	let outputFilename = $state(makeOutputFilename({}));
 	let promptText = $state('');
 	let promptEdited = $state(false);
 	let copied = $state(false);
@@ -158,7 +156,7 @@
 
 	async function refreshOutputFilename() {
 		if (meta.source !== 'local' || !looksLikePath(meta.repo) || !meta.branch.trim()) {
-			outputFilename = makeOutputFilename({ stamp: outputStamp });
+			outputFilename = makeOutputFilename({});
 			if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
 			return;
 		}
@@ -167,15 +165,14 @@
 			const info = await outputName({
 				repo: meta.repo.trim(),
 				branch: meta.branch.trim(),
-				base: meta.base.trim() || 'develop',
-				stamp: outputStamp
+				base: meta.base.trim() || 'develop'
 			});
 			if (seq !== nameRefreshSeq) return;
 			outputFilename = info.filename;
 			if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
 		} catch {
 			if (seq !== nameRefreshSeq) return;
-			outputFilename = makeOutputFilename({ stamp: outputStamp });
+			outputFilename = makeOutputFilename({});
 			if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
 		}
 	}

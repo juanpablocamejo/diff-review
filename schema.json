@@ -21,6 +21,18 @@
         "remoteUrl": {
           "type": "string",
           "description": "URL del remote (origin). Fallback si la carpeta local no existe en otra máquina."
+        },
+        "generatedAt": {
+          "type": "string",
+          "description": "ISO-8601 de cuándo se escribió la review (informativo)."
+        },
+        "agent": {
+          "type": "string",
+          "description": "Nombre del tool/agente (informativo), ej. Claude Code / Cursor."
+        },
+        "model": {
+          "type": "string",
+          "description": "Id del modelo usado (informativo)."
         }
       }
     },

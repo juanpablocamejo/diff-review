@@ -26,6 +26,7 @@ Thumbs.db
 diff-review-output.json
 diff-review-output-*.json
 diff-report_*.json
+diff-rev_*.json
 **/chat.md
 .npmrc
 *.tgz

@@ -4,13 +4,12 @@ import type { FindingSeverity, ReportMeta, ReviewDocument } from './types';
 import {
 	buildPrompt as buildPromptCore,
 	makeOutputFilename,
-	formatOutputStamp,
 	isOutputFilename,
 	OUTPUT_FILENAME_LEGACY,
 	OUTPUT_SCHEMA_BLOCK
 } from '$review/lib/prompt.mjs';
 
-export { makeOutputFilename, formatOutputStamp, isOutputFilename, OUTPUT_SCHEMA_BLOCK };
+export { makeOutputFilename, isOutputFilename, OUTPUT_SCHEMA_BLOCK };
 /** Legacy fijo; preferí `makeOutputFilename()` / `outputFilename` de sesión. */
 export const OUTPUT_FILENAME = OUTPUT_FILENAME_LEGACY;
 
@@ -107,7 +106,7 @@ Workflow:
 Rules:
 ${RULES}
 
-Write the result to \`diff-report_{branchTip}-{baseTip}_YYYYMMDD-HHmmss.json\` at the repo root (10-char tip SHAs; pick a fresh stamp when you run).
+Write the result to \`diff-rev_{branchTip}_{baseTip}.json\` at the repo root (10-char tip SHAs of branch and base).
 - One JSON object only: first character \`{\`, last character \`}\`.
 - No prose before/after, no markdown fences.
 - Shape:

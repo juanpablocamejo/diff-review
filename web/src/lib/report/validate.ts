@@ -65,7 +65,7 @@ export function validateDocument(doc: unknown): string[] {
 			if (m.source != null && m.source !== 'local' && m.source !== 'url') {
 				errors.push('meta.source debe ser "local" o "url".');
 			}
-			for (const k of ['repo', 'branch', 'base', 'remoteUrl'] as const) {
+			for (const k of ['repo', 'branch', 'base', 'remoteUrl', 'generatedAt', 'agent', 'model'] as const) {
 				if (m[k] != null && typeof m[k] !== 'string') errors.push(`meta.${k} debe ser string.`);
 			}
 		}

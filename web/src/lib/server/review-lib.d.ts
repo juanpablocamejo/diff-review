@@ -23,12 +23,9 @@ declare module '$review/lib/output-name.mjs' {
 	export const OUTPUT_PREFIX_LEGACY: string;
 	export const OUTPUT_FILENAME_LEGACY: string;
 	export const OUTPUT_FILENAME_RE: RegExp;
-	export function formatOutputStamp(when?: Date): string;
 	export function makeOutputFilename(input?: {
 		branchSha?: string;
 		baseSha?: string;
-		stamp?: string;
-		when?: Date;
 	}): string;
 	export function isOutputFilename(name: string): boolean;
 }
@@ -36,12 +33,9 @@ declare module '$review/lib/output-name.mjs' {
 declare module '$review/lib/prompt.mjs' {
 	export const OUTPUT_SCHEMA_BLOCK: string;
 	export const OUTPUT_FILENAME_LEGACY: string;
-	export function formatOutputStamp(when?: Date): string;
 	export function makeOutputFilename(input?: {
 		branchSha?: string;
 		baseSha?: string;
-		stamp?: string;
-		when?: Date;
 	}): string;
 	export function isOutputFilename(name: string): boolean;
 	export function outputSchemaBlock(meta: {

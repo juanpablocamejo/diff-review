@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
  * CLI híbrido C:
- *   diff-review              → terminal: prompt + clipboard + espera JSON → abre viewer
+ *   diff-review              → terminal: elegir branch/base → prompt + wait JSON → viewer
  *   diff-review --ui         → web-first (UI inmediata)
  *
  *   diff-review --port 5191
+ *   diff-review --branch x --base y   → saltea selects de Clack
  *   diff-review --no-open
  */
 
@@ -13,9 +14,11 @@ import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as p from '@clack/prompts';
+import { autocompleteEs } from '../lib/autocomplete-es.mjs';
 import { copyTextToClipboard } from '../lib/clipboard.mjs';
 import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../lib/git.mjs';
-import { formatOutputStamp, makeOutputFilename } from '../lib/output-name.mjs';
+import { makeOutputFilename } from '../lib/output-name.mjs';
 import { buildPrompt } from '../lib/prompt.mjs';
 import { waitForReviewOutput } from '../lib/wait-output.mjs';
 
@@ -48,16 +51,17 @@ function printHelp() {
 Usage:
   diff-review [options]
 
-Por defecto (desde un repo git): copia el prompt, espera el JSON y abre el viewer.
-Si branch y base coinciden, abre la UI para que elijas otra combinación.
+Por defecto (desde un repo git): elegís branch/base en la terminal (Clack),
+copia el prompt, espera el JSON y abre el viewer.
+Si pasás --branch y --base juntos, saltea los selects.
 Con --ui: abre la UI de inmediato (web-first).
 
 Options:
   -p, --port <n>   Puerto (default ${DEFAULT_PORT})
       --host <h>   Host (default ${DEFAULT_HOST})
       --ui         Abrir la UI primero (sin esperar JSON)
-      --base <b>   Base del merge-base (default: develop / detección)
-      --branch <b> Branch a revisar (default: branch actual)
+      --base <b>   Base del merge-base (salta el select de base)
+      --branch <b> Branch a revisar (salta el select de branch)
       --no-open    No abrir el navegador
   -h, --help       Esta ayuda
 
@@ -130,35 +134,165 @@ function canListen(host, port) {
 }
 
 /**
- * @returns {{ repo: string, branch: string, base: string, remoteUrl?: string } | null}
+ * @returns {{
+ *   repo: string,
+ *   listed: { branches: string[], current: string, defaultBase: string },
+ *   remoteUrl?: string
+ * } | null}
  */
-function resolveLaunchRepo(opts) {
+function loadRepoLaunch() {
 	const cwd = process.cwd();
 	const root = tryResolveGitRoot(cwd);
 	if (!root) return null;
 	const listed = listBranches(root);
-	const branch =
-		String(opts.branch || '').trim() ||
-		(listed.current && listed.current !== 'HEAD' ? listed.current : listed.branches[0] || '');
-	const base =
-		String(opts.base || '').trim() ||
-		(listed.branches.includes('develop') ? 'develop' : listed.defaultBase);
 	const remoteUrl = getRemoteUrl(root) || undefined;
-	return { repo: root, branch, base, remoteUrl };
+	return { repo: root, listed, remoteUrl };
 }
 
-function logRepoContext(ctx) {
-	console.log(`Repo:   ${ctx.repo}`);
-	console.log(`Branch: ${ctx.branch}  (base: ${ctx.base})`);
+function defaultBranch(listed) {
+	return listed.current && listed.current !== 'HEAD' ? listed.current : listed.branches[0] || '';
+}
+
+function defaultBase(listed, branch) {
+	const preferred = listed.branches.includes('develop') ? 'develop' : listed.defaultBase;
+	if (preferred && preferred !== branch) return preferred;
+	return listed.branches.find((b) => b !== branch) || preferred || '';
+}
+
+function branchOptions(listed) {
+	return listed.branches.map((b) => ({
+		value: b,
+		label: b,
+		hint: b === listed.current ? 'actual' : b === listed.defaultBase ? 'base típica' : undefined
+	}));
+}
+
+function ensureValue(value, label) {
+	if (p.isCancel(value)) {
+		p.cancel('Cancelado.');
+		process.exit(0);
+	}
+	if (value == null || value === '') {
+		p.cancel(`Falta ${label}.`);
+		process.exit(1);
+	}
+	return /** @type {string} */ (value);
+}
+
+/**
+ * Selects interactivos salvo que --branch y --base vengan juntos.
+ * @param {{ listed: { branches: string[], current: string, defaultBase: string }, repo: string }} launch
+ * @param {{ branch: string, base: string }} opts
+ */
+async function resolveBranchBase(launch, opts) {
+	const flagBranch = String(opts.branch || '').trim();
+	const flagBase = String(opts.base || '').trim();
+	const bothFlags = Boolean(flagBranch && flagBase);
+
+	if (bothFlags) {
+		return { branch: flagBranch, base: flagBase, prompted: false };
+	}
+
+	if (!p.isTTY) {
+		const branch = flagBranch || defaultBranch(launch.listed);
+		const base = flagBase || defaultBase(launch.listed, branch);
+		return { branch, base, prompted: false };
+	}
+
+	if (!launch.listed.branches.length) {
+		p.cancel('No hay branches en este repo.');
+		process.exit(1);
+	}
+
+	const options = branchOptions(launch.listed);
+	p.intro('diff-review');
+	p.log.info(launch.repo);
+
+	let branch = flagBranch;
+	if (!branch) {
+		branch = ensureValue(
+			await autocompleteEs({
+				message: 'Branch a revisar',
+				options,
+				initialValue: defaultBranch(launch.listed) || undefined,
+				maxItems: 12
+			}),
+			'branch'
+		);
+	} else {
+		p.log.step(`Branch: ${branch}`);
+	}
+
+	let base = flagBase;
+	if (!base) {
+		base = ensureValue(
+			await autocompleteEs({
+				message: 'Base (merge-base)',
+				options,
+				initialValue: defaultBase(launch.listed, branch) || undefined,
+				maxItems: 12
+			}),
+			'base'
+		);
+	} else {
+		p.log.step(`Base: ${base}`);
+	}
+
+	while (branch === base) {
+		p.log.warn(`Branch y base son iguales (${branch}): el diff estaría vacío.`);
+		base = ensureValue(
+			await autocompleteEs({
+				message: 'Elegí otra base',
+				options,
+				initialValue: defaultBase(launch.listed, branch) || undefined,
+				maxItems: 12
+			}),
+			'base'
+		);
+	}
+
+	return { branch, base, prompted: true };
+}
+
+function buildOutputFilename(repo, branch, base) {
+	try {
+		const tips = branchTips(repo, branch, base);
+		return makeOutputFilename({
+			branchSha: tips.branchSha,
+			baseSha: tips.baseSha
+		});
+	} catch (err) {
+		console.warn(
+			'No pude resolver tips para el nombre del JSON:',
+			err instanceof Error ? err.message : err
+		);
+		return makeOutputFilename({});
+	}
 }
 
 function copyPromptOrWarn(prompt) {
-	if (copyTextToClipboard(prompt)) {
-		console.log('Prompt copiado al portapapeles.');
-		return true;
-	}
-	console.log('No pude copiar al portapapeles; pegá el prompt a mano desde la UI o reintentá.');
+	if (copyTextToClipboard(prompt)) return true;
+	p.log.warn(
+		'No pude copiar al portapapeles. Copiá el prompt a mano desde la terminal o reintentá.'
+	);
 	return false;
+}
+
+function explainWaitingForAgent(outputFilename, { copied, useClack }) {
+	const copyMsg = copied
+		? 'Se copió un prompt al portapapeles: pegalo en el chat de tu agente de IA para generar el contenido de la review.'
+		: 'Generá el JSON con tu agente de IA usando el prompt de esta sesión (no se pudo copiar solo al portapapeles).';
+	const waitMsg = `Aguardando el resultado del agente (${outputFilename} en la raíz del repo). La UI web se abre cuando ese archivo esté listo.`;
+
+	if (useClack) {
+		p.log.success(copyMsg);
+		p.log.info(waitMsg);
+		p.outro('Ctrl+C cancela la espera.');
+		return;
+	}
+	console.log(copyMsg);
+	console.log(waitMsg);
+	console.log('(Ctrl+C cancela la espera)');
 }
 
 /**
@@ -228,6 +362,46 @@ O reinstalá el paquete (el tarball de npm incluye el build).`);
 	process.on('SIGTERM', stop);
 }
 
+async function runUiMode(opts, launch, launchCwd) {
+	const listed = launch?.listed;
+	const branch = String(opts.branch || '').trim() || (listed ? defaultBranch(listed) : '');
+	const base =
+		String(opts.base || '').trim() || (listed ? defaultBase(listed, branch) : 'develop');
+	const outputFilename = launch
+		? buildOutputFilename(launch.repo, branch, base)
+		: makeOutputFilename({});
+
+	if (launch) {
+		console.log(`Repo:   ${launch.repo}`);
+		console.log(`Branch: ${branch}  (base: ${base})`);
+		const prompt = buildPrompt(
+			{
+				source: 'local',
+				repo: launch.repo,
+				branch,
+				base,
+				remoteUrl: launch.remoteUrl
+			},
+			{ outputFilename }
+		);
+		if (copyTextToClipboard(prompt)) {
+			console.log('Prompt copiado al portapapeles.');
+		} else {
+			console.log('No pude copiar al portapapeles; pegá el prompt a mano desde la UI o reintentá.');
+		}
+	} else {
+		console.log('Sin repo git en el CWD — la UI arranca vacía.');
+	}
+
+	await startServer({
+		host: opts.host,
+		port: opts.port,
+		open: opts.open,
+		launchCwd,
+		openPath: launch ? `/?notify=prompt&out=${encodeURIComponent(outputFilename)}` : '/'
+	});
+}
+
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	if (opts.help) {
@@ -236,105 +410,73 @@ async function main() {
 	}
 
 	const launchCwd = process.cwd();
-	const ctx = resolveLaunchRepo(opts);
-	const outputStamp = formatOutputStamp();
-	/** @type {string} */
-	let outputFilename = makeOutputFilename({ stamp: outputStamp });
-	if (ctx) {
-		try {
-			const tips = branchTips(ctx.repo, ctx.branch, ctx.base);
-			outputFilename = makeOutputFilename({
-				branchSha: tips.branchSha,
-				baseSha: tips.baseSha,
-				stamp: outputStamp
-			});
-		} catch (err) {
-			console.warn(
-				'No pude resolver tips para el nombre del JSON:',
-				err instanceof Error ? err.message : err
-			);
-		}
-	}
+	const launch = loadRepoLaunch();
 
-	/** Si branch===base el three-dot está vacío: forzar UI para elegir. */
-	let openUi = opts.ui;
-	let skipPromptCopy = false;
-	if (!openUi && ctx && ctx.branch && ctx.branch === ctx.base) {
-		console.log(
-			`Branch y base son iguales (${ctx.branch}): el diff estaría vacío.\nAbro la UI para que elijas otra base o branch.`
-		);
-		openUi = true;
-		skipPromptCopy = true;
-	}
-
-	if (openUi) {
-		if (ctx) {
-			logRepoContext(ctx);
-			if (!skipPromptCopy) {
-				const prompt = buildPrompt(
-					{
-						source: 'local',
-						repo: ctx.repo,
-						branch: ctx.branch,
-						base: ctx.base,
-						remoteUrl: ctx.remoteUrl
-					},
-					{ outputFilename }
-				);
-				copyPromptOrWarn(prompt);
-			}
-		} else {
-			console.log('Sin repo git en el CWD — la UI arranca vacía.');
-		}
-		await startServer({
-			host: opts.host,
-			port: opts.port,
-			open: opts.open,
-			launchCwd,
-			openPath:
-				ctx && !skipPromptCopy
-					? `/?notify=prompt&out=${encodeURIComponent(outputFilename)}`
-					: '/'
-		});
+	if (opts.ui) {
+		await runUiMode(opts, launch, launchCwd);
 		return;
 	}
 
-	// Flujo terminal por defecto
-	if (!ctx) {
+	if (!launch) {
 		console.error(
 			'No hay un repositorio git en el directorio actual.\nUsá --ui para abrir la interfaz, o corré diff-review desde un repo.'
 		);
 		process.exit(1);
 	}
 
-	logRepoContext(ctx);
-	console.log(`Salida: ${outputFilename}`);
+	const { branch, base, prompted } = await resolveBranchBase(launch, opts);
+
+	if (branch === base) {
+		// Ambos flags iguales / sin TTY: no se puede corregir en selects.
+		console.log(
+			`Branch y base son iguales (${branch}): el diff estaría vacío.\nAbro la UI para que elijas otra combinación.`
+		);
+		await startServer({
+			host: opts.host,
+			port: opts.port,
+			open: opts.open,
+			launchCwd,
+			openPath: '/'
+		});
+		return;
+	}
+
+	const outputFilename = buildOutputFilename(launch.repo, branch, base);
+
+	if (!prompted) {
+		console.log(`Repo:   ${launch.repo}`);
+		console.log(`Branch: ${branch}  (base: ${base})`);
+	} else {
+		p.note(`${branch}  ←  ${base}\n${outputFilename}`, 'Review');
+	}
+
 	const prompt = buildPrompt(
 		{
 			source: 'local',
-			repo: ctx.repo,
-			branch: ctx.branch,
-			base: ctx.base,
-			remoteUrl: ctx.remoteUrl
+			repo: launch.repo,
+			branch,
+			base,
+			remoteUrl: launch.remoteUrl
 		},
 		{ outputFilename }
 	);
-	copyPromptOrWarn(prompt);
-	console.log(`Esperando ${outputFilename} en la raíz del repo… (Ctrl+C para cancelar)`);
 
-	const result = await waitForReviewOutput(ctx.repo, outputFilename, {
+	const copied = copyPromptOrWarn(prompt);
+	explainWaitingForAgent(outputFilename, { copied, useClack: prompted });
+
+	const result = await waitForReviewOutput(launch.repo, outputFilename, {
 		onInvalid: (errors) => {
 			console.log(`JSON encontrado pero inválido (${errors.length} error(es)). Esperando corrección…`);
 			for (const e of errors.slice(0, 5)) console.log(`  · ${e}`);
 		}
 	});
 
-	console.log('JSON OK. Abriendo viewer…');
+	console.log('JSON OK. Abriendo la UI web…');
 	await startServer({
 		host: opts.host,
 		port: opts.port,
 		open: opts.open,
-		launchCwd: ctx.repo,
+		launchCwd: launch.repo,
 		importFile: result.path,
 		openPath: '/?import=1'
 	});

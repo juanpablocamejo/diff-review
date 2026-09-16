@@ -62,7 +62,16 @@ export function parseReportMeta(raw: unknown, fallback: Partial<ReportMeta> = {}
 				: fallback.source === 'url'
 					? 'url'
 					: 'local';
-	return { source, repo, branch, base, remoteUrl: remoteUrl || undefined };
+	return {
+		source,
+		repo,
+		branch,
+		base,
+		remoteUrl: remoteUrl || undefined,
+		generatedAt: str(nested.generatedAt ?? rec.generatedAt) || undefined,
+		agent: str(nested.agent ?? rec.agent) || undefined,
+		model: str(nested.model ?? rec.model) || undefined
+	};
 }
 
 /** JSON reimportable: meta + documento (sin depender del formulario). */
@@ -74,7 +83,10 @@ export function serializeReviewPayload(document: ReviewDocument, meta: ReportMet
 				repo: meta.repo,
 				branch: meta.branch,
 				base: meta.base || 'develop',
-				...(meta.remoteUrl ? { remoteUrl: meta.remoteUrl } : {})
+				...(meta.remoteUrl ? { remoteUrl: meta.remoteUrl } : {}),
+				...(meta.generatedAt ? { generatedAt: meta.generatedAt } : {}),
+				...(meta.agent ? { agent: meta.agent } : {}),
+				...(meta.model ? { model: meta.model } : {})
 			},
 			...document
 		},

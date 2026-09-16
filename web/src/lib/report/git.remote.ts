@@ -2,7 +2,7 @@ import { error } from '@sveltejs/kit';
 import { basename } from 'node:path';
 import { command, query } from '$app/server';
 import { decodePayload } from '$review/lib/json-payload.mjs';
-import { formatOutputStamp, makeOutputFilename } from '$review/lib/output-name.mjs';
+import { makeOutputFilename } from '$review/lib/output-name.mjs';
 import {
 	describeGitError,
 	detectReviewOutput,
@@ -84,26 +84,23 @@ export const detectOutput = query(
 	}
 );
 
-/** Nombre sugerido con tips cortos (branch/base) + stamp de sesión. */
+/** Nombre sugerido con tips cortos (branch/base). */
 export const outputName = query(
 	'unchecked',
 	async (input: {
 		repo: string;
 		branch: string;
 		base?: string;
-		stamp?: string;
 	}): Promise<OutputNameInfo> => {
 		try {
 			return resolveOutputName(
 				String(input?.repo || '').trim(),
 				String(input?.branch || '').trim(),
-				String(input?.base || 'develop').trim(),
-				input?.stamp
+				String(input?.base || 'develop').trim()
 			);
 		} catch (err) {
 			console.error('[diff-review git] output name', describeGitError(err), err);
-			const stamp = String(input?.stamp || '').trim() || formatOutputStamp();
-			return { filename: makeOutputFilename({ stamp }), stamp, fingerprint: null };
+			return { filename: makeOutputFilename({}), fingerprint: null };
 		}
 	}
 );
