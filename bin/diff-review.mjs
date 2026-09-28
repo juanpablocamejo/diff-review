@@ -21,6 +21,7 @@ import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../li
 import { makeOutputFilename } from '../lib/output-name.mjs';
 import { buildPrompt } from '../lib/prompt.mjs';
 import { waitForReviewOutput } from '../lib/wait-output.mjs';
+import { runValidateCli } from '../lib/check-report.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(here, '..');
@@ -50,9 +51,11 @@ function printHelp() {
 
 Usage:
   diff-review [options]
+  diff-review validate <file.json>
 
 Por defecto (desde un repo git): elegís branch/base en la terminal (Clack),
 copia el prompt, espera el JSON y abre el viewer.
+\`validate\` revisa el JSON y, si falla, dice cómo seguir (exit 0 = OK).
 Si pasás --branch y --base juntos, saltea los selects.
 Con --ui: abre la UI de inmediato (web-first).
 
@@ -403,7 +406,12 @@ async function runUiMode(opts, launch, launchCwd) {
 }
 
 async function main() {
-	const opts = parseArgs(process.argv.slice(2));
+	const rawArgv = process.argv.slice(2);
+	if (rawArgv[0] === 'validate') {
+		process.exit(runValidateCli(rawArgv.slice(1)));
+	}
+
+	const opts = parseArgs(rawArgv);
 	if (opts.help) {
 		printHelp();
 		process.exit(0);

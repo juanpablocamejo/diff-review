@@ -102,6 +102,7 @@ Workflow:
 2. Run exactly: \`git diff <base>...<branch>\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
 3. Read enough surrounding code (types, callers, tests) to judge behavior — not only the hunk lines.
 4. Emit the JSON file. Do not modify the repo.
+5. Validate with \`npx --yes @jpkme/diff-review validate <that-file>\`. If it prints INVALID, follow "How to continue" and re-run until OK.
 
 Rules:
 ${RULES}

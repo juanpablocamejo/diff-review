@@ -55,7 +55,7 @@ npm start                # mismo que el bin global
 
 1. Pegá la ruta (o URL) del repo y elegí branch / base — o lanzá `diff-review` / `diff-review --ui` desde el repo.
 2. Copiá el prompt (o el comando de skill `/diff-review`).
-3. Corrélo en tu agente; que escriba `diff-rev_{branchTip}_{baseTip}.json` (también acepta nombres legacy).
+3. Corrélo en tu agente; que escriba `diff-rev_{branchTip}_{baseTip}.json` y lo valide con `npx --yes @jpkme/diff-review validate <archivo>` (también acepta nombres legacy).
 4. Arrastrá ese JSON a la dropzone (o dejá que el CLI lo importe solo). La UI hidrata los diffs con git.
 
 "Ver ejemplo" carga un reporte de muestra sin tocar un repo.

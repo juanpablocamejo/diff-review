@@ -38,6 +38,7 @@ declare module '$review/lib/prompt.mjs' {
 		baseSha?: string;
 	}): string;
 	export function isOutputFilename(name: string): boolean;
+	export function validateCliCommand(filename?: string): string;
 	export function outputSchemaBlock(meta: {
 		source?: string;
 		repo?: string;
