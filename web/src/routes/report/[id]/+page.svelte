@@ -80,6 +80,17 @@
 					<span class="crumb-sep">›</span>
 					<span class="crumb-base">{report.meta.base || 'develop'}</span>
 				</span>
+				{#if report.meta.agent || report.meta.model}
+					<span class="chrome-divider"></span>
+					<span
+						class="provenance"
+						title={[report.meta.agent, report.meta.model].filter(Boolean).join(' · ')}
+					>
+						{#if report.meta.agent}<span class="prov-agent">{report.meta.agent}</span>{/if}
+						{#if report.meta.agent && report.meta.model}<span class="prov-sep">·</span>{/if}
+						{#if report.meta.model}<span class="prov-model">{report.meta.model}</span>{/if}
+					</span>
+				{/if}
 				<div class="menu-wrap">
 					<button
 						type="button"
@@ -333,6 +344,31 @@
 
 	.crumb-base {
 		color: var(--text-faint);
+		white-space: nowrap;
+	}
+
+	.provenance {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+
+	.prov-agent {
+		white-space: nowrap;
+	}
+
+	.prov-sep {
+		color: var(--text-faint);
+	}
+
+	.prov-model {
+		font-family: var(--mono);
+		font-size: 11.5px;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 

@@ -610,13 +610,7 @@
 				updateMeta({ remoteUrl: discoveredRemote });
 			}
 
-			const reportMeta: ReportMeta = {
-				source: ctx.source,
-				repo: ctx.repo || meta.repo,
-				branch: ctx.branch || meta.branch,
-				base: ctx.base || meta.base,
-				remoteUrl: discoveredRemote || meta.remoteUrl
-			};
+			const reportMeta = savedMeta(ctx, discoveredRemote);
 
 			const missing = uncoveredFiles(doc);
 			if (missing.length) {
@@ -635,13 +629,7 @@
 			return false;
 		}
 
-		const reportMeta: ReportMeta = {
-			source: ctx.source,
-			repo: ctx.repo || meta.repo,
-			branch: ctx.branch || meta.branch,
-			base: ctx.base || meta.base,
-			remoteUrl: ctx.remoteUrl || meta.remoteUrl
-		};
+		const reportMeta = savedMeta(ctx);
 
 		const missing = uncoveredFiles(doc);
 		if (missing.length) {
@@ -653,6 +641,19 @@
 		}
 		openNewReport(doc, reportMeta);
 		return true;
+	}
+
+	function savedMeta(ctx: ReportMeta, remoteUrl?: string): ReportMeta {
+		return {
+			source: ctx.source,
+			repo: ctx.repo || meta.repo,
+			branch: ctx.branch || meta.branch,
+			base: ctx.base || meta.base,
+			remoteUrl: remoteUrl || ctx.remoteUrl || meta.remoteUrl,
+			...(ctx.generatedAt ? { generatedAt: ctx.generatedAt } : {}),
+			...(ctx.agent ? { agent: ctx.agent } : {}),
+			...(ctx.model ? { model: ctx.model } : {})
+		};
 	}
 
 	function openNewReport(doc: ReviewDocument, reportMeta = meta) {
@@ -669,7 +670,9 @@
 			source: 'local',
 			repo: 'ms-obe-aprobacion-debin',
 			branch: 'feature/PCM-14839',
-			base: 'develop'
+			base: 'develop',
+			agent: 'Claude Code',
+			model: 'opus'
 		});
 	}
 

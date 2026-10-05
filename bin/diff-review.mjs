@@ -16,13 +16,14 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as p from '@clack/prompts';
-import { AGENTS, detectAgents, modelChoices, OTHER_MODEL, runAgent } from '../lib/agents.mjs';
+import { AGENTS, detectAgents, modelChoices, OTHER_MODEL, resolvedRunModel, runAgent } from '../lib/agents.mjs';
 import { autocompleteEs } from '../lib/autocomplete-es.mjs';
 import { copyTextToClipboard } from '../lib/clipboard.mjs';
 import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../lib/git.mjs';
 import { makeOutputFilename } from '../lib/output-name.mjs';
 import { buildPrompt } from '../lib/prompt.mjs';
 import { existingReviewOutput, waitForReviewOutput } from '../lib/wait-output.mjs';
+import { stampReviewProvenance } from '../lib/review-meta.mjs';
 import { runValidateCli } from '../lib/check-report.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -439,6 +440,10 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
 		process.exit(1);
 	}
 	if (code !== 0) console.warn(`${agent.def.label} terminó con código ${code}, pero el JSON es válido.`);
+	stampReviewProvenance(result.path, {
+		agent: agent.def.label,
+		model: resolvedRunModel(agent.def, model)
+	});
 	return /** @type {{ path: string }} */ (result);
 }
 
@@ -623,7 +628,7 @@ async function main() {
 		console.log(`Repo:   ${launch.repo}`);
 		console.log(`Branch: ${branch}  (base: ${base})`);
 	} else {
-		p.note(`${branch}  ←  ${base}\n${outputFilename}`, 'Review');
+		p.note(`${branch}  →  ${base}\n${outputFilename}`, 'Review');
 	}
 
 	const prompt = buildPrompt(
