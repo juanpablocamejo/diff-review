@@ -22,7 +22,7 @@ import { copyTextToClipboard } from '../lib/clipboard.mjs';
 import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../lib/git.mjs';
 import { makeOutputFilename } from '../lib/output-name.mjs';
 import { buildPrompt } from '../lib/prompt.mjs';
-import { waitForReviewOutput } from '../lib/wait-output.mjs';
+import { existingReviewOutput, waitForReviewOutput } from '../lib/wait-output.mjs';
 import { runValidateCli } from '../lib/check-report.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -329,6 +329,29 @@ async function pickAgentAndModel(detected) {
 }
 
 /**
+ * Si ya hay un review válido para estos commits, pregunta si abrirlo en vez de lanzar el agente.
+ * @returns {Promise<{ path: string } | null>} el existente, o `null` para generar de nuevo
+ */
+async function reuseExistingReview(repo, outputFilename) {
+	const existing = existingReviewOutput(repo, outputFilename);
+	if (!existing) return null;
+	const choice = ensureValue(
+		await p.select({
+			message: `Ya hay un review válido para estos commits (${outputFilename})`,
+			options: [
+				{ value: 'open', label: 'Abrir el existente' },
+				{ value: 'regenerate', label: 'Generar de nuevo', hint: 'el agente lo reemplaza' }
+			],
+			initialValue: 'open'
+		}),
+		'review'
+	);
+	if (choice !== 'open') return null;
+	p.outro('Abro el review existente.');
+	return existing;
+}
+
+/**
  * Lanza el agente y espera el JSON. Devuelve el reporte válido; si el agente termina sin dejarlo, sale con error.
  * @param {import('../lib/agents.mjs').DetectedAgent} agent
  * @param {{ repo: string, prompt: string, model: string, outputFilename: string, useClack: boolean }} run
@@ -339,8 +362,11 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
 	if (useClack) p.outro(msg);
 	else console.log(msg);
 
+	// Solo cuenta lo que escriba este agente: un JSON anterior de los mismos commits no es el resultado.
+	const since = Date.now();
 	const { exited } = runAgent(agent, { cwd: repo, prompt, model, outputFilename });
 	const waiting = waitForReviewOutput(repo, outputFilename, {
+		since,
 		onInvalid: (errors) => {
 			console.log(`JSON encontrado pero inválido (${errors.length} error(es)). El agente puede corregirlo…`);
 			for (const e of errors.slice(0, 5)) console.log(`  · ${e}`);
@@ -566,14 +592,20 @@ async function main() {
 
 	let result;
 	if (detected.length) {
-		const { agent, model } = await pickAgentAndModel(detected);
-		result = await runAgentAndWait(agent, {
-			repo: launch.repo,
-			prompt,
-			model,
-			outputFilename,
-			useClack: isInteractive()
-		});
+		// Con flags de branch/base no hubo intro, pero los selects de agente y modelo abren sesión de Clack igual.
+		const useClack = isInteractive();
+		if (useClack && !prompted) p.intro('diff-review');
+		result = useClack ? await reuseExistingReview(launch.repo, outputFilename) : null;
+		if (!result) {
+			const { agent, model } = await pickAgentAndModel(detected);
+			result = await runAgentAndWait(agent, {
+				repo: launch.repo,
+				prompt,
+				model,
+				outputFilename,
+				useClack
+			});
+		}
 	} else {
 		const copied = copyPromptOrWarn(prompt);
 		explainWaitingForAgent(outputFilename, { copied, useClack: prompted });
