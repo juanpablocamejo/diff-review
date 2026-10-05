@@ -58,6 +58,8 @@
 	let pickingFolder = $state(false);
 	let pickingFile = $state(false);
 	let hydrating = $state(false);
+	/** Modal de “calculando el diff”: al abrir desde el CLI con el JSON listo, o al soltar un archivo. */
+	let diffBusy = $state(page.url.searchParams.get('import') === '1');
 	/** Ruta local recordada al pasar a URL, para no perderla al volver. */
 	let lastLocalRepo = $state('');
 
@@ -131,27 +133,30 @@
 			if (last.repo.trim()) void loadRepoBranches(last.repo, last.source);
 		}
 
-		if (opts.wantNotify) {
-			copyToClipboard(promptText, (v) => {
-				copied = v;
-				promptNotify = true;
-				setTimeout(() => (promptNotify = false), 2800);
-			});
-		}
-
-		if (opts.wantImport) {
-			try {
-				const pending = await pendingImport();
-				if (pending?.payload) {
-					if (pending.filename) outputFilename = pending.filename;
-					await ingestPayload(pending.payload);
-				}
-			} catch {
-				dropErrors = ['No se pudo importar el JSON pendiente del CLI.'];
+		try {
+			if (opts.wantNotify) {
+				copyToClipboard(promptText, (v) => {
+					copied = v;
+					promptNotify = true;
+					setTimeout(() => (promptNotify = false), 2800);
+				});
 			}
-		}
 
-		clearLaunchQuery();
+			if (opts.wantImport) {
+				try {
+					const pending = await pendingImport();
+					if (pending?.payload) {
+						if (pending.filename) outputFilename = pending.filename;
+						await ingestPayload(pending.payload);
+					}
+				} catch {
+					dropErrors = ['No se pudo importar el JSON pendiente del CLI.'];
+				}
+			}
+		} finally {
+			if (opts.wantImport) diffBusy = false;
+			clearLaunchQuery();
+		}
 	}
 
 	async function refreshOutputFilename() {
@@ -416,6 +421,7 @@
 	async function openDetectedOutput(hit: DetectedOutput, opts?: { auto?: boolean }) {
 		if (hydrating || autoImporting || pickingFile) return;
 		autoImporting = true;
+		diffBusy = true;
 		dropErrors = [];
 		try {
 			const loaded = await loadDetectedOutput({
@@ -424,6 +430,7 @@
 			});
 			if (!loaded?.payload) {
 				if (!opts?.auto) dropErrors = ['No se pudo leer ' + hit.filename];
+				diffBusy = false;
 				return;
 			}
 			outputFilename = hit.filename;
@@ -431,12 +438,15 @@
 			if (ok) consumedDetectionKey = detectionKey(hit);
 		} catch (err) {
 			dropErrors = ['No se pudo abrir ' + hit.filename + ': ' + errMessage(err)];
+			diffBusy = false;
 		} finally {
 			autoImporting = false;
 		}
 	}
 
 	function handleFile(file: File) {
+		diffBusy = true;
+		dropErrors = [];
 		const reader = new FileReader();
 		reader.onload = () => {
 			let raw: unknown;
@@ -444,12 +454,14 @@
 				raw = JSON.parse(String(reader.result));
 			} catch (err) {
 				dropErrors = ['El archivo no es JSON válido: ' + errMessage(err)];
+				diffBusy = false;
 				return;
 			}
 			void ingestPayload(raw);
 		};
 		reader.onerror = () => {
 			dropErrors = ['No se pudo leer el archivo.'];
+			diffBusy = false;
 		};
 		reader.readAsText(file);
 	}
@@ -459,6 +471,15 @@
 	}
 
 	async function ingestPayload(raw: unknown): Promise<boolean> {
+		diffBusy = true;
+		try {
+			return await ingestPayloadNow(raw);
+		} finally {
+			diffBusy = false;
+		}
+	}
+
+	async function ingestPayloadNow(raw: unknown): Promise<boolean> {
 		const errors = validateDocument(raw);
 		if (errors.length) {
 			dropErrors = errors;
@@ -653,6 +674,14 @@
 <div class="page">
 	{#if promptNotify}
 		<div class="toast" role="status">Prompt copiado al portapapeles.</div>
+	{/if}
+	{#if diffBusy}
+		<div class="diff-backdrop">
+			<div class="diff-modal" role="status" aria-live="polite" aria-busy="true">
+				<div class="diff-spinner" aria-hidden="true"></div>
+				<p>Calculando diff con git…</p>
+			</div>
+		</div>
 	{/if}
 	<header class="topbar">
 		<a href={resolve('/')} class="brand">
@@ -986,12 +1015,55 @@
 		flex-direction: column;
 	}
 
+	.diff-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 40;
+		display: grid;
+		place-items: center;
+		padding: 24px;
+		background: color-mix(in srgb, var(--bg) 42%, transparent);
+		backdrop-filter: blur(10px);
+		-webkit-backdrop-filter: blur(10px);
+	}
+
+	.diff-modal {
+		width: min(380px, 100%);
+		padding: 28px 24px;
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		box-shadow: 0 16px 48px color-mix(in srgb, #000 28%, transparent);
+		text-align: center;
+	}
+
+	.diff-modal p {
+		margin: 14px 0 0;
+		font-size: 15px;
+		color: var(--text);
+	}
+
+	.diff-spinner {
+		width: 28px;
+		height: 28px;
+		margin: 0 auto;
+		border: 2px solid var(--border);
+		border-top-color: var(--accent);
+		border-radius: 50%;
+		animation: diff-spin 0.7s linear infinite;
+	}
+
+	@keyframes diff-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
 	.toast {
 		position: fixed;
 		top: 16px;
 		left: 50%;
 		transform: translateX(-50%);
-		z-index: 40;
+		z-index: 50;
 		padding: 10px 16px;
 		border: 1px solid var(--border);
 		background: var(--bg-card);

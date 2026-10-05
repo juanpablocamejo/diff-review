@@ -15,10 +15,10 @@ export const OUTPUT_FILENAME = OUTPUT_FILENAME_LEGACY;
 
 const RULES = `- Coverage (hard): every path in the diff MUST appear in "blocks" and/or "skipped". Prefer a skipped glob when many files share one reason.
 - Do NOT invent files, hunks, or line ranges that are not in the diff.
-- Line anchors: "lines"/"start"/"end"/"line" MUST match the chosen "side" ("new" = post-image / right side of @@; "old" = pre-image, typically deletions). One block per coherent change span — not one per line. Point findings at that block; leave "block" empty only if cross-cutting.
+- Line anchors: "lines"/"start"/"end"/"line" MUST match the chosen "side" ("new" = post-image / right side of @@; "old" = pre-image, typically deletions). One block per coherent change span, not one per line. Point findings at that block; leave "block" empty only if cross-cutting.
 - Do NOT report: pre-existing code outside the diff; linter/formatter noise; naming/style prefs with no real consequence; intentional branch behavior; silenced lint rules; "missing docs/coverage" without a concrete broken scenario.
 - Quality findings must name a concrete cost, not a vague feeling.
-- Signal over volume: prefer fewer high-signal findings. Order findings by severity (high → nit). Use "nit" sparingly.
+- Signal over volume: prefer fewer high-signal findings. Order findings by severity (high, then nit). Use "nit" sparingly.
 - "blocking": true ONLY if the branch should not merge as-is. Use only with class "risk".
 - Write human-readable strings (intent, title, what, why, fix, notes) in Spanish. Keep enums/ids/paths/JSON keys exactly as in the schema.`;
 
@@ -46,7 +46,7 @@ export function buildCoveragePromptText(
 	const shown = missing.slice(0, COVERAGE_LIST_LIMIT);
 	const rest = missing.length - shown.length;
 	const list = shown.map((path) => `- ${path}`).join('\n');
-	const tail = rest > 0 ? `\n- … and ${rest} more (all are in the diff)` : '';
+	const tail = rest > 0 ? `\n- ... and ${rest} more (all are in the diff)` : '';
 	return [
 		`The review of \`${branch}\` against \`${base}\` is incomplete: ${missing.length} file(s) from the diff appear in neither "blocks" nor "skipped".`,
 		'',
@@ -100,7 +100,7 @@ You are a senior code reviewer: strict but fair.
 Workflow:
 1. Resolve the merge-base of \`<base>\` and \`<branch>\`.
 2. Run exactly: \`git diff <base>...<branch>\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
-3. Read enough surrounding code (types, callers, tests) to judge behavior — not only the hunk lines.
+3. Read enough surrounding code (types, callers, tests) to judge behavior, not only the hunk lines.
 4. Emit the JSON file. Do not modify the repo.
 5. Validate with \`npx --yes @jpkme/diff-review validate <that-file>\`. If it prints INVALID, follow "How to continue" and re-run until OK.
 
@@ -116,7 +116,7 @@ ${OUTPUT_SCHEMA_BLOCK}
 
 Include "meta" with source/repo/branch/base from the arguments. If the repo is local, also set "remoteUrl" to origin (so someone else can open the JSON without the same folder).
 
-Do NOT include diffs or a "files" array — the tool computes them with git when opening the report.
+Do NOT include diffs or a "files" array. The tool computes them with git when opening the report.
 
 When done, say that the JSON file was written.
 
@@ -127,7 +127,7 @@ When done, say that the JSON file was written.
 Usage: /diff-review-fix <id1,id2,...> repo=<repo> branch=<branch>
 Arguments: ${cfg.argToken}
 
-You will receive a list of findings (file:line, what is wrong, suggested fix, sometimes the block diff). Apply ONLY those fixes — touch nothing else. If you need more context, re-read the file before editing.
+You will receive a list of findings (file:line, what is wrong, suggested fix, sometimes the block diff). Apply ONLY those fixes. Touch nothing else. If you need more context, re-read the file before editing.
 
 When done, summarize in a list what you changed for each finding.`;
 }
@@ -183,10 +183,10 @@ export function buildFixPromptText(
 		return out;
 	});
 
-	return `You are the same reviewer who produced these findings. Apply ONLY the fixes listed below — touch nothing else. If a fix needs more context, re-read the file before editing.
+	return `You are the same reviewer who produced these findings. Apply ONLY the fixes listed below. Touch nothing else. If a fix needs more context, re-read the file before editing.
 
-Repo: ${meta.repo || '—'}
-Branch: ${meta.branch || '—'}
+Repo: ${meta.repo || '(none)'}
+Branch: ${meta.branch || '(none)'}
 Base: ${meta.base || 'develop'}
 
 Findings to fix (${selectedFindings.length}):
@@ -209,5 +209,5 @@ export function buildPublishText(
 		const badge = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
 		return `**#${f.number} · ${badge}** \`${loc}\`\n\n${f.what}\n\n**Sugerencia:** ${f.fix}`;
 	});
-	return `### Hallazgos de code review${meta.branch ? ' — ' + meta.branch : ''}\n\n${chunks.join('\n\n---\n\n')}\n\n_Generado a partir del review automático. Comentario para ${label}._`;
+	return `### Hallazgos de code review${meta.branch ? ', ' + meta.branch : ''}\n\n${chunks.join('\n\n---\n\n')}\n\n_Generado a partir del review automático. Comentario para ${label}._`;
 }
