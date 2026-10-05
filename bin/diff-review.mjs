@@ -329,12 +329,11 @@ async function pickAgentAndModel(detected) {
 }
 
 /**
- * Si ya hay un review válido para estos commits, pregunta si abrirlo en vez de lanzar el agente.
+ * Ya hay un review válido para estos commits: pregunta si abrirlo o generarlo de nuevo.
+ * @param {{ path: string }} existing
  * @returns {Promise<{ path: string } | null>} el existente, o `null` para generar de nuevo
  */
-async function reuseExistingReview(repo, outputFilename) {
-	const existing = existingReviewOutput(repo, outputFilename);
-	if (!existing) return null;
+async function reuseExistingReview(existing, outputFilename) {
 	const choice = ensureValue(
 		await p.select({
 			message: `Ya hay un review válido para estos commits (${outputFilename})`,
@@ -590,27 +589,30 @@ async function main() {
 		else console.warn(warn);
 	}
 
-	let result;
-	if (detected.length) {
-		// Con flags de branch/base no hubo intro, pero los selects de agente y modelo abren sesión de Clack igual.
-		const useClack = isInteractive();
-		if (useClack && !prompted) p.intro('diff-review');
-		result = useClack ? await reuseExistingReview(launch.repo, outputFilename) : null;
-		if (!result) {
-			const { agent, model } = await pickAgentAndModel(detected);
-			result = await runAgentAndWait(agent, {
-				repo: launch.repo,
-				prompt,
-				model,
-				outputFilename,
-				useClack
-			});
-		}
-	} else {
+	// Hay selects (agente/modelo, o abrir vs. regenerar un review existente) solo con terminal interactiva.
+	const existing = isInteractive() ? existingReviewOutput(launch.repo, outputFilename) : null;
+	const useClack = prompted || (isInteractive() && (detected.length > 0 || existing != null));
+	// Con flags de branch/base no hubo intro, pero estos selects abren sesión de Clack igual.
+	if (useClack && !prompted) p.intro('diff-review');
+
+	let result = existing ? await reuseExistingReview(existing, outputFilename) : null;
+	if (!result && detected.length) {
+		const { agent, model } = await pickAgentAndModel(detected);
+		result = await runAgentAndWait(agent, {
+			repo: launch.repo,
+			prompt,
+			model,
+			outputFilename,
+			useClack
+		});
+	} else if (!result) {
+		// Si eligió generar de nuevo, el JSON existente no cuenta hasta que el agente lo reescriba.
+		const since = existing ? Date.now() : undefined;
 		const copied = copyPromptOrWarn(prompt);
-		explainWaitingForAgent(outputFilename, { copied, useClack: prompted });
+		explainWaitingForAgent(outputFilename, { copied, useClack });
 
 		result = await waitForReviewOutput(launch.repo, outputFilename, {
+			since,
 			onInvalid: (errors) => {
 				console.log(`JSON encontrado pero inválido (${errors.length} error(es)). Esperando corrección…`);
 				for (const e of errors.slice(0, 5)) console.log(`  · ${e}`);

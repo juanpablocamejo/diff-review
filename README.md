@@ -32,6 +32,10 @@ Desde un **repo git**, el default es terminal-first:
 
 Si pasás `--branch` y `--base` juntos, saltea los selects. Si quedan iguales (diff vacío), abre la UI.
 
+Si ya hay un JSON válido para esos mismos commits, pregunta si abrir el existente o generarlo de nuevo; en ese
+caso el archivo viejo no cuenta hasta que el agente lo reescriba. Sin terminal interactiva no pregunta: con
+`--agent` lo genera de nuevo y sin `--agent` abre el existente.
+
 ### Lanzar el agente (`--agent`)
 
 ```bash
