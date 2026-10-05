@@ -56,10 +56,11 @@ Usage:
   diff-review validate <file.json>
 
 Por defecto (desde un repo git): elegís branch/base en la terminal (Clack),
-copia el prompt, espera el JSON y abre el viewer.
+copia el prompt, espera el JSON y abre el viewer. Si hay agentes instalados,
+pregunta si copiar el prompt o enviarlo al CLI de uno.
 \`validate\` revisa el JSON y, si falla, dice cómo seguir (exit 0 = OK).
 Si pasás --branch y --base juntos, saltea los selects.
-Con --agent: en vez de copiar el prompt, elegís un agente instalado y el modelo,
+Con --agent: saltea esa pregunta; elegís un agente instalado y el modelo,
 y diff-review lo lanza con el prompt.
 Con --ui: abre la UI de inmediato (web-first).
 
@@ -329,6 +330,27 @@ async function pickAgentAndModel(detected) {
 }
 
 /**
+ * Sin --agent: copiar el prompt al portapapeles (como siempre) o mandarlo a un agente instalado.
+ * @param {import('../lib/agents.mjs').DetectedAgent[]} detected
+ * @returns {Promise<boolean>} `true` para lanzar un agente
+ */
+async function askUseAgent(detected) {
+	const names = detected.map((a) => a.def.label).join(', ');
+	const choice = ensureValue(
+		await p.select({
+			message: '¿Cómo generás el review?',
+			options: [
+				{ value: 'clipboard', label: 'Copiar el prompt al portapapeles', hint: 'lo pegás en tu agente' },
+				{ value: 'agent', label: 'Enviarlo al CLI de un agente', hint: names }
+			],
+			initialValue: 'clipboard'
+		}),
+		'modo'
+	);
+	return choice === 'agent';
+}
+
+/**
  * Ya hay un review válido para estos commits: pregunta si abrirlo o generarlo de nuevo.
  * @param {{ path: string }} existing
  * @returns {Promise<{ path: string } | null>} el existente, o `null` para generar de nuevo
@@ -581,7 +603,8 @@ async function main() {
 		{ outputFilename }
 	);
 
-	const detected = opts.agent ? detectAgents() : [];
+	// Sin --agent también se detectan (con terminal interactiva) para ofrecer lanzar uno en vez del portapapeles.
+	const detected = opts.agent || isInteractive() ? detectAgents() : [];
 	if (opts.agent && !detected.length) {
 		const names = AGENTS.map((a) => a.bins[0]).join(', ');
 		const warn = `No encontré agentes instalados (${names}). Sigo copiando el prompt.`;
@@ -596,7 +619,8 @@ async function main() {
 	if (useClack && !prompted) p.intro('diff-review');
 
 	let result = existing ? await reuseExistingReview(existing, outputFilename) : null;
-	if (!result && detected.length) {
+	const useAgent = !result && detected.length > 0 && (opts.agent || (await askUseAgent(detected)));
+	if (useAgent) {
 		const { agent, model } = await pickAgentAndModel(detected);
 		result = await runAgentAndWait(agent, {
 			repo: launch.repo,

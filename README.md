@@ -38,11 +38,14 @@ caso el archivo viejo no cuenta hasta que el agente lo reescriba. Sin terminal i
 
 ### Lanzar el agente (`--agent`)
 
+Si hay agentes instalados, después de branch y base pregunta si copiar el prompt al portapapeles (la opción por
+defecto) o enviarlo al CLI de un agente. Con `--agent` saltea esa pregunta y va directo al agente:
+
 ```bash
 diff-review --agent
 ```
 
-En vez de copiar el prompt al portapapeles, después de branch y base suma dos pasos:
+Al enviarlo a un agente, en vez de copiar el prompt suma dos pasos:
 
 1. **Agente**: los instalados que encuentra (Claude Code, Codex, Cursor CLI, GitHub Copilot CLI, Gemini CLI).
    Se buscan por nombre en el `PATH` y en algunas rutas fijas: en Windows, el Claude Code que trae la app de
