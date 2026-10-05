@@ -55,6 +55,7 @@
 	let coverageCopied = $state(false);
 	let reports = $state<SavedReportSummary[]>([]);
 	let reportMenuId = $state<string | null>(null);
+	let reportMenuPos = $state<{ top: number; left: number } | null>(null);
 
 	let branches = $state<string[]>([]);
 	let folderError = $state('');
@@ -682,8 +683,33 @@
 		return d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 	}
 
-	function toggleReportMenu(id: string) {
-		reportMenuId = reportMenuId === id ? null : id;
+	function closeReportMenu() {
+		reportMenuId = null;
+		reportMenuPos = null;
+	}
+
+	function placeReportMenu(button: HTMLButtonElement) {
+		const rect = button.getBoundingClientRect();
+		const width = 148;
+		const height = 42;
+		const gap = 4;
+		const margin = 8;
+		let top = rect.bottom + gap;
+		if (top + height > window.innerHeight - margin) top = rect.top - gap - height;
+		if (top < margin) top = margin;
+		let left = rect.right - width;
+		if (left < margin) left = margin;
+		if (left + width > window.innerWidth - margin) left = window.innerWidth - margin - width;
+		reportMenuPos = { top, left };
+	}
+
+	function toggleReportMenu(id: string, button: HTMLButtonElement) {
+		if (reportMenuId === id) {
+			closeReportMenu();
+			return;
+		}
+		reportMenuId = id;
+		placeReportMenu(button);
 	}
 
 	function removeReport(item: SavedReportSummary) {
@@ -691,16 +717,16 @@
 		if (!confirm(`¿Eliminar “${label}”? No se puede deshacer.`)) return;
 		deleteReport(item.id);
 		reports = loadReportsIndex();
-		reportMenuId = null;
+		closeReportMenu();
 	}
 </script>
 
 <svelte:window
 	onclick={() => {
-		if (reportMenuId) reportMenuId = null;
+		if (reportMenuId) closeReportMenu();
 	}}
 	onkeydown={(e) => {
-		if (e.key === 'Escape') reportMenuId = null;
+		if (e.key === 'Escape') closeReportMenu();
 	}}
 />
 
@@ -974,8 +1000,8 @@
 			{/if}
 		</section>
 
-		<aside class="reports-col">
-			<h2>Reportes anteriores</h2>
+		<aside class="reports-col" onscroll={() => reportMenuId && closeReportMenu()}>
+			<h2>Reportes recientes</h2>
 			{#if reports.length}
 				<ul class="report-list">
 					{#each reports as item (item.id)}
@@ -986,15 +1012,27 @@
 									<span class="when">{fmtWhen(item.savedAt)}</span>
 								</span>
 								<span class="report-meta">
-									<span>vs {item.base || 'develop'}</span>
-									<span class="pill">{plural(item.groupCount, 'tema', 'temas')}</span>
-									{#if item.blockerCount}
-										<span class="pill bad">{plural(item.blockerCount, 'blocker', 'blockers')}</span>
-									{/if}
-									{#if item.qualityCount}
-										<span class="pill">{plural(item.qualityCount, 'calidad', 'calidad')}</span>
-									{/if}
+									<span class="report-base"><span class="base-arrow" aria-hidden="true">→</span> {item.base || 'develop'}</span>
+									<span class="report-counts">
+										<span class="pill">{plural(item.groupCount, 'tema', 'temas')}</span>
+										{#if item.blockerCount}
+											<span class="pill bad">{plural(item.blockerCount, 'blocker', 'blockers')}</span>
+										{/if}
+										{#if item.qualityCount}
+											<span class="pill">{plural(item.qualityCount, 'calidad', 'calidad')}</span>
+										{/if}
+									</span>
 								</span>
+								{#if item.agent || item.model}
+									<span
+										class="report-prov"
+										title={[item.agent, item.model].filter(Boolean).join(' · ')}
+									>
+										{#if item.agent}<span class="prov-agent">{item.agent}</span>{/if}
+										{#if item.agent && item.model}<span class="prov-sep">·</span>{/if}
+										{#if item.model}<span class="prov-model">{item.model}</span>{/if}
+									</span>
+								{/if}
 								{#if item.intent}
 									<p class="report-intent">{item.intent}</p>
 								{/if}
@@ -1010,7 +1048,7 @@
 									onclick={(e) => {
 										e.preventDefault();
 										e.stopPropagation();
-										toggleReportMenu(item.id);
+										toggleReportMenu(item.id, e.currentTarget as HTMLButtonElement);
 									}}
 								>
 									<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -1019,8 +1057,14 @@
 										<circle cx="8" cy="12.5" r="1.25" fill="currentColor" />
 									</svg>
 								</button>
-								{#if reportMenuId === item.id}
-									<div class="report-menu" role="menu" tabindex="-1">
+								{#if reportMenuId === item.id && reportMenuPos}
+									<div
+										class="report-menu"
+										role="menu"
+										tabindex="-1"
+										style:top="{reportMenuPos.top}px"
+										style:left="{reportMenuPos.left}px"
+									>
 										<button
 											type="button"
 											class="menu-item danger"
@@ -1594,12 +1638,9 @@
 	}
 
 	.report-menu {
-		position: absolute;
-		bottom: calc(100% - 2px);
-		top: auto;
-		right: 8px;
-		z-index: 30;
-		min-width: 140px;
+		position: fixed;
+		z-index: 40;
+		width: 148px;
 		padding: 4px;
 		border: 1px solid var(--border);
 		background: var(--bg-card);
@@ -1637,6 +1678,39 @@
 		font-size: 14px;
 	}
 
+	.report-prov {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		margin-top: 4px;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+
+	.report-prov .prov-agent {
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.report-prov .prov-sep {
+		flex-shrink: 0;
+		color: var(--text-faint);
+	}
+
+	.report-prov .prov-model {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		font-family: var(--mono);
+		font-size: 11.5px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.when {
 		font-size: 12px;
 		color: var(--text-dim);
@@ -1644,12 +1718,30 @@
 
 	.report-meta {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
-		align-items: center;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 12px;
 		margin-top: 6px;
 		font-size: 12px;
 		color: var(--text-dim);
+	}
+
+	.report-base {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.base-arrow {
+		color: var(--text-faint);
+	}
+
+	.report-counts {
+		display: flex;
+		flex-shrink: 0;
+		gap: 8px;
+		align-items: baseline;
 	}
 
 	.pill {

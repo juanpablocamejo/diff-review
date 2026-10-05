@@ -115,7 +115,7 @@ export type SavedReport = {
 	savedAt: string;
 };
 
-/** Entrada liviana para la lista "Reportes anteriores". */
+/** Entrada liviana para la lista "Reportes recientes". */
 export type SavedReportSummary = {
 	id: string;
 	repo: string;
@@ -126,4 +126,6 @@ export type SavedReportSummary = {
 	blockerCount: number;
 	qualityCount: number;
 	intent: string;
+	agent?: string;
+	model?: string;
 };

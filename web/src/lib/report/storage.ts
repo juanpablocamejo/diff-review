@@ -53,7 +53,19 @@ export function saveLastMeta(meta: ReportMeta) {
 }
 
 export function loadReportsIndex(): SavedReportSummary[] {
-	return safeParse(localStorage.getItem(REPORTS_INDEX_KEY), []);
+	const index = safeParse<SavedReportSummary[]>(localStorage.getItem(REPORTS_INDEX_KEY), []);
+	let changed = false;
+	const enriched = index.map((item) => {
+		if (item.agent || item.model) return item;
+		const full = loadReportById(item.id);
+		const agent = full?.meta?.agent?.trim();
+		const model = full?.meta?.model?.trim();
+		if (!agent && !model) return item;
+		changed = true;
+		return { ...item, ...(agent ? { agent } : {}), ...(model ? { model } : {}) };
+	});
+	if (changed) saveReportsIndex(enriched);
+	return enriched;
 }
 
 function saveReportsIndex(index: SavedReportSummary[]) {
@@ -71,6 +83,8 @@ export function saveReport(document: ReviewDocument, meta: ReportMeta): SavedRep
 
 	const blockerCount = document.findings.filter((f) => f.blocking).length;
 	const qualityCount = document.findings.filter((f) => f.class === 'quality').length;
+	const agent = meta.agent?.trim();
+	const model = meta.model?.trim();
 	const summary: SavedReportSummary = {
 		id,
 		repo: meta.repo,
@@ -80,7 +94,9 @@ export function saveReport(document: ReviewDocument, meta: ReportMeta): SavedRep
 		groupCount: document.groups.length,
 		blockerCount,
 		qualityCount,
-		intent: document.intent
+		intent: document.intent,
+		...(agent ? { agent } : {}),
+		...(model ? { model } : {})
 	};
 
 	try {
