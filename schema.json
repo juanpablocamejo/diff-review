@@ -4,12 +4,12 @@
   "title": "Diff Review Document",
   "description": "JSON que escribe el agente (meta/intent/groups/blocks/findings/skipped). La UI completa files con git al abrir el reporte; no hace falta que el modelo incluya diffs.",
   "type": "object",
-  "required": ["intent", "groups", "blocks", "findings"],
+  "required": ["meta", "intent", "groups", "blocks", "findings"],
   "properties": {
     "meta": {
       "type": "object",
       "description": "Contexto del repo para reabrir el reporte sin rellenar el formulario. Copiá source/repo/branch/base del prompt.",
-      "required": ["source", "repo", "branch", "base"],
+      "required": ["source", "repo", "branch", "base", "agent", "model"],
       "properties": {
         "source": { "type": "string", "enum": ["local", "url"] },
         "repo": {
@@ -28,11 +28,13 @@
         },
         "agent": {
           "type": "string",
-          "description": "Nombre del tool/agente (informativo), ej. Claude Code / Cursor."
+          "minLength": 1,
+          "description": "Nombre del producto que escribió la review, ej. Claude Code o Cursor. Obligatorio."
         },
         "model": {
           "type": "string",
-          "description": "Id del modelo usado (informativo)."
+          "minLength": 1,
+          "description": "Id exacto del modelo que escribió la review. Obligatorio."
         }
       }
     },
@@ -57,10 +59,9 @@
           },
           "title": {
             "type": "string",
-            "maxLength": 72,
             "description": "Resumen del tema en una línea sin repetir kind (el chip ya lo muestra), ej. 'warehouses: CRUD de depósitos locales' o 'product: alta de depósitos'."
           },
-          "intent": { "type": "string", "maxLength": 240, "description": "Por qué existe este tema." }
+          "intent": { "type": "string", "description": "Por qué existe este tema." }
         }
       }
     },
@@ -86,12 +87,10 @@
           "op": { "type": "string", "enum": ["add", "mod", "del", "rename"] },
           "what": {
             "type": "string",
-            "maxLength": 200,
             "description": "Qué cambia este bloque."
           },
           "why": {
             "type": "string",
-            "maxLength": 200,
             "description": "Por qué. Vacío solo si no es inferible."
           },
           "source": {
@@ -123,8 +122,8 @@
           "file": { "type": "string" },
           "line": { "type": ["integer", "null"], "description": "Línea de la post-imagen (columna derecha / @@ +N)." },
           "block": { "type": ["string", "null"], "description": "Id del bloque, o vacío/null si es transversal." },
-          "what": { "type": "string", "maxLength": 300 },
-          "fix": { "type": "string", "maxLength": 300, "description": "Acción concreta." }
+          "what": { "type": "string" },
+          "fix": { "type": "string", "description": "Acción concreta." }
         }
       }
     },

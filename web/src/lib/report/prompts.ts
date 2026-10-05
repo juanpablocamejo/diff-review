@@ -20,7 +20,8 @@ const RULES = `- Coverage (hard): every path in the diff MUST appear in "blocks"
 - Quality findings must name a concrete cost, not a vague feeling.
 - Signal over volume: prefer fewer high-signal findings. Order findings by severity (high, then nit). Use "nit" sparingly.
 - "blocking": true ONLY if the branch should not merge as-is. Use only with class "risk".
-- Write human-readable strings (intent, title, what, why, fix, notes) in Spanish. Keep enums/ids/paths/JSON keys exactly as in the schema.`;
+- Write human-readable strings (intent, title, what, why, fix, notes) in Spanish. Keep enums/ids/paths/JSON keys exactly as in the schema.
+- Length is a target, not a check: aim for title ≤72 characters and what/why/fix ≤120 characters. Longer text is still valid. Do not rewrite the file only to shorten it.`;
 
 export function buildPrompt(meta: ReportMeta, opts?: { outputFilename?: string }): string {
 	return buildPromptCore(meta, {
@@ -114,7 +115,7 @@ Write the result to \`diff-rev_{branchTip}_{baseTip}.json\` at the repo root (10
 
 ${OUTPUT_SCHEMA_BLOCK}
 
-Include "meta" with source/repo/branch/base from the arguments. If the repo is local, also set "remoteUrl" to origin (so someone else can open the JSON without the same folder).
+Include "meta" with source/repo/branch/base from the arguments. If the repo is local, also set "remoteUrl" to origin (so someone else can open the JSON without the same folder). "agent" and "model" are required: set "agent" to the product you are and "model" to the exact model id you are running. Validation fails if either is missing or still a placeholder.
 
 Do NOT include diffs or a "files" array. The tool computes them with git when opening the report.
 

@@ -57,17 +57,18 @@ export function validateDocument(doc: unknown): string[] {
 	if (d.files != null && !Array.isArray(d.files)) errors.push('"files" debe ser un array.');
 	if (d.skipped != null && !Array.isArray(d.skipped)) errors.push('"skipped" debe ser un array.');
 	if (d.notes != null && !Array.isArray(d.notes)) errors.push('"notes" debe ser un array.');
-	if (d.meta != null) {
-		if (typeof d.meta !== 'object' || Array.isArray(d.meta)) {
-			errors.push('"meta" debe ser un objeto.');
-		} else {
-			const m = d.meta as Record<string, unknown>;
-			if (m.source != null && m.source !== 'local' && m.source !== 'url') {
-				errors.push('meta.source debe ser "local" o "url".');
-			}
-			for (const k of ['repo', 'branch', 'base', 'remoteUrl', 'generatedAt', 'agent', 'model'] as const) {
-				if (m[k] != null && typeof m[k] !== 'string') errors.push(`meta.${k} debe ser string.`);
-			}
+	if (d.meta == null || typeof d.meta !== 'object' || Array.isArray(d.meta)) {
+		errors.push('Falta "meta" (objeto con "agent" y "model").');
+	} else {
+		const m = d.meta as Record<string, unknown>;
+		if (m.source != null && m.source !== 'local' && m.source !== 'url') {
+			errors.push('meta.source debe ser "local" o "url".');
+		}
+		for (const k of ['agent', 'model'] as const) {
+			if (typeof m[k] !== 'string' || !m[k].trim()) errors.push(`Falta meta.${k}.`);
+		}
+		for (const k of ['repo', 'branch', 'base', 'remoteUrl', 'generatedAt'] as const) {
+			if (m[k] != null && typeof m[k] !== 'string') errors.push(`meta.${k} debe ser string.`);
 		}
 	}
 
