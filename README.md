@@ -38,17 +38,16 @@ caso el archivo viejo no cuenta hasta que el agente lo reescriba. Sin terminal i
 
 ### Lanzar el agente (`--agent`)
 
-Si hay agentes instalados, después de branch y base pregunta si copiar el prompt al portapapeles (la opción por
-defecto) o enviarlo al CLI de un agente. Con `--agent` saltea esa pregunta y va directo al agente:
+Si hay agentes instalados, después de branch y base un solo select lista copiar el prompt al portapapeles (primera
+opción) y cada agente detectado. Con `--agent` saltea esa lista y va directo a elegir agente y modelo:
 
 ```bash
 diff-review --agent
 ```
 
-Al enviarlo a un agente, en vez de copiar el prompt suma dos pasos:
+Al enviarlo a un agente, en vez de copiar el prompt pregunta el modelo (con `--agent`, primero el agente):
 
-1. **Agente**: los instalados que encuentra (Claude Code, Codex, Cursor CLI, GitHub Copilot CLI, Gemini CLI).
-   Se buscan por nombre en el `PATH` y en algunas rutas fijas: en Windows, el Claude Code que trae la app de
+1. **Agente**: los instalados que encuentra (Claude Code, Codex, Cursor CLI, GitHub Copilot CLI, Gemini CLI). Si ya lo elegiste en la lista anterior, este paso no se repite. Se buscan por nombre en el `PATH` y en algunas rutas fijas: en Windows, el Claude Code que trae la app de
    escritorio (`%APPDATA%\Claude\claude-code\<versión>\…\claude.exe`) y `%LOCALAPPDATA%\cursor-agent\cursor-agent.cmd`;
    en Linux/macOS, `~/.local/bin/claude`, `~/.claude/local/claude` y `~/.local/bin/cursor-agent`.
 2. **Modelo**: arranca en el default del agente (el configurado en `~/.claude/settings.json` /
@@ -70,7 +69,7 @@ Para abrir la UI primero (sin esperar el JSON):
 diff-review --ui
 ```
 
-Opciones: `--port`, `--host`, `--base`, `--branch`, `--agent`, `--no-open`.
+Opciones: `--port` (si está ocupado, usa el siguiente libre), `--host`, `--base`, `--branch`, `--agent`, `--no-open`.
 
 Si lo lanzás desde un repositorio git, la UI precarga esa ruta y el branch actual.
 

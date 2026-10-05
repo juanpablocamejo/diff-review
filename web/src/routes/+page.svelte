@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { page } from '$app/state';
 	import {
 		buildCommandText,
 		buildCoveragePromptText,
@@ -34,6 +33,11 @@
 	import { plural } from '$lib/report/labels';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
+	function queryFlag(name: string) {
+		if (typeof window === 'undefined') return false;
+		return new URL(window.location.href).searchParams.get(name) === '1';
+	}
+
 	let meta = $state<ReportMeta>({ source: 'local', repo: '', branch: '', base: 'develop' });
 	let outputFilename = $state(makeOutputFilename({}));
 	let promptText = $state('');
@@ -59,7 +63,14 @@
 	let pickingFile = $state(false);
 	let hydrating = $state(false);
 	/** Modal de “calculando el diff”: al abrir desde el CLI con el JSON listo, o al soltar un archivo. */
-	let diffBusy = $state(page.url.searchParams.get('import') === '1');
+	let diffBusy = $state(queryFlag('import'));
+	/**
+	 * Solo la pestaña que abrió el CLI con `?watch=1` importa solo el JSON cuando aparece.
+	 * Volver a `/` no trae ese parámetro, así que no reabre el reporte.
+	 */
+	let autoWatch = $state(queryFlag('watch'));
+	/** `openNewReport` ya navegó: el modal sigue hasta que esta página se desmonte. */
+	let openingReport = false;
 	/** Ruta local recordada al pasar a URL, para no perderla al volver. */
 	let lastLocalRepo = $state('');
 
@@ -77,35 +88,44 @@
 		const last = loadLastMeta();
 		meta = last;
 		if (last.source === 'local' && looksLikePath(last.repo)) lastLocalRepo = last.repo.trim();
-		const params = page.url.searchParams;
+		const params = new URL(window.location.href).searchParams;
+		const wantImport = params.get('import') === '1';
+		const wantWatch = params.get('watch') === '1';
+		const wantNotify = params.get('notify') === 'prompt';
 		const outParam = params.get('out')?.trim();
+		autoWatch = wantWatch;
+		if (wantImport) diffBusy = true;
 		if (outParam && isOutputFilename(outParam)) {
 			outputFilename = outParam;
 		}
 		promptText = buildPrompt(meta, { outputFilename });
 		reports = loadReportsIndex();
+		// Los flags ya quedaron en estado. Sacarlos de la URL evita que un back/refresh vuelva a importar.
+		if (wantImport || wantWatch || wantNotify || outParam) clearLaunchQuery();
 		void bootstrapFromLaunch(last, {
-			wantImport: params.get('import') === '1',
-			wantNotify: params.get('notify') === 'prompt',
+			wantImport,
+			wantWatch,
+			wantNotify,
 			keepOutName: Boolean(outParam && isOutputFilename(outParam))
 		});
 
 		const timer = setInterval(() => {
 			void pollDetectedOutput({ auto: true });
 		}, 1500);
-		void pollDetectedOutput({ auto: true });
 		return () => clearInterval(timer);
 	});
 
 	function clearLaunchQuery() {
-		if (![...page.url.searchParams.keys()].length) return;
-		void goto(resolve('/'), { replaceState: true, noScroll: true, keepFocus: true });
+		const url = new URL(window.location.href);
+		if (!url.search) return;
+		url.search = '';
+		replaceState(url, {});
 	}
 
 	/** Si se lanzó desde un repo git, precarga esa ruta y el branch actual. */
 	async function bootstrapFromLaunch(
 		last: ReportMeta,
-		opts: { wantImport: boolean; wantNotify: boolean; keepOutName: boolean }
+		opts: { wantImport: boolean; wantWatch: boolean; wantNotify: boolean; keepOutName: boolean }
 	) {
 		try {
 			const launch = await launchContext();
@@ -133,30 +153,30 @@
 			if (last.repo.trim()) void loadRepoBranches(last.repo, last.source);
 		}
 
-		try {
-			if (opts.wantNotify) {
-				copyToClipboard(promptText, (v) => {
-					copied = v;
-					promptNotify = true;
-					setTimeout(() => (promptNotify = false), 2800);
-				});
-			}
-
-			if (opts.wantImport) {
-				try {
-					const pending = await pendingImport();
-					if (pending?.payload) {
-						if (pending.filename) outputFilename = pending.filename;
-						await ingestPayload(pending.payload);
-					}
-				} catch {
-					dropErrors = ['No se pudo importar el JSON pendiente del CLI.'];
-				}
-			}
-		} finally {
-			if (opts.wantImport) diffBusy = false;
-			clearLaunchQuery();
+		if (opts.wantNotify) {
+			copyToClipboard(promptText, (v) => {
+				copied = v;
+				promptNotify = true;
+				setTimeout(() => (promptNotify = false), 2800);
+			});
 		}
+
+		if (opts.wantImport) {
+			try {
+				const pending = await pendingImport();
+				if (pending?.payload) {
+					if (pending.filename) outputFilename = pending.filename;
+					await ingestPayload(pending.payload);
+				} else if (!openingReport) {
+					diffBusy = false;
+				}
+			} catch {
+				dropErrors = ['No se pudo importar el JSON pendiente del CLI.'];
+				diffBusy = false;
+			}
+		}
+
+		if (opts.wantWatch) void pollDetectedOutput({ auto: true });
 	}
 
 	async function refreshOutputFilename() {
@@ -407,7 +427,8 @@
 				preferredName: outputFilename
 			});
 			detectedOutput = hit;
-			if (!opts.auto || !hit || autoImporting) return;
+			// `autoWatch` solo está activo en la carga que abrió el CLI (`?watch=1`).
+			if (!opts.auto || !autoWatch || !hit || autoImporting) return;
 			// Solo auto-avanza el archivo que pedimos en el prompt de esta sesión.
 			if (hit.filename !== outputFilename) return;
 			const key = detectionKey(hit);
@@ -435,7 +456,10 @@
 			}
 			outputFilename = hit.filename;
 			const ok = await ingestPayload(loaded.payload);
-			if (ok) consumedDetectionKey = detectionKey(hit);
+			if (ok) {
+				consumedDetectionKey = detectionKey(hit);
+				if (opts?.auto) autoWatch = false;
+			}
 		} catch (err) {
 			dropErrors = ['No se pudo abrir ' + hit.filename + ': ' + errMessage(err)];
 			diffBusy = false;
@@ -472,10 +496,15 @@
 
 	async function ingestPayload(raw: unknown): Promise<boolean> {
 		diffBusy = true;
+		openingReport = false;
 		try {
-			return await ingestPayloadNow(raw);
-		} finally {
+			const ok = await ingestPayloadNow(raw);
+			// Si ya estamos yendo al reporte, el modal queda hasta que esta página se va.
+			if (!openingReport) diffBusy = false;
+			return ok;
+		} catch (err) {
 			diffBusy = false;
+			throw err;
 		}
 	}
 
@@ -630,6 +659,7 @@
 		dropErrors = [];
 		pendingDoc = null;
 		uncovered = [];
+		openingReport = true;
 		const saved = saveReport(doc, reportMeta);
 		void goto(resolve(`/report/${saved.id}`));
 	}
@@ -834,8 +864,10 @@
 			<p class="hint-text"
 				>Soltá acá el <code>{outputFilename}</code> que generó el agente. Si trae <code>meta</code>, se
 				autocompletan repo y branches.
-				{#if canWatchRepo}
+				{#if canWatchRepo && autoWatch}
 					Con repo local, si el archivo aparece en la raíz lo abrimos solos.
+				{:else if canWatchRepo}
+					Con repo local, si el archivo está en la raíz podés abrirlo desde acá.
 				{/if}
 			</p>
 			{#if canWatchRepo && detectedOutput && detectedOutput.filename === outputFilename && !hydrating && !autoImporting}
@@ -845,8 +877,10 @@
 					>
 					{#if autoImporting}
 						<span>abriendo…</span>
-					{:else}
+					{:else if autoWatch}
 						<span>(se abre solo; podés hacer click si no)</span>
+					{:else}
+						<span>(hacé click para abrirlo)</span>
 					{/if}
 				</p>
 			{:else if canWatchRepo && detectedOutput && detectedOutput.filename !== outputFilename && !hydrating}
@@ -1018,13 +1052,13 @@
 	.diff-backdrop {
 		position: fixed;
 		inset: 0;
-		z-index: 40;
+		z-index: 80;
 		display: grid;
 		place-items: center;
 		padding: 24px;
-		background: color-mix(in srgb, var(--bg) 42%, transparent);
-		backdrop-filter: blur(10px);
-		-webkit-backdrop-filter: blur(10px);
+		background: color-mix(in srgb, var(--bg) 88%, transparent);
+		backdrop-filter: blur(28px);
+		-webkit-backdrop-filter: blur(28px);
 	}
 
 	.diff-modal {

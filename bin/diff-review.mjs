@@ -57,15 +57,15 @@ Usage:
 
 Por defecto (desde un repo git): elegís branch/base en la terminal (Clack),
 copia el prompt, espera el JSON y abre el viewer. Si hay agentes instalados,
-pregunta si copiar el prompt o enviarlo al CLI de uno.
+un solo select lista el portapapeles y cada agente detectado.
 \`validate\` revisa el JSON y, si falla, dice cómo seguir (exit 0 = OK).
 Si pasás --branch y --base juntos, saltea los selects.
-Con --agent: saltea esa pregunta; elegís un agente instalado y el modelo,
+Con --agent: saltea esa lista; elegís un agente instalado y el modelo,
 y diff-review lo lanza con el prompt.
 Con --ui: abre la UI de inmediato (web-first).
 
 Options:
-  -p, --port <n>   Puerto (default ${DEFAULT_PORT})
+  -p, --port <n>   Puerto (default ${DEFAULT_PORT}; si está ocupado, el siguiente libre)
       --host <h>   Host (default ${DEFAULT_HOST})
       --ui         Abrir la UI primero (sin esperar JSON)
       --base <b>   Base del merge-base (salta el select de base)
@@ -142,6 +142,18 @@ function canListen(host, port) {
 		});
 		server.listen(port, host);
 	});
+}
+
+const PORT_SCAN = 50;
+
+/** Primer puerto libre desde `start`, o `null` si ninguno de los siguientes cabe. */
+async function findFreePort(host, start) {
+	const first = Math.max(1, Math.floor(start));
+	const last = Math.min(65535, first + PORT_SCAN - 1);
+	for (let port = first; port <= last; port++) {
+		if (await canListen(host, port)) return port;
+	}
+	return null;
 }
 
 /**
@@ -295,21 +307,11 @@ function copyPromptOrWarn(prompt) {
 }
 
 /**
- * Agente y modelo: selects con TTY; sin TTY, el primer agente detectado con su modelo por defecto.
- * @param {import('../lib/agents.mjs').DetectedAgent[]} detected
+ * Modelo del agente: select con TTY; sin TTY, el modelo por defecto (string vacío).
+ * @param {import('../lib/agents.mjs').DetectedAgent} agent
  */
-async function pickAgentAndModel(detected) {
-	if (!isInteractive()) return { agent: detected[0], model: '' };
-
-	const id = ensureValue(
-		await p.select({
-			message: 'Agente',
-			options: detected.map((a) => ({ value: a.def.id, label: a.def.label, hint: a.path })),
-			initialValue: detected[0].def.id
-		}),
-		'agente'
-	);
-	const agent = detected.find((a) => a.def.id === id) ?? detected[0];
+async function pickModel(agent) {
+	if (!isInteractive()) return '';
 
 	const { options, initialValue } = modelChoices(agent.def);
 	const choice = await p.select({ message: 'Modelo', options, initialValue });
@@ -317,7 +319,7 @@ async function pickAgentAndModel(detected) {
 		p.cancel('Cancelado.');
 		process.exit(0);
 	}
-	if (choice !== OTHER_MODEL) return { agent, model: /** @type {string} */ (choice) };
+	if (choice !== OTHER_MODEL) return /** @type {string} */ (choice);
 
 	const typed = ensureValue(
 		await p.text({
@@ -326,28 +328,53 @@ async function pickAgentAndModel(detected) {
 		}),
 		'modelo'
 	);
-	return { agent, model: typed.trim() };
+	return typed.trim();
 }
 
 /**
- * Sin --agent: copiar el prompt al portapapeles (como siempre) o mandarlo a un agente instalado.
+ * Agente y modelo: selects con TTY; sin TTY, el primer agente detectado con su modelo por defecto.
+ * Si `preset` ya viene elegido, solo pregunta el modelo.
  * @param {import('../lib/agents.mjs').DetectedAgent[]} detected
- * @returns {Promise<boolean>} `true` para lanzar un agente
+ * @param {import('../lib/agents.mjs').DetectedAgent} [preset]
  */
-async function askUseAgent(detected) {
-	const names = detected.map((a) => a.def.label).join(', ');
+async function pickAgentAndModel(detected, preset) {
+	if (!isInteractive()) return { agent: preset ?? detected[0], model: '' };
+
+	let agent = preset;
+	if (!agent) {
+		const id = ensureValue(
+			await p.select({
+				message: 'Agente',
+				options: detected.map((a) => ({ value: a.def.id, label: a.def.label, hint: a.path })),
+				initialValue: detected[0].def.id
+			}),
+			'agente'
+		);
+		agent = detected.find((a) => a.def.id === id) ?? detected[0];
+	}
+
+	return { agent, model: await pickModel(agent) };
+}
+
+/**
+ * Portapapeles primero y después cada agente detectado.
+ * @param {import('../lib/agents.mjs').DetectedAgent[]} detected
+ * @returns {Promise<import('../lib/agents.mjs').DetectedAgent | null>} `null` = portapapeles
+ */
+async function pickDelivery(detected) {
 	const choice = ensureValue(
 		await p.select({
 			message: '¿Cómo generás el review?',
 			options: [
 				{ value: 'clipboard', label: 'Copiar el prompt al portapapeles', hint: 'lo pegás en tu agente' },
-				{ value: 'agent', label: 'Enviarlo al CLI de un agente', hint: names }
+				...detected.map((a) => ({ value: a.def.id, label: a.def.label, hint: a.path }))
 			],
 			initialValue: 'clipboard'
 		}),
 		'modo'
 	);
-	return choice === 'agent';
+	if (choice === 'clipboard') return null;
+	return detected.find((a) => a.def.id === choice) ?? detected[0];
 }
 
 /**
@@ -443,12 +470,17 @@ O reinstalá el paquete (el tarball de npm incluye el build).`);
 		process.exit(1);
 	}
 
-	if (!(await canListen(cfg.host, cfg.port))) {
-		console.error(`No se pudo usar ${cfg.host}:${cfg.port} (¿ocupado?). Probá --port otro.`);
+	const port = await findFreePort(cfg.host, cfg.port);
+	if (port == null) {
+		const last = Math.min(65535, cfg.port + PORT_SCAN - 1);
+		console.error(`No encontré un puerto libre entre ${cfg.port} y ${last} en ${cfg.host}.`);
 		process.exit(1);
 	}
+	if (port !== cfg.port) {
+		console.log(`Puerto ${cfg.port} ocupado; la UI usa ${port}.`);
+	}
 
-	const origin = `http://${cfg.host}:${cfg.port}`;
+	const origin = `http://${cfg.host}:${port}`;
 	const openUrl = cfg.openPath ? `${origin}${cfg.openPath}` : origin;
 	const nodeBin = resolveNodeBin();
 	const child = spawn(nodeBin, [entry], {
@@ -456,7 +488,7 @@ O reinstalá el paquete (el tarball de npm incluye el build).`);
 		env: {
 			...process.env,
 			HOST: cfg.host,
-			PORT: String(cfg.port),
+			PORT: String(port),
 			ORIGIN: origin,
 			DIFF_REVIEW_LAUNCH_CWD: cfg.launchCwd,
 			...(cfg.importFile ? { DIFF_REVIEW_IMPORT_FILE: cfg.importFile } : {})
@@ -535,7 +567,9 @@ async function runUiMode(opts, launch, launchCwd) {
 		port: opts.port,
 		open: opts.open,
 		launchCwd,
-		openPath: launch ? `/?notify=prompt&out=${encodeURIComponent(outputFilename)}` : '/'
+		openPath: launch
+			? `/?watch=1&notify=prompt&out=${encodeURIComponent(outputFilename)}`
+			: '/'
 	});
 }
 
@@ -619,9 +653,14 @@ async function main() {
 	if (useClack && !prompted) p.intro('diff-review');
 
 	let result = existing ? await reuseExistingReview(existing, outputFilename) : null;
-	const useAgent = !result && detected.length > 0 && (opts.agent || (await askUseAgent(detected)));
+	/** @type {import('../lib/agents.mjs').DetectedAgent | null} */
+	let chosen = null;
+	if (!result && detected.length > 0 && !opts.agent && isInteractive()) {
+		chosen = await pickDelivery(detected);
+	}
+	const useAgent = !result && detected.length > 0 && (opts.agent || chosen != null);
 	if (useAgent) {
-		const { agent, model } = await pickAgentAndModel(detected);
+		const { agent, model } = await pickAgentAndModel(detected, chosen ?? undefined);
 		result = await runAgentAndWait(agent, {
 			repo: launch.repo,
 			prompt,
