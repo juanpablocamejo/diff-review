@@ -6,6 +6,7 @@
  *
  *   diff-review --port 5191
  *   diff-review --branch x --base y   → saltea selects de Clack
+ *   diff-review --agent      → elegir agente + modelo y lanzarlo con el prompt (sin portapapeles)
  *   diff-review --no-open
  */
 
@@ -15,6 +16,7 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as p from '@clack/prompts';
+import { AGENTS, detectAgents, modelChoices, OTHER_MODEL, runAgent } from '../lib/agents.mjs';
 import { autocompleteEs } from '../lib/autocomplete-es.mjs';
 import { copyTextToClipboard } from '../lib/clipboard.mjs';
 import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../lib/git.mjs';
@@ -57,6 +59,8 @@ Por defecto (desde un repo git): elegís branch/base en la terminal (Clack),
 copia el prompt, espera el JSON y abre el viewer.
 \`validate\` revisa el JSON y, si falla, dice cómo seguir (exit 0 = OK).
 Si pasás --branch y --base juntos, saltea los selects.
+Con --agent: en vez de copiar el prompt, elegís un agente instalado y el modelo,
+y diff-review lo lanza con el prompt.
 Con --ui: abre la UI de inmediato (web-first).
 
 Options:
@@ -65,6 +69,7 @@ Options:
       --ui         Abrir la UI primero (sin esperar JSON)
       --base <b>   Base del merge-base (salta el select de base)
       --branch <b> Branch a revisar (salta el select de branch)
+      --agent      Lanzar un agente instalado (${AGENTS.map((a) => a.bins[0]).join(', ')}) con el prompt
       --no-open    No abrir el navegador
   -h, --help       Esta ayuda
 
@@ -79,6 +84,7 @@ function parseArgs(argv) {
 		open: true,
 		help: false,
 		ui: false,
+		agent: false,
 		base: '',
 		branch: ''
 	};
@@ -87,6 +93,7 @@ function parseArgs(argv) {
 		if (a === '-h' || a === '--help') opts.help = true;
 		else if (a === '--no-open') opts.open = false;
 		else if (a === '--ui') opts.ui = true;
+		else if (a === '--agent') opts.agent = true;
 		else if (a === '--host') opts.host = argv[++i] || opts.host;
 		else if (a === '--base') opts.base = argv[++i] || opts.base;
 		else if (a === '--branch') opts.branch = argv[++i] || opts.branch;
@@ -170,6 +177,11 @@ function branchOptions(listed) {
 	}));
 }
 
+/** Selects solo con terminal interactiva. (`p.isTTY` de Clack es una función, no un booleano.) */
+function isInteractive() {
+	return p.isTTY(process.stdin) && p.isTTY(process.stdout);
+}
+
 function ensureValue(value, label) {
 	if (p.isCancel(value)) {
 		p.cancel('Cancelado.');
@@ -196,7 +208,7 @@ async function resolveBranchBase(launch, opts) {
 		return { branch: flagBranch, base: flagBase, prompted: false };
 	}
 
-	if (!p.isTTY) {
+	if (!isInteractive()) {
 		const branch = flagBranch || defaultBranch(launch.listed);
 		const base = flagBase || defaultBase(launch.listed, branch);
 		return { branch, base, prompted: false };
@@ -279,6 +291,81 @@ function copyPromptOrWarn(prompt) {
 		'No pude copiar al portapapeles. Copiá el prompt a mano desde la terminal o reintentá.'
 	);
 	return false;
+}
+
+/**
+ * Agente y modelo: selects con TTY; sin TTY, el primer agente detectado con su modelo por defecto.
+ * @param {import('../lib/agents.mjs').DetectedAgent[]} detected
+ */
+async function pickAgentAndModel(detected) {
+	if (!isInteractive()) return { agent: detected[0], model: '' };
+
+	const id = ensureValue(
+		await p.select({
+			message: 'Agente',
+			options: detected.map((a) => ({ value: a.def.id, label: a.def.label, hint: a.path })),
+			initialValue: detected[0].def.id
+		}),
+		'agente'
+	);
+	const agent = detected.find((a) => a.def.id === id) ?? detected[0];
+
+	const { options, initialValue } = modelChoices(agent.def);
+	const choice = await p.select({ message: 'Modelo', options, initialValue });
+	if (p.isCancel(choice)) {
+		p.cancel('Cancelado.');
+		process.exit(0);
+	}
+	if (choice !== OTHER_MODEL) return { agent, model: /** @type {string} */ (choice) };
+
+	const typed = ensureValue(
+		await p.text({
+			message: 'Id del modelo',
+			validate: (v) => (String(v ?? '').trim() ? undefined : 'Escribí el id del modelo.')
+		}),
+		'modelo'
+	);
+	return { agent, model: typed.trim() };
+}
+
+/**
+ * Lanza el agente y espera el JSON. Devuelve el reporte válido; si el agente termina sin dejarlo, sale con error.
+ * @param {import('../lib/agents.mjs').DetectedAgent} agent
+ * @param {{ repo: string, prompt: string, model: string, outputFilename: string, useClack: boolean }} run
+ */
+async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, useClack }) {
+	const what = `${agent.def.label} (${model || 'modelo por defecto'})`;
+	const msg = `Lanzando ${what}. Espera ${outputFilename} en la raíz del repo; Ctrl+C cancela.`;
+	if (useClack) p.outro(msg);
+	else console.log(msg);
+
+	const { exited } = runAgent(agent, { cwd: repo, prompt, model, outputFilename });
+	const waiting = waitForReviewOutput(repo, outputFilename, {
+		onInvalid: (errors) => {
+			console.log(`JSON encontrado pero inválido (${errors.length} error(es)). El agente puede corregirlo…`);
+			for (const e of errors.slice(0, 5)) console.log(`  · ${e}`);
+		}
+	});
+
+	let code;
+	try {
+		code = await exited;
+	} catch (err) {
+		console.error(`No se pudo lanzar ${agent.path}: ${err instanceof Error ? err.message : err}`);
+		process.exit(1);
+	}
+	// El watcher puede ir un tick atrás de la última escritura del agente.
+	const result = await Promise.race([waiting, new Promise((r) => setTimeout(() => r(null), 2000))]);
+	if (!result) {
+		console.error(
+			code === 0
+				? `${agent.def.label} terminó sin dejar un ${outputFilename} válido.`
+				: `${agent.def.label} terminó con código ${code} sin dejar un ${outputFilename} válido.`
+		);
+		process.exit(1);
+	}
+	if (code !== 0) console.warn(`${agent.def.label} terminó con código ${code}, pero el JSON es válido.`);
+	return /** @type {{ path: string }} */ (result);
 }
 
 function explainWaitingForAgent(outputFilename, { copied, useClack }) {
@@ -469,15 +556,35 @@ async function main() {
 		{ outputFilename }
 	);
 
-	const copied = copyPromptOrWarn(prompt);
-	explainWaitingForAgent(outputFilename, { copied, useClack: prompted });
+	const detected = opts.agent ? detectAgents() : [];
+	if (opts.agent && !detected.length) {
+		const names = AGENTS.map((a) => a.bins[0]).join(', ');
+		const warn = `No encontré agentes instalados (${names}). Sigo copiando el prompt.`;
+		if (prompted) p.log.warn(warn);
+		else console.warn(warn);
+	}
 
-	const result = await waitForReviewOutput(launch.repo, outputFilename, {
-		onInvalid: (errors) => {
-			console.log(`JSON encontrado pero inválido (${errors.length} error(es)). Esperando corrección…`);
-			for (const e of errors.slice(0, 5)) console.log(`  · ${e}`);
-		}
-	});
+	let result;
+	if (detected.length) {
+		const { agent, model } = await pickAgentAndModel(detected);
+		result = await runAgentAndWait(agent, {
+			repo: launch.repo,
+			prompt,
+			model,
+			outputFilename,
+			useClack: isInteractive()
+		});
+	} else {
+		const copied = copyPromptOrWarn(prompt);
+		explainWaitingForAgent(outputFilename, { copied, useClack: prompted });
+
+		result = await waitForReviewOutput(launch.repo, outputFilename, {
+			onInvalid: (errors) => {
+				console.log(`JSON encontrado pero inválido (${errors.length} error(es)). Esperando corrección…`);
+				for (const e of errors.slice(0, 5)) console.log(`  · ${e}`);
+			}
+		});
+	}
 
 	console.log('JSON OK. Abriendo la UI web…');
 	await startServer({

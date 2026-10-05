@@ -32,13 +32,35 @@ Desde un **repo git**, el default es terminal-first:
 
 Si pasás `--branch` y `--base` juntos, saltea los selects. Si quedan iguales (diff vacío), abre la UI.
 
+### Lanzar el agente (`--agent`)
+
+```bash
+diff-review --agent
+```
+
+En vez de copiar el prompt al portapapeles, después de branch y base suma dos pasos:
+
+1. **Agente**: los instalados que encuentra (Claude Code, Codex, Gemini CLI). Se buscan por nombre en el
+   `PATH` y en algunas rutas fijas: en Windows, el Claude Code que trae la app de escritorio
+   (`%APPDATA%\Claude\claude-code\<versión>\…\claude.exe`); en Linux/macOS, `~/.local/bin/claude` y
+   `~/.claude/local/claude`.
+2. **Modelo**: arranca en el default del agente (el configurado en `~/.claude/settings.json` /
+   `ANTHROPIC_MODEL`, `~/.codex/config.toml` o `~/.gemini/settings.json`; si no hay, no se pasa `--model`).
+   También lista los conocidos (para Claude, los alias `opus` / `sonnet` / `haiku`) y "Otro…" para escribir un id.
+
+El prompt viaja por stdin y la salida del agente se ve en la terminal. Claude Code corre con permisos acotados:
+leer, `git`, el `validate` y escribir solo el JSON del review. Si no hay agentes instalados, sigue con el
+portapapeles. Sin terminal interactiva usa el primer agente con su modelo por defecto.
+
+El agente tiene que estar logueado (p. ej. `claude /login` una vez).
+
 Para abrir la UI primero (sin esperar el JSON):
 
 ```bash
 diff-review --ui
 ```
 
-Opciones: `--port`, `--host`, `--base`, `--branch`, `--no-open`.
+Opciones: `--port`, `--host`, `--base`, `--branch`, `--agent`, `--no-open`.
 
 Si lo lanzás desde un repositorio git, la UI precarga esa ruta y el branch actual.
 
