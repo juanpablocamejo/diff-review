@@ -7,16 +7,19 @@
  *   diff-review --port 5191
  *   diff-review --branch x --base y   → saltea selects de Clack
  *   diff-review --agent      → elegir agente + modelo y lanzarlo con el prompt (sin portapapeles)
+ *   diff-review --headless   → con agente: correrlo en la terminal en vez de por ACP con la web
  *   diff-review --no-open
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as p from '@clack/prompts';
 import { AGENTS, detectAgents, modelChoices, OTHER_MODEL, resolvedRunModel, runAgent } from '../lib/agents.mjs';
+import { listAcpModels, supportsAcp } from '../lib/acp.mjs';
 import { autocompleteEs } from '../lib/autocomplete-es.mjs';
 import { copyTextToClipboard } from '../lib/clipboard.mjs';
 import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../lib/git.mjs';
@@ -63,6 +66,9 @@ un solo select lista el portapapeles y cada agente detectado.
 Si pasás --branch y --base juntos, saltea los selects.
 Con --agent: saltea esa lista; elegís un agente instalado y el modelo,
 y diff-review lo lanza con el prompt.
+Si el agente habla ACP (Claude Code), corre desde la UI web: ves el
+proceso en vivo y después podés preguntarle o pedirle cambios al reporte.
+Con --headless corre en la terminal como antes.
 Con --ui: abre la UI de inmediato (web-first).
 
 Options:
@@ -72,6 +78,7 @@ Options:
       --base <b>   Base del merge-base (salta el select de base)
       --branch <b> Branch a revisar (salta el select de branch)
       --agent      Lanzar un agente instalado (${AGENTS.map((a) => a.bins[0]).join(', ')}) con el prompt
+      --headless   Con agente: correrlo en la terminal (sin ACP ni chat en la web)
       --no-open    No abrir el navegador
   -h, --help       Esta ayuda
 
@@ -87,6 +94,7 @@ function parseArgs(argv) {
 		help: false,
 		ui: false,
 		agent: false,
+		headless: false,
 		base: '',
 		branch: ''
 	};
@@ -96,6 +104,7 @@ function parseArgs(argv) {
 		else if (a === '--no-open') opts.open = false;
 		else if (a === '--ui') opts.ui = true;
 		else if (a === '--agent') opts.agent = true;
+		else if (a === '--headless') opts.headless = true;
 		else if (a === '--host') opts.host = argv[++i] || opts.host;
 		else if (a === '--base') opts.base = argv[++i] || opts.base;
 		else if (a === '--branch') opts.branch = argv[++i] || opts.branch;
@@ -308,13 +317,45 @@ function copyPromptOrWarn(prompt) {
 }
 
 /**
+ * Opciones de modelo: las que ofrece el agente por ACP (si va a correr así) o, si no, la lista fija.
+ * @param {import('../lib/agents.mjs').DetectedAgent} agent
+ * @param {{ acpCwd?: string }} opts
+ */
+async function modelOptions(agent, { acpCwd }) {
+	const fixed = modelChoices(agent.def);
+	if (!acpCwd) return fixed;
+	const spin = p.spinner();
+	spin.start(`Consultando los modelos de ${agent.def.label}`);
+	try {
+		const { models, currentModel } = await listAcpModels(agent, { cwd: acpCwd });
+		spin.stop(`Modelos de ${agent.def.label}`);
+		if (!models.length) return fixed;
+		const current = models.find((m) => m.value === currentModel);
+		return {
+			initialValue: '',
+			options: [
+				{ value: '', label: `Por defecto del agente${current ? ` (${current.name})` : ''}` },
+				...models
+					.filter((m) => m.value !== currentModel && m.value !== 'default')
+					.map((m) => ({ value: m.value, label: m.name, ...(m.name.toLowerCase() !== m.value.toLowerCase() ? { hint: m.value } : {}) })),
+				{ value: OTHER_MODEL, label: 'Otro…', hint: 'escribir el id del modelo' }
+			]
+		};
+	} catch (err) {
+		spin.stop(`No pude consultar los modelos (${err instanceof Error ? err.message.split('\n')[0] : err}).`);
+		return fixed;
+	}
+}
+
+/**
  * Modelo del agente: select con TTY; sin TTY, el modelo por defecto (string vacío).
  * @param {import('../lib/agents.mjs').DetectedAgent} agent
+ * @param {{ acpCwd?: string }} [opts] con `acpCwd`, la lista sale del agente por ACP
  */
-async function pickModel(agent) {
+async function pickModel(agent, opts = {}) {
 	if (!isInteractive()) return '';
 
-	const { options, initialValue } = modelChoices(agent.def);
+	const { options, initialValue } = await modelOptions(agent, opts);
 	const choice = await p.select({ message: 'Modelo', options, initialValue });
 	if (p.isCancel(choice)) {
 		p.cancel('Cancelado.');
@@ -337,8 +378,9 @@ async function pickModel(agent) {
  * Si `preset` ya viene elegido, solo pregunta el modelo.
  * @param {import('../lib/agents.mjs').DetectedAgent[]} detected
  * @param {import('../lib/agents.mjs').DetectedAgent} [preset]
+ * @param {{ repo: string, headless: boolean }} [run] para consultar los modelos por ACP
  */
-async function pickAgentAndModel(detected, preset) {
+async function pickAgentAndModel(detected, preset, run) {
 	if (!isInteractive()) return { agent: preset ?? detected[0], model: '' };
 
 	let agent = preset;
@@ -354,7 +396,8 @@ async function pickAgentAndModel(detected, preset) {
 		agent = detected.find((a) => a.def.id === id) ?? detected[0];
 	}
 
-	return { agent, model: await pickModel(agent) };
+	const acpCwd = run && !run.headless && supportsAcp(agent) ? run.repo : undefined;
+	return { agent, model: await pickModel(agent, { acpCwd }) };
 }
 
 /**
@@ -447,6 +490,28 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
 	return /** @type {{ path: string }} */ (result);
 }
 
+/**
+ * El agente corre dentro del server de la UI (ACP): la web muestra el proceso y abre el reporte; la terminal ve un
+ * resumen. La sesión queda viva para preguntas y cambios desde el reporte.
+ * @param {import('../lib/agents.mjs').DetectedAgent} agent
+ * @param {{ repo: string, branch: string, base: string, model: string, outputFilename: string, useClack: boolean }} run
+ * @param {{ host: string, port: number, open: boolean }} opts
+ */
+async function runAgentInUi(agent, { repo, branch, base, model, outputFilename, useClack }, opts) {
+	const id = randomUUID();
+	const msg = `Lanzando ${agent.def.label} (${model || 'modelo por defecto'}). El progreso se ve en la web y acá; Ctrl+C corta.`;
+	if (useClack) p.outro(msg);
+	else console.log(msg);
+	await startServer({
+		host: opts.host,
+		port: opts.port,
+		open: opts.open,
+		launchCwd: repo,
+		openPath: `/?agent=${encodeURIComponent(id)}`,
+		agentRun: { id, repo, branch, base, outputFilename, agentId: agent.def.id, ...(model ? { model } : {}) }
+	});
+}
+
 function explainWaitingForAgent(outputFilename, { copied, useClack }) {
 	const copyMsg = copied
 		? 'Se copió un prompt al portapapeles: pegalo en el chat de tu agente de IA para generar el contenido de la review.'
@@ -465,7 +530,8 @@ function explainWaitingForAgent(outputFilename, { copied, useClack }) {
 }
 
 /**
- * @param {{ host: string, port: number, open: boolean, launchCwd: string, importFile?: string, openPath?: string }} cfg
+ * @typedef {{ id: string, repo: string, branch: string, base: string, outputFilename: string, agentId: string, model?: string }} AgentRun
+ * @param {{ host: string, port: number, open: boolean, launchCwd: string, importFile?: string, openPath?: string, agentRun?: AgentRun }} cfg
  */
 async function startServer(cfg) {
 	if (!existsSync(entry)) {
@@ -496,7 +562,8 @@ O reinstalá el paquete (el tarball de npm incluye el build).`);
 			PORT: String(port),
 			ORIGIN: origin,
 			DIFF_REVIEW_LAUNCH_CWD: cfg.launchCwd,
-			...(cfg.importFile ? { DIFF_REVIEW_IMPORT_FILE: cfg.importFile } : {})
+			...(cfg.importFile ? { DIFF_REVIEW_IMPORT_FILE: cfg.importFile } : {}),
+			...(cfg.agentRun ? { DIFF_REVIEW_AGENT_RUN: JSON.stringify(cfg.agentRun), DIFF_REVIEW_MIRROR: '1' } : {})
 		},
 		stdio: ['ignore', 'pipe', 'inherit'],
 		windowsHide: false
@@ -514,6 +581,7 @@ O reinstalá el paquete (el tarball de npm incluye el build).`);
 					ready = true;
 					console.log(`diff-review listo en ${terminalLink(origin)} — Ctrl+C para salir.`);
 					if (cfg.open) openBrowser(openUrl);
+					else if (cfg.agentRun) console.log(`Progreso del agente: ${terminalLink(openUrl)}`);
 				}
 				continue;
 			}
@@ -665,7 +733,18 @@ async function main() {
 	}
 	const useAgent = !result && detected.length > 0 && (opts.agent || chosen != null);
 	if (useAgent) {
-		const { agent, model } = await pickAgentAndModel(detected, chosen ?? undefined);
+		const { agent, model } = await pickAgentAndModel(detected, chosen ?? undefined, {
+			repo: launch.repo,
+			headless: opts.headless
+		});
+		if (supportsAcp(agent) && !opts.headless) {
+			await runAgentInUi(
+				agent,
+				{ repo: launch.repo, branch, base, model, outputFilename, useClack },
+				opts
+			);
+			return;
+		}
 		result = await runAgentAndWait(agent, {
 			repo: launch.repo,
 			prompt,

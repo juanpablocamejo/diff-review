@@ -4,7 +4,8 @@ App local para revisar un branch: generás un prompt, lo corrés vos con tu agen
 (Claude, Cursor, Copilot, etc.), soltás el JSON que te devuelve, y la UI completa
 los diffs con `git` y te deja triager hallazgos.
 
-No spawnea agentes ni corre reviews sola: el modelo lo manejás vos a mano.
+También puede lanzar el agente por vos: con Claude Code corre por ACP (Agent Client Protocol) dentro de la UI,
+ves el proceso en vivo y después le podés preguntar o pedir cambios al reporte desde la web.
 
 ## Instalación
 
@@ -63,13 +64,38 @@ instalados, sigue con el portapapeles. Sin terminal interactiva usa el primer ag
 
 El agente tiene que estar logueado (p. ej. `claude /login` una vez).
 
+#### Por ACP, con la web (Claude Code, Cursor CLI, GitHub Copilot CLI)
+
+Si el agente elegido habla ACP, la CLI abre la UI enseguida y el agente corre dentro del server local. Claude Code
+va por el adaptador `@agentclientprotocol/claude-agent-acp` (se baja con `npx` la primera vez); Cursor
+(`cursor-agent acp`) y Copilot (`copilot --acp`) lo traen de fábrica. Codex y Gemini siguen por la terminal.
+
+- El select de modelo muestra los que ofrece cada agente (se consultan por ACP la primera vez).
+- La web muestra lo que va haciendo (comandos, archivos que lee, plan) y la terminal un resumen.
+- Al terminar cada turno, el server valida el JSON; si falta algo se lo pide al agente una vez y, cuando valida,
+  la web abre el reporte.
+- Cada pedido de permiso pasa por una política fija: leer dentro del repo, escribir únicamente el JSON del review
+  y comandos de solo lectura: `git` (diff, log, show, blame…), `cat`, `head`, `tail`, `grep`, `rg`, `find`, `ls`,
+  `wc`, `sed -n 'N,Mp'` y sus equivalentes de PowerShell, encadenados con `|`, `&&`, `||` o `;`, con los paths
+  dentro del repo. Se rechazan redirecciones a archivos (salvo `/dev/null`), `$(…)`, red, instalaciones y todo lo
+  demás; el agente recibe las reglas en el prompt para no intentarlo.
+- La allowlist propia de cada agente no se usa en estas sesiones (aprobaría por nombre de comando, p. ej.
+  `echo x > archivo`): Claude corre sin cargar `~/.claude/settings.json` ni el `.claude/` del repo, y Cursor con
+  una copia de su configuración sin `permissions.allow` (en el temp del sistema; el login se conserva).
+- La sesión queda viva: en el reporte, el botón **Agente** abre un chat para preguntarle sobre la review
+  (no puede escribir nada) o pedirle cambios al JSON (el reporte se actualiza y el triage de los hallazgos que
+  siguen se conserva). Si el server se reinició, la sesión se retoma con `session/load`.
+
+También se puede lanzar desde la UI, en "2. Prompt" → **Lanzar agente**. Con `--headless` corre en la terminal
+como el resto de los agentes.
+
 Para abrir la UI primero (sin esperar el JSON):
 
 ```bash
 diff-review --ui
 ```
 
-Opciones: `--port` (si está ocupado, usa el siguiente libre), `--host`, `--base`, `--branch`, `--agent`, `--no-open`.
+Opciones: `--port` (si está ocupado, usa el siguiente libre), `--host`, `--base`, `--branch`, `--agent`, `--headless`, `--no-open`.
 
 Si lo lanzás desde un repositorio git, la UI precarga esa ruta y el branch actual.
 

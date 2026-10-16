@@ -1,4 +1,5 @@
 import type {
+	AgentSessionRef,
 	ReportMeta,
 	RepoSource,
 	ReviewBlock,
@@ -70,8 +71,17 @@ export function parseReportMeta(raw: unknown, fallback: Partial<ReportMeta> = {}
 		remoteUrl: remoteUrl || undefined,
 		generatedAt: str(nested.generatedAt ?? rec.generatedAt) || undefined,
 		agent: str(nested.agent ?? rec.agent) || undefined,
-		model: str(nested.model ?? rec.model) || undefined
+		model: str(nested.model ?? rec.model) || undefined,
+		agentSession: parseAgentSession(nested.agentSession ?? rec.agentSession)
 	};
+}
+
+function parseAgentSession(raw: unknown): AgentSessionRef | undefined {
+	const rec = asRecord(raw);
+	const agentId = str(rec.agentId);
+	const sessionId = str(rec.sessionId);
+	const outputFilename = str(rec.outputFilename);
+	return agentId && sessionId && outputFilename ? { agentId, sessionId, outputFilename } : undefined;
 }
 
 /** JSON reimportable: meta + documento (sin depender del formulario). */

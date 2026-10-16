@@ -49,6 +49,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.8.0",
     "@bindrs/rfd": "^2.2.2",
     "@clack/prompts": "^1.8.1"
   }

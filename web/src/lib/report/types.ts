@@ -105,6 +105,14 @@ export type ReportMeta = {
 	agent?: string;
 	/** Id del modelo; informativo. */
 	model?: string;
+	/** Sesión ACP que generó la review (solo si la lanzó diff-review): permite seguir conversando con el agente. */
+	agentSession?: AgentSessionRef;
+};
+
+export type AgentSessionRef = {
+	agentId: string;
+	sessionId: string;
+	outputFilename: string;
 };
 
 /** Documento completo tal como se guarda en localStorage. */

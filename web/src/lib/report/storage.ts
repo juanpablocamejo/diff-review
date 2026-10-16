@@ -1,3 +1,4 @@
+import type { SeqEvent } from './agent-events';
 import type { ReportMeta, ReviewDocument, SavedReport, SavedReportSummary } from './types';
 
 const LAST_META_KEY = 'diff-review:last-meta';
@@ -110,6 +111,59 @@ export function saveReport(document: ReviewDocument, meta: ReportMeta): SavedRep
 	return full;
 }
 
+/**
+ * Reemplaza el documento de un reporte existente (p. ej. después de que el agente corrigió el JSON). El triage de los
+ * hallazgos que siguen existiendo se conserva; el de los que desaparecieron se descarta.
+ */
+export function replaceReportDocument(id: string, document: ReviewDocument, meta: ReportMeta): SavedReport | null {
+	const current = loadReportById(id);
+	if (!current) return null;
+	const full: SavedReport = { ...current, meta, document };
+	try {
+		localStorage.setItem(REPORT_KEY(id), JSON.stringify(full));
+	} catch {
+		/* idem saveReport */
+	}
+
+	const index = loadReportsIndex().map((item) =>
+		item.id === id
+			? {
+					...item,
+					groupCount: document.groups.length,
+					blockerCount: document.findings.filter((f) => f.blocking).length,
+					qualityCount: document.findings.filter((f) => f.class === 'quality').length,
+					intent: document.intent
+				}
+			: item
+	);
+	saveReportsIndex(index);
+
+	const ids = new Set(document.findings.map((f) => f.id));
+	const keep = (record: Record<string, boolean>) =>
+		Object.fromEntries(Object.entries(record).filter(([fid]) => ids.has(fid)));
+	const triage = loadTriage(id);
+	saveTriage(id, { decided: keep(triage.decided), fixSelected: keep(triage.fixSelected) });
+
+	return full;
+}
+
+const CHAT_KEY = (id: string) => `diff-review:chat:${id}`;
+
+/** Historial del chat con el agente de un reporte. `sessionId` = sesión del server que produjo `events`. */
+export type ChatHistory = { sessionId: string; events: SeqEvent[] };
+
+export function loadChat(id: string): ChatHistory {
+	return safeParse(localStorage.getItem(CHAT_KEY(id)), { sessionId: '', events: [] });
+}
+
+export function saveChat(id: string, chat: ChatHistory) {
+	try {
+		localStorage.setItem(CHAT_KEY(id), JSON.stringify(chat));
+	} catch {
+		/* idem */
+	}
+}
+
 export function loadReportById(id: string): SavedReport | null {
 	return safeParse<SavedReport | null>(localStorage.getItem(REPORT_KEY(id)), null);
 }
@@ -118,6 +172,7 @@ export function deleteReport(id: string) {
 	try {
 		localStorage.removeItem(REPORT_KEY(id));
 		localStorage.removeItem(TRIAGE_KEY(id));
+		localStorage.removeItem(CHAT_KEY(id));
 	} catch {
 		/* idem */
 	}

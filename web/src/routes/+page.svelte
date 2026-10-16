@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import {
@@ -26,6 +26,10 @@
 		pickReviewFile
 	} from '$lib/report/git.remote';
 	import type { DetectedOutput } from '$lib/report/git.remote';
+	import { acpAgentModels, acpAgents, agentSession, cancelAgent, startReview } from '$lib/report/agent.remote';
+	import type { AcpAgentOption, AcpModels, AgentSessionInfo, SeqEvent } from '$lib/report/agent-events';
+	import { AgentStream } from '$lib/report/agent-stream.svelte';
+	import AgentLog from '$lib/report/AgentLog.svelte';
 	import { deleteReport, loadLastMeta, loadReportsIndex, saveLastMeta, saveReport } from '$lib/report/storage';
 	import { SAMPLE_DOCUMENT } from '$lib/report/sample';
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
@@ -44,7 +48,7 @@
 	let promptEdited = $state(false);
 	let copied = $state(false);
 	let promptNotify = $state(false);
-	let promptViewMode = $state<'full' | 'command'>('full');
+	let promptViewMode = $state<'full' | 'command' | 'agent'>('full');
 	let commandCopied = $state(false);
 
 	let dragOver = $state(false);
@@ -82,6 +86,47 @@
 	let consumedDetectionKey = $state('');
 	let nameRefreshSeq = 0;
 
+	/** Agentes con modo ACP: se lanzan desde acá y el progreso se ve en vivo. */
+	let agentOptions = $state<AcpAgentOption[]>([]);
+	let agentChoice = $state('');
+	let modelChoice = $state('');
+	let customModel = $state('');
+	let launchingAgent = $state(false);
+	let agentError = $state('');
+	let agentInfo = $state<AgentSessionInfo | null>(null);
+	let agentStream = $state<AgentStream | null>(null);
+	const OTHER_MODEL = '__other__';
+	const chosenAgent = $derived(agentOptions.find((a) => a.id === agentChoice) ?? null);
+	/** Modelos que ofrece cada agente por ACP; mientras no llegan, la lista fija de `lib/agents.mjs`. */
+	let agentModels = $state<Record<string, AcpModels | 'loading' | null>>({});
+	const modelOptions = $derived.by(() => {
+		const live = agentModels[agentChoice];
+		if (!live || live === 'loading') return chosenAgent?.models ?? [];
+		const current = live.models.find((m) => m.value === live.currentModel);
+		return [
+			{ value: '', label: `Por defecto del agente${current ? ` (${current.name})` : ''}` },
+			...live.models
+				.filter((m) => m.value !== live.currentModel && m.value !== 'default')
+				.map((m) => ({
+					value: m.value,
+					label: m.name.toLowerCase() === m.value.toLowerCase() ? m.name : `${m.name} · ${m.value}`
+				})),
+			{ value: OTHER_MODEL, label: 'Otro…' }
+		];
+	});
+
+	$effect(() => {
+		const id = agentChoice;
+		if (promptViewMode !== 'agent' || !id || id in untrack(() => agentModels)) return;
+		agentModels = { ...untrack(() => agentModels), [id]: 'loading' };
+		void acpAgentModels({ agentId: id, repo: untrack(() => meta.repo) })
+			.catch(() => null)
+			.then((res) => (agentModels = { ...agentModels, [id]: res }));
+	});
+	const canLaunchAgent = $derived(
+		meta.source === 'local' && looksLikePath(meta.repo) && Boolean(meta.branch.trim()) && meta.branch !== meta.base
+	);
+
 	const commandText = $derived(buildCommandText(meta));
 	const canWatchRepo = $derived(meta.source === 'local' && looksLikePath(meta.repo));
 
@@ -94,6 +139,7 @@
 		const wantWatch = params.get('watch') === '1';
 		const wantNotify = params.get('notify') === 'prompt';
 		const outParam = params.get('out')?.trim();
+		const agentParam = params.get('agent')?.trim();
 		autoWatch = wantWatch;
 		if (wantImport) diffBusy = true;
 		if (outParam && isOutputFilename(outParam)) {
@@ -102,7 +148,9 @@
 		promptText = buildPrompt(meta, { outputFilename });
 		reports = loadReportsIndex();
 		// Los flags ya quedaron en estado. Sacarlos de la URL evita que un back/refresh vuelva a importar.
-		if (wantImport || wantWatch || wantNotify || outParam) clearLaunchQuery();
+		if (wantImport || wantWatch || wantNotify || outParam || agentParam) clearLaunchQuery();
+		void loadAgentOptions();
+		if (agentParam) void followAgentSession(agentParam);
 		void bootstrapFromLaunch(last, {
 			wantImport,
 			wantWatch,
@@ -113,8 +161,76 @@
 		const timer = setInterval(() => {
 			void pollDetectedOutput({ auto: true });
 		}, 1500);
-		return () => clearInterval(timer);
+		return () => {
+			clearInterval(timer);
+			agentStream?.close();
+		};
 	});
+
+	async function loadAgentOptions() {
+		try {
+			agentOptions = await acpAgents();
+			if (!agentOptions.some((a) => a.id === agentChoice)) agentChoice = agentOptions[0]?.id ?? '';
+		} catch {
+			agentOptions = [];
+		}
+	}
+
+	/** Sigue una sesión ya lanzada (desde el CLI o desde acá) y abre el reporte cuando el JSON valida. */
+	async function followAgentSession(id: string, known?: AgentSessionInfo) {
+		promptViewMode = 'agent';
+		agentError = '';
+		agentInfo = known ?? (await agentSession({ id }).catch(() => null));
+		if (!agentInfo) {
+			agentError = 'La sesión del agente ya no existe (¿se reinició diff-review?).';
+			return;
+		}
+		agentStream?.close();
+		const stream = new AgentStream(id, (event) => void onAgentEvent(event));
+		agentStream = stream;
+		stream.connect();
+	}
+
+	async function onAgentEvent(event: SeqEvent) {
+		if (event.type !== 'review' || !event.ok || !agentInfo) return;
+		try {
+			const loaded = await loadDetectedOutput({ repo: agentInfo.repo, filename: event.filename });
+			if (!loaded?.payload) return;
+			outputFilename = event.filename;
+			await ingestPayload(loaded.payload);
+		} catch (err) {
+			dropErrors = [`No se pudo abrir el JSON del agente: ${errMessage(err)}`];
+		}
+	}
+
+	async function launchAgent() {
+		if (!chosenAgent || !canLaunchAgent || launchingAgent) return;
+		const model = modelChoice === OTHER_MODEL ? customModel.trim() : modelChoice;
+		launchingAgent = true;
+		agentError = '';
+		try {
+			const started = await startReview({
+				repo: meta.repo.trim(),
+				branch: meta.branch.trim(),
+				base: meta.base.trim() || 'develop',
+				agentId: chosenAgent.id,
+				model
+			});
+			outputFilename = started.outputFilename;
+			await followAgentSession(started.id, started);
+		} catch (err) {
+			agentError = errMessage(err);
+		} finally {
+			launchingAgent = false;
+		}
+	}
+
+	function resetAgentSession() {
+		agentStream?.close();
+		agentStream = null;
+		agentInfo = null;
+		agentError = '';
+	}
 
 	function clearLaunchQuery() {
 		const url = new URL(window.location.href);
@@ -653,7 +769,8 @@
 			remoteUrl: remoteUrl || ctx.remoteUrl || meta.remoteUrl,
 			...(ctx.generatedAt ? { generatedAt: ctx.generatedAt } : {}),
 			...(ctx.agent ? { agent: ctx.agent } : {}),
-			...(ctx.model ? { model: ctx.model } : {})
+			...(ctx.model ? { model: ctx.model } : {}),
+			...(ctx.agentSession ? { agentSession: ctx.agentSession } : {})
 		};
 	}
 
@@ -861,6 +978,11 @@
 				<button type="button" class:on={promptViewMode === 'command'} onclick={() => (promptViewMode = 'command')}
 					>Comando (skill)</button
 				>
+				{#if agentOptions.length || agentStream}
+					<button type="button" class:on={promptViewMode === 'agent'} onclick={() => (promptViewMode = 'agent')}
+						>Lanzar agente</button
+					>
+				{/if}
 			</div>
 
 			{#if promptViewMode === 'full'}
@@ -870,6 +992,73 @@
 					<button type="button" class="primary" onclick={copyPrompt}>{copied ? 'Copiado ✓' : 'Copiar prompt'}</button>
 					<button type="button" class="ghost" onclick={loadSample}>Ver ejemplo</button>
 				</div>
+			{:else if promptViewMode === 'agent'}
+				{#if agentStream && agentInfo}
+					<div class="agent-head">
+						<span>
+							<strong>{agentInfo.agentLabel}</strong>
+							{#if agentInfo.model}<small>{agentInfo.model}</small>{/if}
+							<small>{agentInfo.branch} → {agentInfo.base}</small>
+						</span>
+						{#if agentStream.busy}
+							<button type="button" onclick={() => void cancelAgent({ id: agentInfo!.id })}>Cancelar</button>
+						{:else}
+							<button type="button" class="ghost" onclick={resetAgentSession}>Nueva review</button>
+						{/if}
+					</div>
+					<div class="agent-log">
+						<AgentLog events={agentStream.events} busy={agentStream.busy} />
+					</div>
+					{#if agentStream.gone}
+						<p class="error-line">La sesión del agente ya no existe en el server.</p>
+					{/if}
+				{:else}
+					<p class="hint-text">
+						diff-review lanza el agente en el repo, muestra lo que va haciendo y abre el reporte cuando el JSON
+						valida. Solo puede leer el repo, correr comandos de solo lectura (git, grep, cat…) y escribir
+						<code>{outputFilename}</code>.
+					</p>
+					<div class="row">
+						<label class="field">
+							<span>Agente</span>
+							<select bind:value={agentChoice} onchange={() => (modelChoice = '')}>
+								{#each agentOptions as a (a.id)}
+									<option value={a.id}>{a.label}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="field">
+							<span>Modelo{#if agentModels[agentChoice] === 'loading'}<small class="loading-models"> · consultando al agente…</small>{/if}</span>
+							<select bind:value={modelChoice}>
+								{#each modelOptions as m (m.value)}
+									<option value={m.value}>{m.label}</option>
+								{/each}
+							</select>
+						</label>
+					</div>
+					{#if modelChoice === OTHER_MODEL}
+						<label class="field">
+							<span>Id del modelo</span>
+							<input type="text" bind:value={customModel} placeholder="opus" />
+						</label>
+					{/if}
+					<div class="actions">
+						<button
+							type="button"
+							class="primary"
+							onclick={() => void launchAgent()}
+							disabled={!canLaunchAgent || launchingAgent || !chosenAgent}
+						>
+							{launchingAgent ? 'Lanzando…' : 'Lanzar review'}
+						</button>
+					</div>
+					{#if !canLaunchAgent}
+						<p class="hint-text">Elegí un repo local y un branch distinto de la base.</p>
+					{/if}
+				{/if}
+				{#if agentError}
+					<p class="error-line">{agentError}</p>
+				{/if}
 			{:else}
 				<p class="hint-text">Necesita el skill instalado (abajo). El agente ya tiene guardadas las reglas y el schema de salida.</p>
 				<div class="command-box"><code>{commandText}</code></div>
@@ -1417,6 +1606,35 @@
 		font-size: 12.5px;
 		color: var(--text);
 		white-space: nowrap;
+	}
+
+	.agent-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		margin-bottom: 8px;
+	}
+	.loading-models {
+		color: var(--text-faint);
+		font-weight: 400;
+	}
+	.agent-head small {
+		margin-left: 8px;
+		color: var(--text-faint);
+		font-family: var(--mono);
+		font-size: 12px;
+	}
+	.agent-log {
+		display: flex;
+		height: 380px;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--bg-elev);
+		padding: 10px 12px;
+	}
+	.agent-log :global(.log) {
+		flex: 1;
 	}
 
 	.actions {

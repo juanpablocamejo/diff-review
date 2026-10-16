@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { downloadReport, type ExportFormat } from '$lib/report/export';
+	import ChatPanel from '$lib/report/ChatPanel.svelte';
 	import ReportView from '$lib/report/ReportView.svelte';
 	import { deleteReport, loadReportById } from '$lib/report/storage';
 	import type { SavedReport } from '$lib/report/types';
@@ -20,6 +21,7 @@
 	let showExplanations = $state(true);
 	let downloadOpen = $state(false);
 	let kebabOpen = $state(false);
+	let chatOpen = $state(false);
 
 	$effect(() => {
 		report = loadReportById(params.id);
@@ -184,6 +186,17 @@
 
 		<div class="chrome-right">
 			{#if report}
+				<button
+					type="button"
+					class="ghost"
+					class:on={chatOpen}
+					title={report.meta.agentSession
+						? 'Preguntarle al agente o pedirle cambios en el reporte'
+						: 'Solo para reportes generados con “Lanzar agente”'}
+					onclick={() => (chatOpen = !chatOpen)}
+				>
+					Agente
+				</button>
 				<div class="menu-wrap">
 					<button
 						type="button"
@@ -248,7 +261,12 @@
 	{:else if report === null}
 		<p class="hint">No se encontró este reporte en este navegador. Los reportes viven en localStorage, así que no se comparten entre dispositivos.</p>
 	{:else}
-		<ReportView {report} {diffMode} {diffFontSize} {wrapLines} {sidebarCollapsed} {showExplanations} />
+		<div class="body">
+			<ReportView {report} {diffMode} {diffFontSize} {wrapLines} {sidebarCollapsed} {showExplanations} />
+			{#if chatOpen}
+				<ChatPanel {report} onclose={() => (chatOpen = false)} onreportupdated={(updated) => (report = updated)} />
+			{/if}
+		</div>
 	{/if}
 </div>
 
@@ -259,6 +277,21 @@
 		flex-direction: column;
 		min-height: 0;
 		background: var(--bg);
+	}
+
+	.body {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+	}
+
+	.body > :global(.report-shell) {
+		min-width: 0;
+	}
+
+	.ghost.on {
+		background: var(--accent-soft);
+		border-color: var(--accent);
 	}
 
 	.chrome {
