@@ -42,6 +42,6 @@
 		border: 1px solid var(--btn-primary-border);
 		color: var(--btn-primary-text);
 		padding: 8px 14px;
-		border-radius: 8px;
+		border-radius: 0;
 	}
 </style>

@@ -1,8 +1,11 @@
 <script lang="ts">
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
+	import AgentIcon from './AgentIcon.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import type { PermissionResponse } from './AgentLog.svelte';
+	import PermissionActions from './PermissionActions.svelte';
 	import TrustSessionToggle from './TrustSessionToggle.svelte';
+	import { agentShortName } from './agent-icons';
 	import type { AgentSessionInfo, SeqEvent } from './agent-events';
 	import { openAgentLogin } from './agent.remote';
 
@@ -151,6 +154,38 @@
 		})
 	);
 
+	let permCursor = $state(0);
+
+	const pendingPerms = $derived(
+		logEvents.filter(
+			(e): e is Extract<SeqEvent, { type: 'permission' }> => e.type === 'permission' && e.pending
+		)
+	);
+	const pendingIndex = $derived(
+		pendingPerms.length === 0 ? 0 : Math.min(permCursor, pendingPerms.length - 1)
+	);
+	const currentPending = $derived(pendingPerms[pendingIndex] ?? null);
+
+	const showStageFooter = $derived(
+		Boolean(info.id && onsessiontrust) || Boolean(currentPending && onrespondpermission)
+	);
+
+	function onPermKeydown(e: KeyboardEvent) {
+		const n = pendingPerms.length;
+		if (n <= 1) return;
+		if (e.key === 'ArrowLeft') {
+			e.preventDefault();
+			permCursor = (pendingIndex + n - 1) % n;
+		} else if (e.key === 'ArrowRight') {
+			e.preventDefault();
+			permCursor = (pendingIndex + 1) % n;
+		}
+	}
+
+	function respondPermission(detail: PermissionResponse) {
+		onrespondpermission?.(detail);
+	}
+
 	const launchingTitle = $derived(
 		/Lanzando/i.test(lastStatusMessage)
 			? lastStatusMessage
@@ -276,6 +311,13 @@
 				</div>
 			{:else}
 				<!-- launching + reviewing: el log siempre visible para que el progreso no quede solo en la terminal -->
+				<header class="stage-header">
+					<AgentIcon id={info.agentId} size={16} />
+					<strong>{agentShortName(info.agentId, info.agentLabel)}</strong>
+					{#if info.model}
+						<small title={info.model}>{info.model}</small>
+					{/if}
+				</header>
 				<div class="log-wrap">
 					{#if stage === 'launching'}
 						<div class="launch-banner">
@@ -288,19 +330,34 @@
 							</div>
 						</div>
 					{/if}
-					{#if info.id && onsessiontrust}
-						<TrustSessionToggle
-							enabled={Boolean(info.sessionTrust)}
-							onchange={onsessiontrust}
-						/>
-					{/if}
 					<AgentLog
 						events={logEvents}
 						{busy}
 						sessionId={info.id}
 						{onrespondpermission}
 						{onretry}
+						actionsExternal={true}
+						bind:pendingCursor={permCursor}
 					/>
+					{#if showStageFooter}
+						<footer class="stage-footer">
+							{#if info.id && onsessiontrust}
+								<TrustSessionToggle
+									enabled={Boolean(info.sessionTrust)}
+									onchange={onsessiontrust}
+								/>
+							{/if}
+							<span class="footer-spacer"></span>
+							{#if currentPending && onrespondpermission}
+								<PermissionActions
+									currentPending={currentPending}
+									pendingCount={pendingPerms.length}
+									onrespond={respondPermission}
+									onkeydown={onPermKeydown}
+								/>
+							{/if}
+						</footer>
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -354,7 +411,7 @@
 		font-weight: 500;
 		letter-spacing: 0.02em;
 		padding: 3px 9px;
-		border-radius: 999px;
+		border-radius: 0;
 		border: 1px solid var(--border);
 		color: var(--text-dim);
 		background: var(--bg-card);
@@ -411,7 +468,7 @@
 		align-self: start;
 		padding: 16px 16px 14px;
 		border: 1px solid var(--border);
-		border-radius: 10px;
+		border-radius: 0;
 		background: var(--bg-elev);
 	}
 
@@ -465,7 +522,7 @@
 		display: flex;
 		flex-direction: column;
 		border: 1px solid var(--border);
-		border-radius: 10px;
+		border-radius: 0;
 		background: var(--bg-elev);
 		overflow: hidden;
 	}
@@ -496,7 +553,7 @@
 	.primary {
 		padding: 7px 14px;
 		border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
-		border-radius: 6px;
+		border-radius: 0;
 		background: var(--accent-soft);
 		color: var(--accent);
 		font: inherit;
@@ -564,6 +621,32 @@
 		color: var(--text-faint);
 	}
 
+	.stage-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--border);
+		min-width: 0;
+		flex: none;
+		border-radius: 0;
+	}
+
+	.stage-header strong {
+		font-size: 13.5px;
+		font-weight: 650;
+	}
+
+	.stage-header small {
+		font-family: var(--mono);
+		font-size: 11.5px;
+		color: var(--text-faint);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+
 	.log-wrap {
 		flex: 1;
 		min-height: 0;
@@ -571,11 +654,27 @@
 		flex-direction: column;
 		padding: 12px 14px;
 		gap: 10px;
+		border-radius: 0;
 	}
 
 	.log-wrap :global(.log) {
 		flex: 1;
 		min-height: 0;
+	}
+
+	.stage-footer {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex: none;
+		padding-top: 10px;
+		margin-top: auto;
+		border-top: 1px solid var(--border);
+		border-radius: 0;
+	}
+
+	.footer-spacer {
+		flex: 1;
 	}
 
 	.launch-banner {
@@ -584,7 +683,7 @@
 		gap: 12px;
 		padding: 10px 12px;
 		border: 1px solid var(--border);
-		border-radius: 8px;
+		border-radius: 0;
 		background: color-mix(in srgb, var(--accent-soft) 70%, var(--bg-card));
 	}
 

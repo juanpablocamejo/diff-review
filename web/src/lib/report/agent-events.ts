@@ -18,11 +18,14 @@ export type AgentEvent =
 	| {
 			type: 'permission';
 			requestId: string;
+			/** Etiqueta corta del agente (si difiere del comando). */
 			title: string;
 			kind: string;
 			reason: string;
 			allow: boolean;
 			pending: boolean;
+			/** Comando / path real que evalúa la política (p. ej. shell). */
+			command?: string;
 			/** No mostrar línea individual (p. ej. resuelto en lote → ver `permission_summary`). */
 			quiet?: boolean;
 		}

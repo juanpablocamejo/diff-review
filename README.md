@@ -71,7 +71,7 @@ va por el adaptador `@agentclientprotocol/claude-agent-acp` (se baja con `npx` l
 
 - El select de modelo muestra los que ofrece cada agente (se consultan por ACP la primera vez).
 - La web muestra lo que va haciendo (comandos, archivos que lee, plan). La terminal solo avisa fallos duros o JSON válido.
-- Al terminar cada turno, el server valida el JSON; si falta algo se lo pide al agente una vez y, cuando valida,
+- Al terminar cada turno, el server valida el JSON; si falta algo se lo pide al agente hasta dos veces y, cuando valida,
   la web abre el reporte.
 - Cada pedido de permiso pasa por una política fija: leer dentro del repo, escribir únicamente el JSON del review
   y comandos de solo lectura: `git` (diff, log, show, blame…), `cat`, `head`, `tail`, `grep`, `rg`, `find`, `ls`,

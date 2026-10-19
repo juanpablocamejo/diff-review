@@ -2,30 +2,33 @@
 	import { tick } from 'svelte';
 	import type { SeqEvent } from './agent-events';
 	import MarkdownBody from './MarkdownBody.svelte';
+	import PermissionActions from './PermissionActions.svelte';
+	import type {
+		PermissionResponse as PermissionResponseType,
+		PermissionScope as PermissionScopeType
+	} from './permission-response';
 
-	export type PermissionScope = 'once' | 'session' | 'always';
-
-	export type PermissionResponse = {
-		requestId?: string;
-		allow: boolean;
-		allowAll?: boolean;
-		/** once (default) | session | always (ACP allow_always). */
-		scope?: PermissionScope;
-	};
+	export type PermissionResponse = PermissionResponseType;
+	export type PermissionScope = PermissionScopeType;
 
 	let {
 		events,
 		busy = false,
 		sessionId = null,
 		onrespondpermission,
-		onretry
+		onretry,
+		actionsExternal = false,
+		pendingCursor = $bindable(0)
 	}: {
 		events: SeqEvent[];
 		busy?: boolean;
 		sessionId?: string | null;
-		onrespondpermission?: (detail: PermissionResponse) => void;
+		onrespondpermission?: (detail: PermissionResponseType) => void;
 		/** Reintentar tras un review fallido final (misma sesión). */
 		onretry?: () => void;
+		/** Si true, los botones de permiso los renderiza el padre (p. ej. footer del stage). */
+		actionsExternal?: boolean;
+		pendingCursor?: number;
 	} = $props();
 
 	const lastFinalFailSeq = $derived.by(() => {
@@ -39,8 +42,6 @@
 	let box = $state<HTMLDivElement | null>(null);
 	/** Seguir el final solo si el usuario no scrolleó hacia arriba. */
 	let pinned = true;
-	/** Cursor de navegación entre permisos pendientes (se clampea al largo actual). */
-	let pendingCursor = $state(0);
 
 	const pending = $derived(
 		events.filter(
@@ -97,8 +98,61 @@
 		}
 	}
 
-	function respond(detail: PermissionResponse) {
+	function respond(detail: PermissionResponseType) {
 		onrespondpermission?.(detail);
+	}
+
+	const KIND_LABELS: Record<string, string> = {
+		execute: 'Shell',
+		read: 'Lectura',
+		edit: 'Edición',
+		delete: 'Borrado',
+		search: 'Búsqueda',
+		think: 'Pensar'
+	};
+
+	function kindLabel(kind: string): string {
+		return KIND_LABELS[kind] ?? kind;
+	}
+
+	const COMMAND_COLLAPSE_CHARS = 280;
+	const COMMAND_COLLAPSE_LINES = 8;
+	const RESOLVED_COMMAND_CHARS = 72;
+
+	/** requestId → expandido en la tarjeta pendiente. */
+	let expandedCommands = $state<Record<string, boolean>>({});
+
+	function commandNeedsTruncate(text: string): boolean {
+		if (text.length > COMMAND_COLLAPSE_CHARS) return true;
+		return text.split('\n').length > COMMAND_COLLAPSE_LINES;
+	}
+
+	function truncateCommand(text: string, maxChars: number, maxLines: number): string {
+		const lines = text.split('\n');
+		if (lines.length > maxLines) {
+			return lines.slice(0, maxLines).join('\n') + '…';
+		}
+		if (text.length > maxChars) {
+			return text.slice(0, maxChars) + '…';
+		}
+		return text;
+	}
+
+	function pendingCommandDisplay(text: string, requestId: string): string {
+		if (expandedCommands[requestId] || !commandNeedsTruncate(text)) return text;
+		return truncateCommand(text, COMMAND_COLLAPSE_CHARS, COMMAND_COLLAPSE_LINES);
+	}
+
+	function toggleCommandExpanded(requestId: string) {
+		expandedCommands[requestId] = !expandedCommands[requestId];
+	}
+
+	function resolvedPermissionSubject(event: Extract<SeqEvent, { type: 'permission' }>): string {
+		if (event.command) {
+			const short = truncateCommand(event.command, RESOLVED_COMMAND_CHARS, 1);
+			return `${kindLabel(event.kind)} — ${short}`;
+		}
+		return event.title || kindLabel(event.kind);
 	}
 
 	const USER_LABEL = { review: 'Review', ask: 'Pregunta', edit: 'Cambio', fix: 'Corrección' } as const;
@@ -129,9 +183,9 @@
 			{:else if event.type === 'permission'}
 				<div class="permission" class:allowed={event.allow}>
 					{#if event.allow}
-						Permitido: {event.title}
+						Permitido: {resolvedPermissionSubject(event)}
 					{:else}
-						Rechazado: {event.title} <span>({event.reason})</span>
+						Rechazado: {resolvedPermissionSubject(event)} <span>({event.reason})</span>
 					{/if}
 				</div>
 			{:else if event.type === 'permission_summary'}
@@ -180,12 +234,12 @@
 		{/if}
 	{/each}
 
-	{#if currentPending && sessionId && onrespondpermission}
+	{#if currentPending && sessionId && (onrespondpermission || actionsExternal)}
 		<div class="permission pending grouped" role="group" aria-label="Permisos pendientes">
 			<div class="perm-head">
 				<strong>Permiso</strong>
 				{#if currentPending.kind}
-					<span class="kind">{currentPending.kind}</span>
+					<span class="kind">{kindLabel(currentPending.kind)}</span>
 				{/if}
 				{#if pending.length > 1}
 					<span class="counter" aria-live="polite">{pendingIndex + 1} / {pending.length}</span>
@@ -209,44 +263,38 @@
 					</span>
 				{/if}
 			</div>
-			<p class="perm-title">{currentPending.title}</p>
-			<p class="perm-reason">{currentPending.reason}</p>
-			<div class="perm-actions">
-				<button
-					type="button"
-					class="allow"
-					title="Solo este pedido. El próximo denegado vuelve a preguntar."
-					onkeydown={onPermKeydown}
-					onclick={() =>
-						respond({ requestId: currentPending.requestId, allow: true, scope: 'once' })}
-					>Permitir una vez</button
-				>
-				<button
-					type="button"
-					class="deny"
-					title="Niega solo este pedido."
-					onkeydown={onPermKeydown}
-					onclick={() => respond({ requestId: currentPending.requestId, allow: false })}
-					>Rechazar</button
-				>
-				{#if pending.length > 1}
-					<button
-						type="button"
-						class="allow-all"
-						title="Aprueba todos los pedidos pendientes de ahora. No cambia los futuros."
-						onkeydown={onPermKeydown}
-						onclick={() => respond({ allow: true, allowAll: true, scope: 'once' })}
-						>Permitir todo</button
-					>
-					<button
-						type="button"
-						class="deny-all"
-						title="Niega todos los pedidos pendientes de ahora."
-						onkeydown={onPermKeydown}
-						onclick={() => respond({ allow: false, allowAll: true })}>Rechazar todo</button
-					>
+			{#if currentPending.command}
+				{#if currentPending.title}
+					<p class="perm-subtitle">{currentPending.title}</p>
 				{/if}
-			</div>
+				<pre
+					class="perm-command"
+					class:collapsed={!expandedCommands[currentPending.requestId] &&
+						commandNeedsTruncate(currentPending.command)}>{pendingCommandDisplay(
+						currentPending.command,
+						currentPending.requestId
+					)}</pre>
+				{#if commandNeedsTruncate(currentPending.command)}
+					<button
+						type="button"
+						class="perm-expand"
+						onclick={() => toggleCommandExpanded(currentPending.requestId)}
+					>
+						{expandedCommands[currentPending.requestId] ? 'Ver menos' : 'Ver más'}
+					</button>
+				{/if}
+			{:else if currentPending.title}
+				<p class="perm-title">{currentPending.title}</p>
+			{/if}
+			<p class="perm-reason">{currentPending.reason}</p>
+			{#if !actionsExternal && onrespondpermission}
+				<PermissionActions
+					currentPending={currentPending}
+					pendingCount={pending.length}
+					onrespond={respond}
+					onkeydown={onPermKeydown}
+				/>
+			{/if}
 		</div>
 	{/if}
 
@@ -275,7 +323,7 @@
 		max-width: 90%;
 		background: var(--accent-soft);
 		border: 1px solid var(--btn-primary-border);
-		border-radius: 8px;
+		border-radius: 0;
 		padding: 6px 10px;
 	}
 	.tag {
@@ -332,7 +380,7 @@
 	}
 	.permission.pending {
 		border: 1px solid var(--warn);
-		border-radius: 6px;
+		border-radius: 0;
 		padding: 8px 10px;
 		background: var(--bg-card);
 		color: var(--text);
@@ -370,43 +418,59 @@
 		font-size: 11px;
 		line-height: 1.2;
 		border: 1px solid var(--border);
+		border-radius: 0;
 		background: var(--bg-elev);
 		color: var(--text-dim);
+	}
+	.perm-subtitle {
+		margin: 4px 0 0;
+		font-size: 11.5px;
+		color: var(--text-faint);
 	}
 	.perm-title {
 		margin: 4px 0 0;
 		font-family: var(--mono);
 		font-size: 12px;
 	}
+	.perm-command {
+		margin: 6px 0 0;
+		padding: 8px 10px;
+		font-family: var(--mono);
+		font-size: 11.5px;
+		line-height: 1.4;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+		background: var(--bg-elev);
+		border: 1px solid var(--border);
+		border-radius: 0;
+		max-width: 100%;
+	}
+	.perm-command.collapsed {
+		max-height: 10.5em;
+		overflow: hidden;
+	}
+	.perm-expand {
+		margin: 4px 0 0;
+		padding: 0;
+		font-size: 11.5px;
+		border: none;
+		border-radius: 0;
+		background: transparent;
+		color: var(--accent);
+		text-decoration: underline;
+		cursor: pointer;
+	}
+	.perm-expand:hover {
+		color: var(--text);
+	}
 	.perm-reason {
 		margin: 2px 0 0;
 		font-size: 11.5px;
 		color: var(--text-faint);
 	}
-	.perm-actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
+	.permission.pending :global(.perm-actions) {
 		margin-top: 8px;
-	}
-	.perm-actions button {
-		padding: 5px 10px;
-		font-size: 12px;
-		border: 1px solid var(--border);
-		background: var(--bg-elev);
-		color: var(--text);
-	}
-	.perm-actions .allow,
-	.perm-actions .allow-all {
-		background: var(--ok-bg);
-		border-color: var(--ok);
-		color: var(--ok);
-	}
-	.perm-actions .deny,
-	.perm-actions .deny-all {
-		background: var(--danger-bg);
-		border-color: var(--danger-border);
-		color: var(--danger);
 	}
 	.permission span {
 		color: var(--text-faint);
@@ -422,7 +486,7 @@
 		color: var(--text-faint);
 	}
 	.review {
-		border-radius: 6px;
+		border-radius: 0;
 		padding: 6px 10px;
 		font-size: 12px;
 	}
@@ -435,7 +499,7 @@
 		padding: 5px 12px;
 		font-size: 12px;
 		border: 1px solid var(--danger-border);
-		border-radius: 6px;
+		border-radius: 0;
 		background: var(--bg-elev);
 		color: var(--text);
 		cursor: pointer;
@@ -452,7 +516,7 @@
 		background: var(--danger-bg);
 		border: 1px solid var(--danger-border);
 		color: var(--danger);
-		border-radius: 6px;
+		border-radius: 0;
 		padding: 6px 10px;
 		font-size: 12px;
 	}

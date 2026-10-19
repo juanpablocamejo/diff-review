@@ -215,7 +215,7 @@
 	.badge {
 		padding: 0 5px;
 		border: 1px solid var(--border);
-		border-radius: 999px;
+		border-radius: 0;
 		background: var(--bg-elev, var(--bg-card));
 		color: var(--text-dim, var(--text-faint));
 		font-size: 10px;

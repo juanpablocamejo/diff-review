@@ -27,7 +27,7 @@
 		border: 1px solid var(--border);
 		background: var(--bg-card);
 		color: var(--text-dim);
-		border-radius: 6px;
+		border-radius: 0;
 		cursor: pointer;
 		flex-shrink: 0;
 	}

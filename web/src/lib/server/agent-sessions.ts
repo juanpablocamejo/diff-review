@@ -11,7 +11,13 @@ import { existsSync, statSync, writeFileSync } from 'node:fs';
 import type { SessionUpdate, ToolCallUpdate } from '@agentclientprotocol/sdk';
 import { detectAgents, modelChoices, type DetectedAgent } from '$review/lib/agents.mjs';
 import { listAcpModelsCached, startAcpSession, supportsAcp, type AcpSession } from '$review/lib/acp.mjs';
-import { decidePermission, type PolicyMode } from '$review/lib/acp-policy.mjs';
+import {
+	decidePermission,
+	humanizePolicyReason,
+	toolCallCommand,
+	toolCallLabel,
+	type PolicyMode
+} from '$review/lib/acp-policy.mjs';
 import {
 	authFailureMessage as formatAuthFailure,
 	loginCommand,
@@ -262,14 +268,14 @@ function askUserPermission(
 	}
 
 	const requestId = crypto.randomUUID();
-	const title = toolCall.title || toolCall.kind || 'herramienta';
 	const kind = toolCall.kind || '';
+	const command = toolCallCommand(toolCall);
+	const title = toolCallLabel(toolCall, command) || (command ? '' : toolCall.title || kind || 'herramienta');
+	const reason = humanizePolicyReason(decision.reason);
+	const base = { requestId, title, kind, reason, command: command || undefined };
 	emit(entry, {
 		type: 'permission',
-		requestId,
-		title,
-		kind,
-		reason: decision.reason,
+		...base,
 		allow: false,
 		pending: true
 	});
@@ -278,9 +284,7 @@ function askUserPermission(
 			entry.pendingPermissions.delete(requestId);
 			emit(entry, {
 				type: 'permission',
-				requestId,
-				title,
-				kind,
+				...base,
 				reason: 'tiempo agotado',
 				allow: false,
 				pending: false
@@ -298,10 +302,8 @@ function askUserPermission(
 				}
 				emit(entry, {
 					type: 'permission',
-					requestId,
-					title,
-					kind,
-					reason: permissionReasonLabel(allow, scope, decision.reason),
+					...base,
+					reason: permissionReasonLabel(allow, scope, reason),
 					allow,
 					pending: false,
 					quiet: opts?.quiet
@@ -502,10 +504,38 @@ function mtime(path: string): number {
 	}
 }
 
+/** Cuántas veces el server le pide solo al agente corregir/escribir el JSON antes de cortar con Reintentar. */
+const OUTPUT_AUTO_RETRIES = 2;
+
 /**
  * Después de un turno que podía escribir el JSON: validarlo, estamparle la sesión y, si quedó mal, pedirle al
- * agente que lo corrija (una vez).
+ * agente que lo corrija (hasta `OUTPUT_AUTO_RETRIES` veces).
  */
+function checkEntryReport(entry: Entry) {
+	const path = companionPaths(entry.repo, entry.outputFilename).json;
+	if (!existsSync(path)) return null;
+	return {
+		path,
+		result: checkReportFile(path, {
+			repo: entry.repo,
+			branch: entry.branch,
+			base: entry.base,
+			...(entry.diffPaths?.length ? { paths: entry.diffPaths } : {})
+		})
+	};
+}
+
+/** Prompt cuando el JSON existe pero no pasa validación (auto-fix o Reintentar). */
+function invalidJsonFixPrompt(entry: Entry, path: string, result: { ok: boolean; errors: string[]; notes: string[] }) {
+	return `${formatCheckReport(path, validateCliCommand(entry.outputFilename), result)}
+
+Critical: do NOT only bump meta.generatedAt or rewrite notes. Edit \`${outputRelPath(entry.outputFilename).replace(/\\/g, '/')}\` so every problem above is fixed (add blocks or skipped for each missing path). Do not claim success until coverage is complete.
+
+${TOOL_RULES}
+
+${SERVER_VALIDATES}`;
+}
+
 function noWriteFollowUpPrompt(entry: Entry): string {
 	const rel = outputRelPath(entry.outputFilename);
 	const rejected = entry.rejections.length
@@ -515,8 +545,15 @@ function noWriteFollowUpPrompt(entry: Entry): string {
 				.join('\n')}\n\n`
 		: '';
 	const posixRel = rel.replace(/\\/g, '/');
+	const existing = checkEntryReport(entry);
+	const invalidHint =
+		existing && !existing.result.ok
+			? `\nThe file on disk is also INVALID — fix these when you Write/Edit (do not only bump generatedAt):\n${(existing.result.errors || [])
+					.map((e) => `- ${e}`)
+					.join('\n')}\n`
+			: '';
 	return `${rejected}Your turn ended without writing \`${posixRel}\` in this turn (mtime must change now). The user did not stop you.
-
+${invalidHint}
 Do this now:
 1. Read \`${posixRel}\` if it exists (required before Write/Edit on an existing file).
 2. Edit or Write the full review JSON to that same path (forward slashes only).
@@ -527,12 +564,12 @@ ${TOOL_RULES}
 ${SERVER_VALIDATES}`;
 }
 
-async function checkOutput(entry: Entry, since: number, retry: boolean): Promise<void> {
+async function checkOutput(entry: Entry, since: number, retriesLeft: number): Promise<void> {
 	const path = companionPaths(entry.repo, entry.outputFilename).json;
 	const touched = existsSync(path) && mtime(path) >= since;
 	if (!touched) {
-		// Auto-reintento una vez (redirect bloqueado, “éxito” sobre JSON viejo, etc.).
-		if (retry) {
+		// Redirect bloqueado, “éxito” sobre JSON viejo, etc.
+		if (retriesLeft > 0) {
 			const again = await followUp(
 				entry,
 				noWriteFollowUpPrompt(entry),
@@ -540,7 +577,7 @@ async function checkOutput(entry: Entry, since: number, retry: boolean): Promise
 					? 'Seguí: hubo comandos rechazados; escribí el JSON con la tool de archivos.'
 					: 'Seguí: el JSON no se escribió en este turno.'
 			);
-			return checkOutput(entry, again, false);
+			return checkOutput(entry, again, retriesLeft - 1);
 		}
 		if (entry.mode === 'review') {
 			emit(entry, {
@@ -570,11 +607,15 @@ async function checkOutput(entry: Entry, since: number, retry: boolean): Promise
 		return;
 	}
 
-	emit(entry, { type: 'review', ok: false, filename: entry.outputFilename, errors: result.errors, final: !retry });
-	if (!retry) return;
-	const fixPrompt = `${formatCheckReport(path, validateCliCommand(entry.outputFilename), result)}\n\n${SERVER_VALIDATES}`;
-	const again = await followUp(entry, fixPrompt, 'Corregí los errores de validación del JSON.');
-	await checkOutput(entry, again, false);
+	const canRetry = retriesLeft > 0;
+	emit(entry, { type: 'review', ok: false, filename: entry.outputFilename, errors: result.errors, final: !canRetry });
+	if (!canRetry) return;
+	const again = await followUp(
+		entry,
+		invalidJsonFixPrompt(entry, path, result),
+		'Corregí los errores de validación del JSON.'
+	);
+	await checkOutput(entry, again, retriesLeft - 1);
 }
 
 /** Turno extra que pide el server (corregir el JSON, seguir después de un rechazo). Devuelve cuándo empezó. */
@@ -602,7 +643,7 @@ async function runTurn(entry: Entry, text: string, mode: PolicyMode, opts: { mod
 		entry.rejections = [];
 		const { stopReason } = await acp.prompt(text);
 		emit(entry, { type: 'turn', stopReason });
-		if (mode !== 'ask' && stopReason !== 'cancelled') await checkOutput(entry, since, true);
+		if (mode !== 'ask' && stopReason !== 'cancelled') await checkOutput(entry, since, OUTPUT_AUTO_RETRIES);
 		entry.busy = false;
 		setStatus(entry, 'idle');
 	} catch (err) {
@@ -819,6 +860,7 @@ export function sendMessage(
 /**
  * Reintento manual tras un turno de review que no dejó el JSON válido (p. ej. redirect bloqueado o JSON viejo).
  * Misma sesión ACP; no recalcula el diff.
+ * Si el JSON ya existe e inválido, reenvía los errores concretos (cobertura faltante, etc.) — no un “escribí de nuevo” genérico.
  */
 export function retryReview(id: string): AgentSessionInfo {
 	const entry = sessions.get(String(id || ''));
@@ -829,13 +871,20 @@ export function retryReview(id: string): AgentSessionInfo {
 	}
 	const rel = outputRelPath(entry.outputFilename);
 	const posixRel = rel.replace(/\\/g, '/');
-	const prompt = `Continue the code review. For \`${posixRel}\`: Read it first if it exists, then Edit/Write the full JSON (forward slashes only). Do not mkdir. Never use shell redirection.
+	const existing = checkEntryReport(entry);
+	const prompt =
+		existing && !existing.result.ok
+			? invalidJsonFixPrompt(entry, existing.path, existing.result)
+			: `Continue the code review. For \`${posixRel}\`: Read it first if it exists, then Edit/Write the full JSON (forward slashes only). Do not mkdir. Never use shell redirection.
 
 ${TOOL_RULES}
 
 ${SERVER_VALIDATES}`;
 	void runTurn(entry, prompt, 'review', {
-		shown: 'Reintentar: escribir el JSON de la review'
+		shown:
+			existing && !existing.result.ok
+				? 'Reintentar: corregir el JSON inválido'
+				: 'Reintentar: escribir el JSON de la review'
 	});
 	return info(entry);
 }

@@ -256,6 +256,9 @@ declare module '$review/lib/acp-policy.mjs' {
 		toolCall: unknown,
 		ctx: { repo: string; outputFilename: string; mode: PolicyMode }
 	): Decision;
+	export function toolCallCommand(toolCall: unknown): string;
+	export function toolCallLabel(toolCall: unknown, command?: string): string;
+	export function humanizePolicyReason(reason: string): string;
 }
 
 declare module '$review/lib/acp.mjs' {
