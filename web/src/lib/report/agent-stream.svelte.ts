@@ -8,12 +8,17 @@ import { applyEvent, type SeqEvent, type SessionStatus } from './agent-events';
 export class AgentStream {
 	events = $state<SeqEvent[]>([]);
 	status = $state<SessionStatus>('idle');
+	/** Último mensaje de un status error (mismo texto que ve la CLI). */
+	errorMessage = $state('');
 	/** La sesión ya no existe en el server (se reinició). */
 	gone = $state(false);
 
 	#source: EventSource | null = null;
 	#seen = new Set<number>();
 	#onEvent?: (event: SeqEvent) => void;
+	#retries = 0;
+	#retryTimer: ReturnType<typeof setTimeout> | null = null;
+	#closed = false;
 
 	constructor(
 		readonly id: string,
@@ -27,29 +32,62 @@ export class AgentStream {
 	}
 
 	connect() {
-		this.close();
+		this.#closed = false;
+		this.#open();
+	}
+
+	#open() {
+		if (this.#closed) return;
+		this.#source?.close();
+		this.#source = null;
+		if (this.#retryTimer) {
+			clearTimeout(this.#retryTimer);
+			this.#retryTimer = null;
+		}
+
 		const source = new EventSource(resolve(`/api/agent/${encodeURIComponent(this.id)}/events`));
 		source.onmessage = (message) => {
+			this.#retries = 0;
+			this.gone = false;
 			const data = JSON.parse(message.data) as SeqEvent | { type: 'reset' };
 			if (data.type === 'reset') {
 				this.events = [];
+				this.errorMessage = '';
 				return;
 			}
 			this.events = applyEvent(this.events, data);
-			if (data.type === 'status') this.status = data.status;
+			if (data.type === 'status') {
+				this.status = data.status;
+				if (data.status === 'error') {
+					this.errorMessage = data.message || this.errorMessage || 'Error del agente.';
+				}
+			}
 			if (!this.#seen.has(data.seq)) {
 				this.#seen.add(data.seq);
 				this.#onEvent?.(data);
 			}
 		};
 		source.onerror = () => {
-			// EventSource reintenta solo; si el server ya no conoce la sesión, responde 404 y queda cerrado.
-			if (source.readyState === EventSource.CLOSED) this.gone = true;
+			// 404 (sesión todavía no creada) u otro corte: reintentar un rato antes de marcar gone.
+			if (source.readyState !== EventSource.CLOSED) return;
+			source.close();
+			if (this.#closed) return;
+			if (this.#retries < 25) {
+				this.#retries += 1;
+				this.#retryTimer = setTimeout(() => this.#open(), 200);
+				return;
+			}
+			this.gone = true;
 		};
 		this.#source = source;
 	}
 
 	close() {
+		this.#closed = true;
+		if (this.#retryTimer) {
+			clearTimeout(this.#retryTimer);
+			this.#retryTimer = null;
+		}
 		this.#source?.close();
 		this.#source = null;
 	}

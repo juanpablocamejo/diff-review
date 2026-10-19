@@ -4,8 +4,9 @@
 	import DiffView from './DiffView.svelte';
 	import FileIcon from './FileIcon.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
+	import AskAgentButton from './AskAgentButton.svelte';
 	import type { PublishPlatform } from './prompts';
-	import { plural } from './labels';
+	import { findingRef, plural } from './labels';
 
 	let {
 		activeFinding,
@@ -17,20 +18,19 @@
 		diffFontSize,
 		wrapLines,
 		reviewedLabel,
+		agentId = '',
 		onignore,
 		onfix,
 		onclear,
+		onaskfinding,
 		onresizeexplanation,
 		onresizesplit,
 		onrequestlines,
 		fixSelectionCount,
 		showFixPrompt,
-		fixPromptMode,
 		fixPromptText,
-		fixCommandText,
 		fixCopyLabel,
 		onclosefixprompt,
-		onsetfixmode,
 		oncopyfix,
 		showPublishPrompt,
 		publishPlatform,
@@ -50,20 +50,19 @@
 		diffFontSize: number;
 		wrapLines: boolean;
 		reviewedLabel: string;
+		agentId?: string;
 		onignore: () => void;
 		onfix: () => void;
 		onclear: () => void;
+		onaskfinding?: () => void;
 		onresizeexplanation: (dx: number) => void;
 		onresizesplit: (ratio: number) => void;
 		onrequestlines?: (path: string) => Promise<string[] | null>;
 		fixSelectionCount: number;
 		showFixPrompt: boolean;
-		fixPromptMode: 'full' | 'command';
 		fixPromptText: string;
-		fixCommandText: string;
 		fixCopyLabel: string;
 		onclosefixprompt: () => void;
-		onsetfixmode: (mode: 'full' | 'command') => void;
 		oncopyfix: () => void;
 		showPublishPrompt: boolean;
 		publishPlatform: PublishPlatform;
@@ -92,20 +91,10 @@
 			<h2 class="fix-title">Prompt de corrección · {plural(fixSelectionCount, 'hallazgo', 'hallazgos')}</h2>
 			<button type="button" class="close" onclick={onclosefixprompt}>Cerrar ✕</button>
 		</div>
-		<div class="mode-toggle">
-			<button type="button" class:on={fixPromptMode === 'full'} onclick={() => onsetfixmode('full')}
-				>Prompt completo</button
-			>
-			<button type="button" class:on={fixPromptMode === 'command'} onclick={() => onsetfixmode('command')}
-				>Comando (skill)</button
-			>
-		</div>
-		{#if fixPromptMode === 'full'}
-			<textarea readonly value={fixPromptText}></textarea>
-		{:else}
-			<div class="command-box"><code>{fixCommandText}</code></div>
-			<p class="hint">Requiere /diff-review-fix instalado (mismo archivo de skill que /diff-review). El agente ubica cada hallazgo por archivo:línea.</p>
-		{/if}
+		<p class="hint">
+			Copiá esto en tu agente (o usá el botón del agente en cada hallazgo). Cada uno se ubica por archivo:línea.
+		</p>
+		<textarea readonly value={fixPromptText}></textarea>
 		<div>
 			<button type="button" class="copy" onclick={oncopyfix}>{fixCopyLabel}</button>
 		</div>
@@ -138,7 +127,7 @@
 	{#if activeFinding}
 		<div class="detail-head">
 			<div class="detail-head-left">
-				<span class="number">#{activeFinding.number}</span>
+				<span class="number">{findingRef(activeFinding.id, activeFinding.number)}</span>
 				<span class="badge" style:color={activeFinding.badgeColor}>{activeFinding.badge}</span>
 				<span class="file-line" title={activeFinding.fileLine}>
 					<span class="file-name"
@@ -151,16 +140,21 @@
 					{/if}
 				</span>
 			</div>
-			<div class="decision-group">
-				<button type="button" class:on={activeFinding.decided && !activeFinding.fixSelected} onclick={onignore}
-					>Ignorar</button
-				>
-				<button type="button" class:on={activeFinding.decided && activeFinding.fixSelected} onclick={onfix}
-					>Corregir</button
-				>
-				{#if activeFinding.decided}
-					<button type="button" class="clear" title="Limpiar decisión" onclick={onclear}>✕</button>
+			<div class="head-actions">
+				{#if onaskfinding}
+					<AskAgentButton {agentId} onclick={onaskfinding} />
 				{/if}
+				<div class="decision-group">
+					<button type="button" class:on={activeFinding.decided && !activeFinding.fixSelected} onclick={onignore}
+						>Ignorar</button
+					>
+					<button type="button" class:on={activeFinding.decided && activeFinding.fixSelected} onclick={onfix}
+						>Corregir</button
+					>
+					{#if activeFinding.decided}
+						<button type="button" class="clear" title="Limpiar decisión" onclick={onclear}>✕</button>
+					{/if}
+				</div>
 			</div>
 		</div>
 	{/if}
@@ -293,20 +287,6 @@
 		color: var(--text);
 	}
 
-	.command-box {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 10px 12px;
-		overflow: auto;
-	}
-
-	.command-box code {
-		font-family: var(--mono);
-		font-size: 12.5px;
-		color: var(--text);
-		white-space: nowrap;
-	}
-
 	.hint {
 		margin: 0;
 		font-size: 11.5px;
@@ -383,6 +363,13 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 0;
+	}
+
+	.head-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-shrink: 0;
 	}
 
 	.decision-group {

@@ -1,6 +1,15 @@
 import { hunkCovers, lineInRange, parseUnifiedDiff, type DiffLine } from './diff';
 import { serializeReviewPayload } from './document';
-import { displayGroupTitle, findingKindLabel, kindLabel, plural, pluralWord, severityLabel } from './labels';
+	import {
+		displayGroupTitle,
+		findingKindLabel,
+		findingRef,
+		kindLabel,
+		plural,
+		pluralWord,
+		severityLabel,
+		themeRef
+	} from './labels';
 import { findingSeverityRank } from './severity';
 import type {
 	FindingSeverity,
@@ -211,7 +220,7 @@ export function buildMarkdown(report: SavedReport, options: ExportOptions = {}):
 	lines.push('');
 	doc.groups.forEach((g, i) => {
 		const title = displayGroupTitle(g.title, g.kind);
-		lines.push(`### #${i + 1} · ${kindLabel(g.kind)} — ${title}`);
+		lines.push(`### ${themeRef(g.id, i + 1)} · ${kindLabel(g.kind)} — ${title}`);
 		lines.push('');
 		if (g.intent?.trim()) {
 			lines.push(g.intent.trim());
@@ -237,7 +246,7 @@ export function buildMarkdown(report: SavedReport, options: ExportOptions = {}):
 			const badge = findingBadge(f);
 			const name = fileName(f.file);
 			const dir = fileDir(f.file);
-			lines.push(`### #${i + 1} · ${badge} · ${findingKindLabel(f.kind)}`);
+			lines.push(`### ${findingRef(f.id, i + 1)} · ${badge} · ${findingKindLabel(f.kind)}`);
 			lines.push('');
 			if (f.blocking) lines.push('> [!CAUTION]');
 			else if (f.severity === 'high') lines.push('> [!WARNING]');
@@ -329,7 +338,7 @@ export function buildHtml(report: SavedReport, options: ExportOptions = {}): str
 				})
 				.join('');
 			return `<section class="group">
-  <h3><span class="num">#${i + 1}</span> <span class="kind" style="color:${KIND_COLOR[kind]};border-color:${KIND_COLOR[kind]}33">${escapeHtml(kindLabel(g.kind))}</span> ${gTitle}</h3>
+  <h3><span class="num">${escapeHtml(themeRef(g.id, i + 1))}</span> <span class="kind" style="color:${KIND_COLOR[kind]};border-color:${KIND_COLOR[kind]}33">${escapeHtml(kindLabel(g.kind))}</span> ${gTitle}</h3>
   ${g.intent?.trim() ? `<p class="intent">${escapeHtml(g.intent.trim())}</p>` : ''}
   ${blocks.length ? `<ul class="blocks">${blockLis}</ul>` : ''}
 </section>`;
@@ -348,7 +357,7 @@ export function buildHtml(report: SavedReport, options: ExportOptions = {}): str
 					const snippet =
 						mode === 'full' ? findingDiffSnippet(doc, f) : null;
 					return `<article class="finding" style="border-left-color:${color}">
-  <h3><span class="num">#${i + 1}</span> <span class="badge" style="color:${color};border-color:${color}55;background:${color}14">${escapeHtml(badge)}</span> <span class="fk">${escapeHtml(findingKindLabel(f.kind))}</span></h3>
+  <h3><span class="num">${escapeHtml(findingRef(f.id, i + 1))}</span> <span class="badge" style="color:${color};border-color:${color}55;background:${color}14">${escapeHtml(badge)}</span> <span class="fk">${escapeHtml(findingKindLabel(f.kind))}</span></h3>
   <div class="meta"><strong>${escapeHtml(name)}${escapeHtml(loc)}</strong>${dir ? ` <span class="dir">${escapeHtml(dir)}</span>` : ''} · ${escapeHtml(f.class)}</div>
   <p class="what">${escapeHtml(f.what)}</p>
   ${f.fix?.trim() ? `<p class="fix"><strong>Sugerencia</strong> ${escapeHtml(f.fix.trim())}</p>` : ''}

@@ -15,6 +15,7 @@ import {
 	readReviewOutput,
 	resolveOutputName,
 	takePendingImport,
+	writeReviewOutput as writeReviewOutputFile,
 	type DetectedOutput,
 	type OutputNameInfo,
 	type PendingImport
@@ -117,6 +118,26 @@ export const loadDetectedOutput = command(
 	}
 );
 
+/** Guarda un JSON de review en `.diff-review/` (p. ej. drag-and-drop → puntero en localStorage). */
+export const writeReviewOutput = command(
+	'unchecked',
+	async (input: {
+		repo: string;
+		filename: string;
+		payload: unknown;
+	}): Promise<PendingImport> => {
+		try {
+			return writeReviewOutputFile(
+				String(input?.repo || '').trim(),
+				String(input?.filename || '').trim(),
+				input?.payload
+			);
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
 export const pickLocalFolder = command('unchecked', async (_input: null): Promise<string | null> => {
 	try {
 		return await pickLocalFolderSync();
@@ -169,6 +190,7 @@ export const hydrateFromGit = command(
 		base: string;
 		source?: RepoSource;
 		payload: unknown;
+		outputFilename?: string;
 	}): Promise<ReviewDocument> => {
 		try {
 			return hydrateReviewPayload({
@@ -176,7 +198,8 @@ export const hydrateFromGit = command(
 				branch: String(input?.branch || '').trim(),
 				base: String(input?.base || 'develop').trim(),
 				source: input?.source,
-				payload: input?.payload
+				payload: input?.payload,
+				outputFilename: String(input?.outputFilename || '').trim() || undefined
 			});
 		} catch (err) {
 			fail(err);

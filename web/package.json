@@ -5,20 +5,24 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev --port 5190 --host 127.0.0.1",
-    "build": "vite build",
+    "build": "vite build && node scripts/sync-kit-hash.mjs",
     "preview": "vite preview --port 5190 --host 127.0.0.1",
     "type-check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.8.0",
     "@bindrs/rfd": "^2.2.2",
+    "dompurify": "^3.4.17",
     "highlight.js": "11.12.0",
+    "marked": "^18.1.1",
     "seti-icons": "^0.0.4"
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "5.5.7",
     "@sveltejs/kit": "2.70.3",
     "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "@types/dompurify": "^3.0.5",
+    "@types/marked": "^5.0.2",
     "@types/node": "^22.20.2",
     "svelte": "5.56.8",
     "svelte-check": "4.7.4",

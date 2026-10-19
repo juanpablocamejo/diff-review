@@ -18,20 +18,29 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as p from '@clack/prompts';
-import { AGENTS, detectAgents, modelChoices, OTHER_MODEL, resolvedRunModel, runAgent } from '../lib/agents.mjs';
-import { listAcpModels, supportsAcp } from '../lib/acp.mjs';
+import { AGENTS, detectAgents, modelChoices, resolvedRunModel, runAgent } from '../lib/agents.mjs';
+import { listAcpModelsCached, supportsAcp } from '../lib/acp.mjs';
+import { buildAcpModelSelectOptions, sortModelSelectOptions } from '../lib/model-label.mjs';
 import { autocompleteEs } from '../lib/autocomplete-es.mjs';
 import { copyTextToClipboard } from '../lib/clipboard.mjs';
 import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../lib/git.mjs';
 import { makeOutputFilename } from '../lib/output-name.mjs';
-import { buildPrompt } from '../lib/prompt.mjs';
+import { buildPrompt, outputRelPath } from '../lib/prompt.mjs';
+import { prepareReviewPromptOpts } from '../lib/review-prep.mjs';
+import { ensureReviewDir, writeDiffCache } from '../lib/review-dir.mjs';
 import { existingReviewOutput, waitForReviewOutput } from '../lib/wait-output.mjs';
 import { stampReviewProvenance } from '../lib/review-meta.mjs';
 import { runValidateCli } from '../lib/check-report.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(here, '..');
-const buildDir = join(packageRoot, 'web', 'build');
+// `DIFF_REVIEW_OUT=build-next` cuando `web/build` está bloqueado por un server en marcha (EBUSY en Windows).
+const buildDir = (() => {
+	const primary = join(packageRoot, 'web', 'build');
+	const overlay = join(packageRoot, 'web', 'build-next');
+	if (existsSync(join(overlay, 'index.js'))) return overlay;
+	return primary;
+})();
 const entry = join(buildDir, 'index.js');
 
 const DEFAULT_HOST = '127.0.0.1';
@@ -323,32 +332,31 @@ function copyPromptOrWarn(prompt) {
  */
 async function modelOptions(agent, { acpCwd }) {
 	const fixed = modelChoices(agent.def);
-	if (!acpCwd) return fixed;
+	const sortedFixed = {
+		...fixed,
+		options: sortModelSelectOptions(fixed.options)
+	};
+	if (!acpCwd) return sortedFixed;
 	const spin = p.spinner();
 	spin.start(`Consultando los modelos de ${agent.def.label}`);
 	try {
-		const { models, currentModel } = await listAcpModels(agent, { cwd: acpCwd });
-		spin.stop(`Modelos de ${agent.def.label}`);
-		if (!models.length) return fixed;
-		const current = models.find((m) => m.value === currentModel);
-		return {
-			initialValue: '',
-			options: [
-				{ value: '', label: `Por defecto del agente${current ? ` (${current.name})` : ''}` },
-				...models
-					.filter((m) => m.value !== currentModel && m.value !== 'default')
-					.map((m) => ({ value: m.value, label: m.name, ...(m.name.toLowerCase() !== m.value.toLowerCase() ? { hint: m.value } : {}) })),
-				{ value: OTHER_MODEL, label: 'Otro…', hint: 'escribir el id del modelo' }
-			]
-		};
+		const { models, currentModel, fromCache } = await listAcpModelsCached(agent, { cwd: acpCwd });
+		spin.stop(
+			fromCache
+				? `Modelos de ${agent.def.label} (caché)`
+				: `Modelos de ${agent.def.label}`
+		);
+		if (!models.length) return sortedFixed;
+		// Misma fusión/labels/orden que la UI.
+		return buildAcpModelSelectOptions({ models, currentModel }, fixed);
 	} catch (err) {
 		spin.stop(`No pude consultar los modelos (${err instanceof Error ? err.message.split('\n')[0] : err}).`);
-		return fixed;
+		return sortedFixed;
 	}
 }
 
 /**
- * Modelo del agente: select con TTY; sin TTY, el modelo por defecto (string vacío).
+ * Modelo del agente: autocomplete con búsqueda; sin TTY, el default (string vacío).
  * @param {import('../lib/agents.mjs').DetectedAgent} agent
  * @param {{ acpCwd?: string }} [opts] con `acpCwd`, la lista sale del agente por ACP
  */
@@ -356,21 +364,17 @@ async function pickModel(agent, opts = {}) {
 	if (!isInteractive()) return '';
 
 	const { options, initialValue } = await modelOptions(agent, opts);
-	const choice = await p.select({ message: 'Modelo', options, initialValue });
-	if (p.isCancel(choice)) {
-		p.cancel('Cancelado.');
-		process.exit(0);
-	}
-	if (choice !== OTHER_MODEL) return /** @type {string} */ (choice);
-
-	const typed = ensureValue(
-		await p.text({
-			message: 'Id del modelo',
-			validate: (v) => (String(v ?? '').trim() ? undefined : 'Escribí el id del modelo.')
-		}),
-		'modelo'
+	return /** @type {string} */ (
+		ensureValue(
+			await autocompleteEs({
+				message: 'Modelo',
+				options,
+				initialValue,
+				placeholder: 'opus, sonnet, gpt…'
+			}),
+			'modelo'
+		)
 	);
-	return typed.trim();
 }
 
 /**
@@ -401,7 +405,7 @@ async function pickAgentAndModel(detected, preset, run) {
 }
 
 /**
- * Portapapeles primero y después cada agente detectado.
+ * Agentes detectados primero (default el primero); portapapeles como opción secundaria.
  * @param {import('../lib/agents.mjs').DetectedAgent[]} detected
  * @returns {Promise<import('../lib/agents.mjs').DetectedAgent | null>} `null` = portapapeles
  */
@@ -410,10 +414,10 @@ async function pickDelivery(detected) {
 		await p.select({
 			message: '¿Cómo generás el review?',
 			options: [
-				{ value: 'clipboard', label: 'Copiar el prompt al portapapeles', hint: 'lo pegás en tu agente' },
-				...detected.map((a) => ({ value: a.def.id, label: a.def.label, hint: a.path }))
+				...detected.map((a) => ({ value: a.def.id, label: a.def.label, hint: a.path })),
+				{ value: 'clipboard', label: 'Copiar el prompt al portapapeles', hint: 'lo pegás en tu agente' }
 			],
-			initialValue: 'clipboard'
+			initialValue: detected[0].def.id
 		}),
 		'modo'
 	);
@@ -450,7 +454,7 @@ async function reuseExistingReview(existing, outputFilename) {
  */
 async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, useClack }) {
 	const what = `${agent.def.label} (${model || 'modelo por defecto'})`;
-	const msg = `Lanzando ${what}. Espera ${outputFilename} en la raíz del repo; Ctrl+C cancela.`;
+	const msg = `Lanzando ${what}. Espera ${outputRelPath(outputFilename)}; Ctrl+C cancela.`;
 	if (useClack) p.outro(msg);
 	else console.log(msg);
 
@@ -499,7 +503,7 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
  */
 async function runAgentInUi(agent, { repo, branch, base, model, outputFilename, useClack }, opts) {
 	const id = randomUUID();
-	const msg = `Lanzando ${agent.def.label} (${model || 'modelo por defecto'}). El progreso se ve en la web y acá; Ctrl+C corta.`;
+	const msg = `Lanzando ${agent.def.label} (${model || 'modelo por defecto'}). El progreso se ve en la web; Ctrl+C corta.`;
 	if (useClack) p.outro(msg);
 	else console.log(msg);
 	await startServer({
@@ -516,7 +520,7 @@ function explainWaitingForAgent(outputFilename, { copied, useClack }) {
 	const copyMsg = copied
 		? 'Se copió un prompt al portapapeles: pegalo en el chat de tu agente de IA para generar el contenido de la review.'
 		: 'Generá el JSON con tu agente de IA usando el prompt de esta sesión (no se pudo copiar solo al portapapeles).';
-	const waitMsg = `Aguardando el resultado del agente (${outputFilename} en la raíz del repo). La UI web se abre cuando ese archivo esté listo.`;
+	const waitMsg = `Aguardando el resultado del agente (${outputRelPath(outputFilename)}). La UI web se abre cuando ese archivo esté listo.`;
 
 	if (useClack) {
 		p.log.success(copyMsg);
@@ -616,6 +620,22 @@ async function runUiMode(opts, launch, launchCwd) {
 	if (launch) {
 		console.log(`Repo:   ${launch.repo}`);
 		console.log(`Branch: ${branch}  (base: ${base})`);
+		let promptOpts = { outputFilename };
+		try {
+			promptOpts = prepareReviewPromptOpts({
+				repo: launch.repo,
+				branch,
+				base,
+				outputFilename
+			});
+		} catch (err) {
+			console.warn(
+				'No pude precomputar el diff:',
+				err instanceof Error ? err.message : err
+			);
+			ensureReviewDir(launch.repo);
+			writeDiffCache(launch.repo, outputFilename, { branch, base });
+		}
 		const prompt = buildPrompt(
 			{
 				source: 'local',
@@ -624,7 +644,7 @@ async function runUiMode(opts, launch, launchCwd) {
 				base,
 				remoteUrl: launch.remoteUrl
 			},
-			{ outputFilename }
+			promptOpts
 		);
 		if (copyTextToClipboard(prompt)) {
 			console.log('Prompt copiado al portapapeles.');
@@ -691,12 +711,28 @@ async function main() {
 	}
 
 	const outputFilename = buildOutputFilename(launch.repo, branch, base);
+	// El agente escribe en .diff-review/ (que se ignora sola) y lee de ahí el diff ya calculado.
+	let promptOpts = { outputFilename };
+	try {
+		promptOpts = prepareReviewPromptOpts({
+			repo: launch.repo,
+			branch,
+			base,
+			outputFilename
+		});
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (prompted) p.log.warn(`No pude precomputar el diff: ${msg}`);
+		else console.warn('No pude precomputar el diff:', msg);
+		ensureReviewDir(launch.repo);
+		writeDiffCache(launch.repo, outputFilename, { branch, base });
+	}
 
 	if (!prompted) {
 		console.log(`Repo:   ${launch.repo}`);
 		console.log(`Branch: ${branch}  (base: ${base})`);
 	} else {
-		p.note(`${branch}  →  ${base}\n${outputFilename}`, 'Review');
+		p.note(`${branch}  →  ${base}\n${outputRelPath(outputFilename)}`, 'Review');
 	}
 
 	const prompt = buildPrompt(
@@ -707,7 +743,7 @@ async function main() {
 			base,
 			remoteUrl: launch.remoteUrl
 		},
-		{ outputFilename }
+		promptOpts
 	);
 
 	// Sin --agent también se detectan (con terminal interactiva) para ofrecer lanzar uno en vez del portapapeles.

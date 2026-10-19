@@ -4,7 +4,8 @@
 	import { downloadReport, type ExportFormat } from '$lib/report/export';
 	import ChatPanel from '$lib/report/ChatPanel.svelte';
 	import ReportView from '$lib/report/ReportView.svelte';
-	import { deleteReport, loadReportById } from '$lib/report/storage';
+	import { resolveSavedReport } from '$lib/report/resolve-report';
+	import { deleteReport } from '$lib/report/storage';
 	import type { SavedReport } from '$lib/report/types';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
@@ -13,6 +14,7 @@
 	const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
 	let report = $state<SavedReport | null | undefined>(undefined);
+	let loadError = $state('');
 	let diffMode = $state<'unified' | 'split'>('unified');
 	let diffFontSize = $state(11.5);
 	let wrapLines = $state(true);
@@ -22,11 +24,33 @@
 	let downloadOpen = $state(false);
 	let kebabOpen = $state(false);
 	let chatOpen = $state(false);
+	/** Borrador para el compositor del ChatPanel (referencia a tema/bloque/hallazgo); no se envía solo. */
+	let pendingAsk = $state<string | null>(null);
 
 	$effect(() => {
-		report = loadReportById(params.id);
+		const id = params.id;
+		let cancelled = false;
+		report = undefined;
+		loadError = '';
 		downloadOpen = false;
 		kebabOpen = false;
+		void resolveSavedReport(id)
+			.then((resolved) => {
+				if (cancelled) return;
+				report = resolved;
+				if (!resolved) {
+					loadError =
+						'No se encontró el reporte en disco ni en este navegador. Revisá que el JSON siga en .diff-review/.';
+				}
+			})
+			.catch((err) => {
+				if (cancelled) return;
+				report = null;
+				loadError = err instanceof Error ? err.message : String(err);
+			});
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	function closeMenus() {
@@ -56,6 +80,11 @@
 		if (!confirm(`¿Eliminar “${label}”? No se puede deshacer.`)) return;
 		deleteReport(report.id);
 		void goto(resolve('/'));
+	}
+
+	function askAbout(draft: string) {
+		pendingAsk = draft;
+		chatOpen = true;
 	}
 </script>
 
@@ -190,9 +219,7 @@
 					type="button"
 					class="ghost"
 					class:on={chatOpen}
-					title={report.meta.agentSession
-						? 'Preguntarle al agente o pedirle cambios en el reporte'
-						: 'Solo para reportes generados con “Lanzar agente”'}
+					title="Preguntarle al agente o pedirle cambios en el reporte"
 					onclick={() => (chatOpen = !chatOpen)}
 				>
 					Agente
@@ -257,14 +284,32 @@
 	</header>
 
 	{#if report === undefined}
-		<p class="hint">Cargando…</p>
+		<p class="hint">Cargando reporte…</p>
 	{:else if report === null}
-		<p class="hint">No se encontró este reporte en este navegador. Los reportes viven en localStorage, así que no se comparten entre dispositivos.</p>
+		<p class="hint">
+			{loadError ||
+				'No se encontró este reporte. Los locales se leen desde .diff-review/; sin ese archivo no hay viewer.'}
+		</p>
+		<p class="hint"><a href={resolve('/')}>Volver al inicio</a>.</p>
 	{:else}
 		<div class="body">
-			<ReportView {report} {diffMode} {diffFontSize} {wrapLines} {sidebarCollapsed} {showExplanations} />
+			<ReportView
+				{report}
+				{diffMode}
+				{diffFontSize}
+				{wrapLines}
+				{sidebarCollapsed}
+				{showExplanations}
+				onask={askAbout}
+			/>
 			{#if chatOpen}
-				<ChatPanel {report} onclose={() => (chatOpen = false)} onreportupdated={(updated) => (report = updated)} />
+				<ChatPanel
+					{report}
+					{pendingAsk}
+					onpendingaskconsumed={() => (pendingAsk = null)}
+					onclose={() => (chatOpen = false)}
+					onreportupdated={(updated) => (report = updated)}
+				/>
 			{/if}
 		</div>
 	{/if}

@@ -109,6 +109,61 @@ export function pluralWord(n: number, one: string, many: string) {
 	return n === 1 ? one : many;
 }
 
+/** Ref visible de un tema: `t1` (ids viejos `g1` se muestran como `t1`). */
+export function themeRef(id: string, number = 0): string {
+	const raw = String(id || '').trim();
+	const m = /^(?:t|g)(\d+)$/i.exec(raw);
+	if (m) return `t${m[1]}`;
+	if (number > 0) return `t${number}`;
+	return raw || 't?';
+}
+
+/** Ref visible de un hallazgo: `f1` (no `#1`). */
+export function findingRef(id: string, number = 0): string {
+	const raw = String(id || '').trim();
+	const m = /^f(\d+)$/i.exec(raw);
+	if (m) return `f${m[1]}`;
+	if (number > 0) return `f${number}`;
+	return raw || 'f?';
+}
+
+/** Ref visible de un bloque: `b1`. */
+export function blockRef(id: string, number = 0): string {
+	const raw = String(id || '').trim();
+	const m = /^b(\d+)$/i.exec(raw);
+	if (m) return `b${m[1]}`;
+	if (number > 0) return `b${number}`;
+	return raw || 'b?';
+}
+
+/** Prefijo de chat para un hallazgo (el usuario completa la pregunta). */
+export function askDraftFinding(f: {
+	id: string;
+	number?: number;
+	file: string;
+	line: number | null;
+}): string {
+	const ref = findingRef(f.id, f.number ?? 0);
+	const loc = f.line != null ? `${f.file}:${f.line}` : f.file;
+	return `Sobre ${ref} (${loc}): `;
+}
+
+/** Prefijo de chat para un tema. */
+export function askDraftTheme(g: { id: string; number?: number; title: string }): string {
+	const ref = themeRef(g.id, g.number ?? 0);
+	const title = String(g.title || '').trim();
+	return title ? `Sobre el tema ${ref} («${title}»): ` : `Sobre el tema ${ref}: `;
+}
+
+/** Prefijo de chat para un bloque de cambios. */
+export function askDraftBlock(b: { id: string; file: string; lines: string }): string {
+	const ref = blockRef(b.id);
+	const lines = String(b.lines || '').trim();
+	return lines
+		? `Sobre el bloque ${ref} (${b.file} ${lines}): `
+		: `Sobre el bloque ${ref} (${b.file}): `;
+}
+
 /**
  * El chip ya muestra el kind: saca el prefijo tipo conventional-commit del título
  * (`feat(warehouses): foo` → `warehouses: foo`, `chore: bar` → `bar`).

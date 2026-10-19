@@ -13,18 +13,22 @@ export { makeOutputFilename, isOutputFilename, OUTPUT_SCHEMA_BLOCK };
 /** Legacy fijo; preferí `makeOutputFilename()` / `outputFilename` de sesión. */
 export const OUTPUT_FILENAME = OUTPUT_FILENAME_LEGACY;
 
-const RULES = `- Coverage (hard): every path in the diff MUST appear in "blocks" and/or "skipped". Prefer a skipped glob when many files share one reason.
-- Do NOT invent files, hunks, or line ranges that are not in the diff.
-- Line anchors: "lines"/"start"/"end"/"line" MUST match the chosen "side" ("new" = post-image / right side of @@; "old" = pre-image, typically deletions). One block per coherent change span, not one per line. Point findings at that block; leave "block" empty only if cross-cutting.
-- Do NOT report: pre-existing code outside the diff; linter/formatter noise; naming/style prefs with no real consequence; intentional branch behavior; silenced lint rules; "missing docs/coverage" without a concrete broken scenario.
-- Quality findings must name a concrete cost, not a vague feeling.
-- Signal over volume: prefer fewer high-signal findings. Order findings by severity (high, then nit). Use "nit" sparingly.
-- "blocking": true ONLY if the branch should not merge as-is. Use only with class "risk".
-- Write human-readable strings (intent, title, what, why, fix, notes) in Spanish. Keep enums/ids/paths/JSON keys exactly as in the schema.
-- Length is a target, not a check: aim for title ≤72 characters and what/why/fix ≤120 characters. Longer text is still valid. Do not rewrite the file only to shorten it.`;
-
-export function buildPrompt(meta: ReportMeta, opts?: { outputFilename?: string }): string {
+export function buildPrompt(
+	meta: ReportMeta,
+	opts?: {
+		outputFilename?: string;
+		acp?: boolean;
+		diffRelPath?: string | null;
+		mergeBase?: string;
+		branchSha?: string;
+		baseSha?: string;
+		files?: Array<{ path: string; changeType?: string }>;
+		ignored?: string[];
+		ignoreGlobs?: string[];
+	}
+): string {
 	return buildPromptCore(meta, {
+		...opts,
 		outputFilename: opts?.outputFilename || makeOutputFilename()
 	});
 }
@@ -64,84 +68,9 @@ export function buildCoveragePromptText(
 	].join('\n');
 }
 
-export function buildCommandText(meta: ReportMeta): string {
-	const parts: string[] = [];
-	if (meta.repo.trim()) parts.push(`repo=${meta.repo.trim()}`);
-	if (meta.branch.trim()) parts.push(`branch=${meta.branch.trim()}`);
-	parts.push(`base=${(meta.base || 'develop').trim()}`);
-	return `/diff-review ${parts.join(' ')}`.trim();
-}
-
-export type SkillAgent = 'claude' | 'cursor' | 'copilot';
-
-const SKILL_AGENTS: Record<SkillAgent, { filename: string; argToken: string }> = {
-	claude: { filename: 'diff-review.md', argToken: '$ARGUMENTS' },
-	cursor: { filename: 'diff-review.md', argToken: '$ARGUMENTS' },
-	copilot: { filename: 'diff-review.prompt.md', argToken: '${input:args}' }
-};
-
-export function skillFilename(agent: SkillAgent): string {
-	return SKILL_AGENTS[agent].filename;
-}
-
-export function buildSkillMarkdown(agent: SkillAgent): string {
-	const cfg = SKILL_AGENTS[agent];
-	const ext = cfg.filename.split('.').pop();
-	return `---
-description: Produce a code-review JSON report for the diff-review app
----
-
-# /diff-review
-
-Usage: /diff-review repo=<repo> branch=<branch> base=<base>
-Arguments: ${cfg.argToken}
-
-You are a senior code reviewer: strict but fair.
-
-Workflow:
-1. Resolve the merge-base of \`<base>\` and \`<branch>\`.
-2. Run exactly: \`git diff <base>...<branch>\` (three-dot / merge-base diff). Do not use two-dot unless three-dot is impossible.
-3. Read enough surrounding code (types, callers, tests) to judge behavior, not only the hunk lines.
-4. Emit the JSON file. Do not modify the repo.
-5. Validate with \`npx --yes @jpkme/diff-review validate <that-file>\`. If it prints INVALID, follow "How to continue" and re-run until OK.
-
-Rules:
-${RULES}
-
-Write the result to \`diff-rev_{branchTip}_{baseTip}.json\` at the repo root (10-char tip SHAs of branch and base).
-- One JSON object only: first character \`{\`, last character \`}\`.
-- No prose before/after, no markdown fences.
-- Shape:
-
-${OUTPUT_SCHEMA_BLOCK}
-
-Include "meta" with source/repo/branch/base from the arguments. If the repo is local, also set "remoteUrl" to origin (so someone else can open the JSON without the same folder). "agent" and "model" are required: set "agent" to the product you are and "model" to the exact model id you are running. Validation fails if either is missing or still a placeholder.
-
-Do NOT include diffs or a "files" array. The tool computes them with git when opening the report.
-
-When done, say that the JSON file was written.
-
-> This file defines two commands. If your tool needs one file per command, split the section below into a second file "diff-review-fix.${ext}".
-
-# /diff-review-fix
-
-Usage: /diff-review-fix <id1,id2,...> repo=<repo> branch=<branch>
-Arguments: ${cfg.argToken}
-
-You will receive a list of findings (file:line, what is wrong, suggested fix, sometimes the block diff). Apply ONLY those fixes. Touch nothing else. If you need more context, re-read the file before editing.
-
-When done, summarize in a list what you changed for each finding.`;
-}
-
-export function buildFixCommandText(meta: ReportMeta, ids: string[]): string {
-	const parts = [`/diff-review-fix ${ids.join(',')}`];
-	if (meta.repo.trim()) parts.push(`repo=${meta.repo.trim()}`);
-	if (meta.branch.trim()) parts.push(`branch=${meta.branch.trim()}`);
-	return parts.join(' ');
-}
-
 /** Findings with 1-based index (document order) for citing in prompts. */
 export type NumberedFinding = {
+	id: string;
 	number: number;
 	file: string;
 	line: number | null;
@@ -179,7 +108,10 @@ export function buildFixPromptText(
 			}
 		}
 		const label = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
-		let out = `${i + 1}. [${label}] ${f.file}${f.line ? ':' + f.line : ''}\nWhat: ${f.what}\nSuggested fix: ${f.fix}`;
+		const ref = /^f\d+$/i.test(String(f.id || '').trim())
+			? String(f.id).trim().toLowerCase()
+			: `f${f.number || i + 1}`;
+		let out = `${ref}. [${label}] ${f.file}${f.line ? ':' + f.line : ''}\nWhat: ${f.what}\nSuggested fix: ${f.fix}`;
 		if (diffSnippet) out += `\n\n\`\`\`diff\n${diffSnippet}\n\`\`\``;
 		return out;
 	});
@@ -208,7 +140,10 @@ export function buildPublishText(
 	const chunks = selectedFindings.map((f) => {
 		const loc = f.file + (f.line ? ':' + f.line : '');
 		const badge = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
-		return `**#${f.number} · ${badge}** \`${loc}\`\n\n${f.what}\n\n**Sugerencia:** ${f.fix}`;
+		const ref = /^f\d+$/i.test(String(f.id || '').trim())
+			? String(f.id).trim().toLowerCase()
+			: `f${f.number}`;
+		return `**${ref} · ${badge}** \`${loc}\`\n\n${f.what}\n\n**Sugerencia:** ${f.fix}`;
 	});
 	return `### Hallazgos de code review${meta.branch ? ', ' + meta.branch : ''}\n\n${chunks.join('\n\n---\n\n')}\n\n_Generado a partir del review automático. Comentario para ${label}._`;
 }

@@ -105,6 +105,20 @@ export function serializeReviewPayload(document: ReviewDocument, meta: ReportMet
 	);
 }
 
+/** Payload de seed para el agente: el JSON de la review sin el array `files` (los diffs van aparte). */
+export function reviewSeedPayload(document: ReviewDocument, meta: ReportMeta): unknown {
+	const { files: _files, ...rest } = document;
+	return JSON.parse(serializeReviewPayload({ ...rest, files: [] }, meta));
+}
+
+/** Une los diffs por archivo del documento (lo que muestra la web) en un solo texto. */
+export function reviewSeedDiff(document: ReviewDocument): string {
+	return (document.files ?? [])
+		.map((f) => (typeof f.diff === 'string' ? f.diff.trimEnd() : ''))
+		.filter(Boolean)
+		.join('\n');
+}
+
 function coerceBlock(raw: unknown): ReviewBlock {
 	const rec = asRecord(raw);
 	const range = parseLineRange(rec.lines);

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import AskAgentButton from './AskAgentButton.svelte';
 	import type { DecoratedFinding } from './decorate';
 	import FileIcon from './FileIcon.svelte';
 
@@ -6,20 +7,24 @@
 		filePath,
 		findings,
 		expandedId,
+		agentId = '',
 		onclose,
 		ontoggle,
 		onignore,
 		onfix,
-		onclear
+		onclear,
+		onaskfinding
 	}: {
 		filePath: string | null;
 		findings: DecoratedFinding[];
 		expandedId: string | null;
+		agentId?: string;
 		onclose: () => void;
 		ontoggle: (id: string) => void;
 		onignore: (id: string) => void;
 		onfix: (id: string) => void;
 		onclear: (id: string) => void;
+		onaskfinding?: (id: string) => void;
 	} = $props();
 
 	const open = $derived(!!filePath);
@@ -82,17 +87,23 @@
 								<h4>Sugerencia de corrección</h4>
 								<p class="fix">{f.fix}</p>
 							</div>
-							<div class="decision-group">
-								<button type="button" class:on={f.decided && !f.fixSelected} onclick={() => onignore(f.id)}
-									>Ignorar</button
-								>
-								<button type="button" class:on={f.decided && f.fixSelected} onclick={() => onfix(f.id)}
-									>Corregir</button
-								>
-								{#if f.decided}
-									<button type="button" class="clear" title="Limpiar decisión" onclick={() => onclear(f.id)}>✕</button
-									>
+							<div class="item-actions">
+								{#if onaskfinding}
+									<AskAgentButton {agentId} onclick={() => onaskfinding(f.id)} />
 								{/if}
+								<div class="decision-group">
+									<button type="button" class:on={f.decided && !f.fixSelected} onclick={() => onignore(f.id)}
+										>Ignorar</button
+									>
+									<button type="button" class:on={f.decided && f.fixSelected} onclick={() => onfix(f.id)}
+										>Corregir</button
+									>
+									{#if f.decided}
+										<button type="button" class="clear" title="Limpiar decisión" onclick={() => onclear(f.id)}
+											>✕</button
+										>
+									{/if}
+								</div>
 							</div>
 						</div>
 					{/if}
@@ -264,6 +275,13 @@
 
 	.item-body p.fix {
 		color: var(--text-dim);
+	}
+
+	.item-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 
 	.decision-group {

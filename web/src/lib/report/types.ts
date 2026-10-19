@@ -107,6 +107,11 @@ export type ReportMeta = {
 	model?: string;
 	/** Sesión ACP que generó la review (solo si la lanzó diff-review): permite seguir conversando con el agente. */
 	agentSession?: AgentSessionRef;
+	/**
+	 * Nombre del JSON en `.diff-review/` (repo local). Con `source: 'local'` el viewer lo relee del disco
+	 * en vez de guardar el documento entero en localStorage.
+	 */
+	outputFilename?: string;
 };
 
 export type AgentSessionRef = {
@@ -115,12 +120,23 @@ export type AgentSessionRef = {
 	outputFilename: string;
 };
 
-/** Documento completo tal como se guarda en localStorage. */
+/** Reporte abierto en el viewer (documento hidratado en memoria). */
 export type SavedReport = {
 	id: string;
 	meta: ReportMeta;
 	document: ReviewDocument;
 	savedAt: string;
+};
+
+/**
+ * Lo que vive en localStorage: meta (+ puntero al JSON en disco). El `document` solo se embebe
+ * cuando no hay archivo local (p. ej. drag-and-drop sin repo).
+ */
+export type StoredReport = {
+	id: string;
+	meta: ReportMeta;
+	savedAt: string;
+	document?: ReviewDocument;
 };
 
 /** Entrada liviana para la lista "Reportes recientes". */

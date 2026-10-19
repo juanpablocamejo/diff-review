@@ -2,15 +2,12 @@
 	import { onMount, untrack } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import {
-		buildCommandText,
 		buildCoveragePromptText,
 		buildPrompt,
-		buildSkillMarkdown,
 		isOutputFilename,
-		makeOutputFilename,
-		skillFilename,
-		type SkillAgent
+		makeOutputFilename
 	} from '$lib/report/prompts';
 	import { uncoveredFiles } from '$lib/report/coverage';
 	import { coerceDocument, hasUsableDiffs, parseReportMeta } from '$lib/report/document';
@@ -19,6 +16,7 @@
 		hydrateFromGit,
 		launchContext,
 		loadDetectedOutput,
+		writeReviewOutput,
 		loadRepo,
 		outputName,
 		pendingImport,
@@ -26,12 +24,31 @@
 		pickReviewFile
 	} from '$lib/report/git.remote';
 	import type { DetectedOutput } from '$lib/report/git.remote';
-	import { acpAgentModels, acpAgents, agentSession, cancelAgent, startReview } from '$lib/report/agent.remote';
+	import {
+		acpAgentModels,
+		acpAgents,
+		agentSession,
+		cancelAgent,
+		respondPermission,
+		retryReview,
+		setPermissionTrust,
+		startReview
+	} from '$lib/report/agent.remote';
 	import type { AcpAgentOption, AcpModels, AgentSessionInfo, SeqEvent } from '$lib/report/agent-events';
 	import { AgentStream } from '$lib/report/agent-stream.svelte';
-	import AgentLog from '$lib/report/AgentLog.svelte';
-	import { deleteReport, loadLastMeta, loadReportsIndex, saveLastMeta, saveReport } from '$lib/report/storage';
-	import { SAMPLE_DOCUMENT } from '$lib/report/sample';
+	import AgentSelect from '$lib/report/AgentSelect.svelte';
+	import LiveReviewView from '$lib/report/LiveReviewView.svelte';
+	import ModelSelect from '$lib/report/ModelSelect.svelte';
+	import { buildAcpModelSelectOptions, sortModelSelectOptions } from '$lib/report/model-label';
+	import {
+		deleteReport,
+		loadLastLocalRepo,
+		loadLastMeta,
+		loadReportsIndex,
+		reportOutputFilename,
+		saveLastMeta,
+		saveReport
+	} from '$lib/report/storage';
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
 	import { validateDocument } from '$lib/report/validate';
 	import { plural } from '$lib/report/labels';
@@ -42,19 +59,43 @@
 		return new URL(window.location.href).searchParams.get(name) === '1';
 	}
 
+	/** Flags del CLI en la URL de entrada (antes de limpiarlos en onMount). */
+	function cliLaunchFrom(url: URL) {
+		return {
+			agentId: url.searchParams.get('agent')?.trim() || '',
+			import: url.searchParams.get('import') === '1',
+			watch: url.searchParams.get('watch') === '1',
+			out: url.searchParams.get('out')?.trim() || ''
+		};
+	}
+
+	const bootCli = cliLaunchFrom(page.url);
+	/**
+	 * Flujo CLI (`?agent=` / `?import=` / `?watch=`): no mostrar el form de setup ni un frame.
+	 * Sobrevive a `clearLaunchQuery()`.
+	 */
+	let cliShell = $state(Boolean(bootCli.agentId || bootCli.import || bootCli.watch));
+	/** Sesión ACP lanzada por la CLI; mientras no haya `agentInfo`, mostramos LiveReviewView vacío. */
+	let cliAgentPending = $state(bootCli.agentId);
+
 	let meta = $state<ReportMeta>({ source: 'local', repo: '', branch: '', base: 'develop' });
-	let outputFilename = $state(makeOutputFilename({}));
+	let outputFilename = $state(
+		bootCli.out && isOutputFilename(bootCli.out) ? bootCli.out : makeOutputFilename({})
+	);
 	let promptText = $state('');
 	let promptEdited = $state(false);
 	let copied = $state(false);
 	let promptNotify = $state(false);
-	let promptViewMode = $state<'full' | 'command' | 'agent'>('full');
-	let commandCopied = $state(false);
+	/** Preferencia de UI: 'agent' cuando hay agentes ACP; 'full' para copiar el prompt. */
+	let promptViewMode = $state<'full' | 'agent'>('full');
+	/** Si el usuario eligió una pestaña a mano, no pisamos al cargar agentes. */
+	let promptModeTouched = $state(false);
 
 	let dragOver = $state(false);
 	let dropErrors = $state<string[]>([]);
 	// Documento válido pero incompleto: espera decisión del usuario antes de abrirse.
 	let pendingDoc = $state<ReviewDocument | null>(null);
+	let pendingRaw = $state<unknown>(null);
 	let uncovered = $state<string[]>([]);
 	let coverageCopied = $state(false);
 	let reports = $state<SavedReportSummary[]>([]);
@@ -67,13 +108,13 @@
 	let pickingFolder = $state(false);
 	let pickingFile = $state(false);
 	let hydrating = $state(false);
-	/** Modal de “calculando el diff”: al abrir desde el CLI con el JSON listo, o al soltar un archivo. */
-	let diffBusy = $state(queryFlag('import'));
+	/** Modal al abrir un JSON (CLI `?import=1`, detectado o soltado): hidrata el viewer. */
+	let diffBusy = $state(bootCli.import);
 	/**
 	 * Solo la pestaña que abrió el CLI con `?watch=1` importa solo el JSON cuando aparece.
 	 * Volver a `/` no trae ese parámetro, así que no reabre el reporte.
 	 */
-	let autoWatch = $state(queryFlag('watch'));
+	let autoWatch = $state(bootCli.watch);
 	/** `openNewReport` ya navegó: el modal sigue hasta que esta página se desmonte. */
 	let openingReport = false;
 	/** Ruta local recordada al pasar a URL, para no perderla al volver. */
@@ -90,50 +131,95 @@
 	let agentOptions = $state<AcpAgentOption[]>([]);
 	let agentChoice = $state('');
 	let modelChoice = $state('');
-	let customModel = $state('');
 	let launchingAgent = $state(false);
 	let agentError = $state('');
 	let agentInfo = $state<AgentSessionInfo | null>(null);
 	let agentStream = $state<AgentStream | null>(null);
-	const OTHER_MODEL = '__other__';
 	const chosenAgent = $derived(agentOptions.find((a) => a.id === agentChoice) ?? null);
-	/** Modelos que ofrece cada agente por ACP; mientras no llegan, la lista fija de `lib/agents.mjs`. */
-	let agentModels = $state<Record<string, AcpModels | 'loading' | null>>({});
+	/** Flujo CLI: live shell o espera fullscreen (sin form de setup). */
+	const showLiveShell = $derived(
+		Boolean((agentStream && agentInfo) || (launchingAgent && chosenAgent) || cliAgentPending)
+	);
+	const showCliWait = $derived(cliShell && !showLiveShell);
+	/** Modelos por ACP; mientras cargan o si fallan, se usa la lista fija de `lib/agents.mjs`. */
+	let agentModels = $state<Record<string, AcpModels | 'loading'>>({});
+	/** Reintento: forzar probe sin caché del server. */
+	let modelsForce = $state<Record<string, boolean>>({});
 	const modelOptions = $derived.by(() => {
 		const live = agentModels[agentChoice];
-		if (!live || live === 'loading') return chosenAgent?.models ?? [];
-		const current = live.models.find((m) => m.value === live.currentModel);
-		return [
-			{ value: '', label: `Por defecto del agente${current ? ` (${current.name})` : ''}` },
-			...live.models
-				.filter((m) => m.value !== live.currentModel && m.value !== 'default')
-				.map((m) => ({
-					value: m.value,
-					label: m.name.toLowerCase() === m.value.toLowerCase() ? m.name : `${m.name} · ${m.value}`
-				})),
-			{ value: OTHER_MODEL, label: 'Otro…' }
-		];
+		const fixed = {
+			options: chosenAgent?.models ?? [],
+			initialValue: ''
+		};
+		const fallback = fixed.options.filter((m) => m.value !== '');
+		if (live && live !== 'loading' && live.models.length) {
+			return buildAcpModelSelectOptions(
+				{ models: live.models, currentModel: live.currentModel },
+				fixed
+			).options;
+		}
+		if (live === 'loading' && !fallback.length) {
+			return [{ value: '', label: 'Cargando modelos…', title: 'Cargando modelos…', badges: [] }];
+		}
+		return sortModelSelectOptions(
+			fixed.options.map((m) => ({
+				value: m.value,
+				label: m.label,
+				title: m.label,
+				badges: [] as string[],
+				...(m.hint ? { hint: m.hint } : {})
+			}))
+		);
 	});
+	const modelsStatus = $derived(agentModels[agentChoice]);
+	const modelsError = $derived(
+		modelsStatus && modelsStatus !== 'loading' ? modelsStatus.error : undefined
+	);
+	const modelsEmpty = $derived(
+		Boolean(
+			modelsStatus &&
+				modelsStatus !== 'loading' &&
+				!modelsStatus.error &&
+				!modelsStatus.models.length
+		)
+	);
 
 	$effect(() => {
 		const id = agentChoice;
 		if (promptViewMode !== 'agent' || !id || id in untrack(() => agentModels)) return;
+		const force = Boolean(untrack(() => modelsForce[id]));
 		agentModels = { ...untrack(() => agentModels), [id]: 'loading' };
-		void acpAgentModels({ agentId: id, repo: untrack(() => meta.repo) })
-			.catch(() => null)
-			.then((res) => (agentModels = { ...agentModels, [id]: res }));
+		void acpAgentModels({ agentId: id, repo: untrack(() => meta.repo), force }).then((res) => {
+			agentModels = { ...agentModels, [id]: res };
+			if (force) modelsForce = { ...modelsForce, [id]: false };
+		});
 	});
+
+	function retryAgentModels() {
+		const id = agentChoice;
+		if (!id || agentModels[id] === 'loading') return;
+		modelsForce = { ...modelsForce, [id]: true };
+		const next = { ...agentModels };
+		delete next[id];
+		agentModels = next;
+	}
 	const canLaunchAgent = $derived(
 		meta.source === 'local' && looksLikePath(meta.repo) && Boolean(meta.branch.trim()) && meta.branch !== meta.base
 	);
 
-	const commandText = $derived(buildCommandText(meta));
 	const canWatchRepo = $derived(meta.source === 'local' && looksLikePath(meta.repo));
+
+	function setPromptViewMode(mode: 'full' | 'agent') {
+		promptModeTouched = true;
+		promptViewMode = mode;
+	}
 
 	onMount(() => {
 		const last = loadLastMeta();
 		meta = last;
-		if (last.source === 'local' && looksLikePath(last.repo)) lastLocalRepo = last.repo.trim();
+		lastLocalRepo =
+			loadLastLocalRepo() ||
+			(last.source === 'local' && looksLikePath(last.repo) ? last.repo.trim() : '');
 		const params = new URL(window.location.href).searchParams;
 		const wantImport = params.get('import') === '1';
 		const wantWatch = params.get('watch') === '1';
@@ -171,20 +257,37 @@
 		try {
 			agentOptions = await acpAgents();
 			if (!agentOptions.some((a) => a.id === agentChoice)) agentChoice = agentOptions[0]?.id ?? '';
+			// Default a agente cuando hay opciones ACP y el usuario no eligió otra pestaña.
+			if (!promptModeTouched && agentOptions.length > 0 && promptViewMode !== 'agent') {
+				promptViewMode = 'agent';
+			}
 		} catch {
 			agentOptions = [];
 		}
 	}
 
-	/** Sigue una sesión ya lanzada (desde el CLI o desde acá) y abre el reporte cuando el JSON valida. */
+	/** Sigue una sesión ya lanzada (desde el CLI o desde acá) y abre el reporte cuando hay un resultado válido. */
 	async function followAgentSession(id: string, known?: AgentSessionInfo) {
 		promptViewMode = 'agent';
 		agentError = '';
-		agentInfo = known ?? (await agentSession({ id }).catch(() => null));
-		if (!agentInfo) {
+		let info = known ?? null;
+		// La CLI abre el browser apenas el server escucha; a veces la sesión aún no está en el Map.
+		if (!info) {
+			for (let i = 0; i < 30; i++) {
+				info = await agentSession({ id }).catch(() => null);
+				if (info) break;
+				await new Promise((r) => setTimeout(r, 100));
+			}
+		}
+		if (!info) {
 			agentError = 'La sesión del agente ya no existe (¿se reinició diff-review?).';
+			cliAgentPending = '';
 			return;
 		}
+		// Si ya frenó (p. ej. auth) antes de conectar el SSE, mostrar el mismo mensaje que la CLI.
+		if (info.status === 'error' && info.statusMessage) agentError = info.statusMessage;
+		agentInfo = info;
+		cliAgentPending = '';
 		agentStream?.close();
 		const stream = new AgentStream(id, (event) => void onAgentEvent(event));
 		agentStream = stream;
@@ -192,6 +295,11 @@
 	}
 
 	async function onAgentEvent(event: SeqEvent) {
+		if (event.type === 'status' && event.status === 'error') {
+			agentError = event.message || agentError || 'Error del agente.';
+			if (agentInfo) agentInfo = { ...agentInfo, status: 'error', statusMessage: agentError };
+			return;
+		}
 		if (event.type !== 'review' || !event.ok || !agentInfo) return;
 		try {
 			const loaded = await loadDetectedOutput({ repo: agentInfo.repo, filename: event.filename });
@@ -205,7 +313,7 @@
 
 	async function launchAgent() {
 		if (!chosenAgent || !canLaunchAgent || launchingAgent) return;
-		const model = modelChoice === OTHER_MODEL ? customModel.trim() : modelChoice;
+		const model = modelChoice;
 		launchingAgent = true;
 		agentError = '';
 		try {
@@ -230,6 +338,8 @@
 		agentStream = null;
 		agentInfo = null;
 		agentError = '';
+		cliShell = false;
+		cliAgentPending = '';
 	}
 
 	function clearLaunchQuery() {
@@ -325,7 +435,7 @@
 		if (meta.source === 'local' && looksLikePath(meta.repo)) {
 			lastLocalRepo = meta.repo.trim();
 		}
-		saveLastMeta(meta);
+		saveLastMeta(meta, lastLocalRepo);
 		if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
 		const tipsChanged =
 			prev.repo !== meta.repo ||
@@ -383,23 +493,11 @@
 		copyToClipboard(buildCoveragePromptText(meta, uncovered, { outputFilename }), (v) => (coverageCopied = v));
 	}
 
-	function copyCommand() {
-		copyToClipboard(commandText, (v) => (commandCopied = v));
-	}
-
-	function downloadSkill(agent: SkillAgent) {
-		const content = buildSkillMarkdown(agent);
-		const blob = new Blob([content], { type: 'text/markdown' });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = skillFilename(agent);
-		a.click();
-		URL.revokeObjectURL(url);
-	}
-
 	function looksLikePath(value: string) {
-		return /[\\/]/.test(value) || /^[A-Za-z]:/.test(value);
+		const v = value.trim();
+		// URLs llevan `/` pero no son carpetas locales.
+		if (!v || /^(https?:\/\/|git@|ssh:\/\/)/i.test(v)) return false;
+		return /[\\/]/.test(v) || /^[A-Za-z]:/.test(v);
 	}
 
 	function looksLikeGitUrl(value: string) {
@@ -688,7 +786,8 @@
 							branch: ctx.branch,
 							base: ctx.base || 'develop',
 							source: attempt.source,
-							payload
+							payload,
+							outputFilename
 						});
 						hydrated = true;
 						if (attempt.source === 'url') {
@@ -727,11 +826,12 @@
 				updateMeta({ remoteUrl: discoveredRemote });
 			}
 
-			const reportMeta = savedMeta(ctx, discoveredRemote);
+			let reportMeta = await ensureReviewOnDisk(raw, savedMeta(ctx, discoveredRemote));
 
 			const missing = uncoveredFiles(doc);
 			if (missing.length) {
 				pendingDoc = doc;
+				pendingRaw = raw;
 				uncovered = missing;
 				dropErrors = [];
 				updateMeta(reportMeta);
@@ -746,11 +846,12 @@
 			return false;
 		}
 
-		const reportMeta = savedMeta(ctx);
+		let reportMeta = await ensureReviewOnDisk(raw, savedMeta(ctx));
 
 		const missing = uncoveredFiles(doc);
 		if (missing.length) {
 			pendingDoc = doc;
+			pendingRaw = raw;
 			uncovered = missing;
 			dropErrors = [];
 			updateMeta(reportMeta);
@@ -761,6 +862,10 @@
 	}
 
 	function savedMeta(ctx: ReportMeta, remoteUrl?: string): ReportMeta {
+		const filename =
+			reportOutputFilename(ctx) ||
+			(isOutputFilename(outputFilename) ? outputFilename : '') ||
+			reportOutputFilename(meta);
 		return {
 			source: ctx.source,
 			repo: ctx.repo || meta.repo,
@@ -770,28 +875,43 @@
 			...(ctx.generatedAt ? { generatedAt: ctx.generatedAt } : {}),
 			...(ctx.agent ? { agent: ctx.agent } : {}),
 			...(ctx.model ? { model: ctx.model } : {}),
-			...(ctx.agentSession ? { agentSession: ctx.agentSession } : {})
+			...(ctx.agentSession ? { agentSession: ctx.agentSession } : {}),
+			...(filename ? { outputFilename: filename } : {})
 		};
+	}
+
+	async function ensureReviewOnDisk(raw: unknown, reportMeta: ReportMeta): Promise<ReportMeta> {
+		const filename = reportOutputFilename(reportMeta);
+		if (!filename || reportMeta.source !== 'local' || !looksLikePath(reportMeta.repo)) {
+			return reportMeta;
+		}
+		const withName = { ...reportMeta, outputFilename: filename };
+		try {
+			const existing = await loadDetectedOutput({ repo: withName.repo, filename });
+			if (existing?.payload) return withName;
+			await writeReviewOutput({ repo: withName.repo, filename, payload: raw });
+			return withName;
+		} catch {
+			// Sin archivo en disco, saveReport embebe el documento en localStorage.
+			const { outputFilename: _drop, ...rest } = reportMeta;
+			return rest;
+		}
 	}
 
 	function openNewReport(doc: ReviewDocument, reportMeta = meta) {
 		dropErrors = [];
 		pendingDoc = null;
+		pendingRaw = null;
 		uncovered = [];
 		openingReport = true;
 		const saved = saveReport(doc, reportMeta);
 		void goto(resolve(`/report/${saved.id}`));
 	}
 
-	function loadSample() {
-		openNewReport(SAMPLE_DOCUMENT, {
-			source: 'local',
-			repo: 'ms-obe-aprobacion-debin',
-			branch: 'feature/PCM-14839',
-			base: 'develop',
-			agent: 'Claude Code',
-			model: 'opus'
-		});
+	async function openPendingAnyway() {
+		if (!pendingDoc) return;
+		const reportMeta = await ensureReviewOnDisk(pendingRaw ?? pendingDoc, savedMeta(meta));
+		openNewReport(pendingDoc, reportMeta);
 	}
 
 	function fmtWhen(iso: string) {
@@ -847,24 +967,117 @@
 	}}
 />
 
-<div class="page">
+<div
+	class="page"
+	class:live={showLiveShell || showCliWait}
+>
 	{#if promptNotify}
 		<div class="toast" role="status">Prompt copiado al portapapeles.</div>
 	{/if}
-	{#if diffBusy}
-		<div class="diff-backdrop">
-			<div class="diff-modal" role="status" aria-live="polite" aria-busy="true">
-				<div class="diff-spinner" aria-hidden="true"></div>
-				<p>Calculando diff con git…</p>
-			</div>
+
+	{#if agentStream && agentInfo}
+		<LiveReviewView
+			info={agentInfo}
+			events={agentStream.events}
+			busy={agentStream.busy}
+			gone={agentStream.gone}
+			error={agentError ||
+				agentStream.errorMessage ||
+				(agentInfo.status === 'error' ? agentInfo.statusMessage || '' : '')}
+			oncancel={() => void cancelAgent({ id: agentInfo!.id })}
+			onreset={resetAgentSession}
+			onrespondpermission={(detail) =>
+				void respondPermission({
+					id: agentInfo!.id,
+					requestId: detail.requestId,
+					allow: detail.allow,
+					allowAll: detail.allowAll,
+					scope: detail.scope
+				})
+					.then((next) => {
+						agentInfo = next;
+					})
+					.catch((err) => {
+						agentError = err instanceof Error ? err.message : String(err);
+					})}
+			onsessiontrust={(enabled) =>
+				void setPermissionTrust({ id: agentInfo!.id, enabled })
+					.then((next) => {
+						agentInfo = next;
+					})
+					.catch((err) => {
+						agentError = err instanceof Error ? err.message : String(err);
+					})}
+			onretry={() => {
+				agentError = '';
+				void retryReview({ id: agentInfo!.id })
+					.then((next) => {
+						agentInfo = next;
+					})
+					.catch((err) => {
+						agentError = err instanceof Error ? err.message : String(err);
+					});
+			}}
+		/>
+	{:else if launchingAgent && chosenAgent}
+		<LiveReviewView
+			info={{
+				id: '',
+				agentId: chosenAgent.id,
+				agentLabel: chosenAgent.label,
+				model: modelChoice || '',
+				repo: meta.repo.trim(),
+				branch: meta.branch.trim(),
+				base: meta.base.trim() || 'develop',
+				outputFilename,
+				acpSessionId: '',
+				status: 'starting',
+				busy: true
+			}}
+			events={[]}
+			busy={true}
+			oncancel={() => {}}
+			onreset={resetAgentSession}
+		/>
+	{:else if cliAgentPending}
+		<LiveReviewView
+			info={{
+				id: '',
+				agentId: '',
+				agentLabel: 'Agente',
+				model: '',
+				repo: meta.repo.trim(),
+				branch: meta.branch.trim(),
+				base: meta.base.trim() || 'develop',
+				outputFilename,
+				acpSessionId: '',
+				status: 'starting',
+				busy: true
+			}}
+			events={[]}
+			busy={true}
+			error={agentError}
+			oncancel={() => {}}
+			onreset={resetAgentSession}
+		/>
+	{:else if showCliWait}
+		<div class="cli-wait" role="status" aria-live="polite" aria-busy="true">
+			<div class="diff-spinner" aria-hidden="true"></div>
+			<p class="cli-wait-title">
+				{diffBusy || openingReport ? 'Abriendo el reporte…' : 'Esperando el JSON de la review…'}
+			</p>
+			{#if outputFilename}
+				<p class="cli-wait-detail"><code>{outputFilename}</code></p>
+			{/if}
+			<button type="button" class="ghost" onclick={resetAgentSession}>Volver al inicio</button>
 		</div>
-	{/if}
+	{:else}
 	<header class="topbar">
 		<a href={resolve('/')} class="brand">
 			<span class="brand-dot"></span>
 			<span class="title-block">
 				<span>diff-review</span>
-				<small>generá un prompt, corré tu agente, soltá el resultado</small>
+				<small>lanzá el agente, abrí el reporte, triager hallazgos</small>
 			</span>
 		</a>
 		<ThemeToggle />
@@ -969,123 +1182,94 @@
 			</div>
 
 			<div class="section-head">
-				<h2>2. Prompt</h2>
+				<h2>2. Generar review</h2>
 			</div>
 			<div class="mode-toggle">
-				<button type="button" class:on={promptViewMode === 'full'} onclick={() => (promptViewMode = 'full')}
-					>Prompt completo</button
-				>
-				<button type="button" class:on={promptViewMode === 'command'} onclick={() => (promptViewMode = 'command')}
-					>Comando (skill)</button
-				>
 				{#if agentOptions.length || agentStream}
-					<button type="button" class:on={promptViewMode === 'agent'} onclick={() => (promptViewMode = 'agent')}
+					<button type="button" class:on={promptViewMode === 'agent'} onclick={() => setPromptViewMode('agent')}
 						>Lanzar agente</button
 					>
 				{/if}
+				<button type="button" class:on={promptViewMode === 'full'} onclick={() => setPromptViewMode('full')}
+					>Copiar prompt</button
+				>
 			</div>
 
-			{#if promptViewMode === 'full'}
-				<p class="hint-text">Copiá esto en Claude, Cursor, Copilot o el agente que uses. El schema de salida va incluido.</p>
-				<textarea value={promptText} oninput={onPromptInput}></textarea>
-				<div class="actions">
-					<button type="button" class="primary" onclick={copyPrompt}>{copied ? 'Copiado ✓' : 'Copiar prompt'}</button>
-					<button type="button" class="ghost" onclick={loadSample}>Ver ejemplo</button>
-				</div>
-			{:else if promptViewMode === 'agent'}
-				{#if agentStream && agentInfo}
-					<div class="agent-head">
-						<span>
-							<strong>{agentInfo.agentLabel}</strong>
-							{#if agentInfo.model}<small>{agentInfo.model}</small>{/if}
-							<small>{agentInfo.branch} → {agentInfo.base}</small>
-						</span>
-						{#if agentStream.busy}
-							<button type="button" onclick={() => void cancelAgent({ id: agentInfo!.id })}>Cancelar</button>
-						{:else}
-							<button type="button" class="ghost" onclick={resetAgentSession}>Nueva review</button>
-						{/if}
-					</div>
-					<div class="agent-log">
-						<AgentLog events={agentStream.events} busy={agentStream.busy} />
-					</div>
-					{#if agentStream.gone}
-						<p class="error-line">La sesión del agente ya no existe en el server.</p>
-					{/if}
-				{:else}
-					<p class="hint-text">
-						diff-review lanza el agente en el repo, muestra lo que va haciendo y abre el reporte cuando el JSON
-						valida. Solo puede leer el repo, correr comandos de solo lectura (git, grep, cat…) y escribir
-						<code>{outputFilename}</code>.
-					</p>
-					<div class="row">
-						<label class="field">
-							<span>Agente</span>
-							<select bind:value={agentChoice} onchange={() => (modelChoice = '')}>
-								{#each agentOptions as a (a.id)}
-									<option value={a.id}>{a.label}</option>
-								{/each}
-							</select>
-						</label>
-						<label class="field">
-							<span>Modelo{#if agentModels[agentChoice] === 'loading'}<small class="loading-models"> · consultando al agente…</small>{/if}</span>
-							<select bind:value={modelChoice}>
-								{#each modelOptions as m (m.value)}
-									<option value={m.value}>{m.label}</option>
-								{/each}
-							</select>
-						</label>
-					</div>
-					{#if modelChoice === OTHER_MODEL}
-						<label class="field">
-							<span>Id del modelo</span>
-							<input type="text" bind:value={customModel} placeholder="opus" />
-						</label>
-					{/if}
-					<div class="actions">
-						<button
-							type="button"
-							class="primary"
-							onclick={() => void launchAgent()}
-							disabled={!canLaunchAgent || launchingAgent || !chosenAgent}
+			{#if promptViewMode === 'agent' && (agentOptions.length || agentStream)}
+				<p class="hint-text">
+					diff-review lanza el agente en el repo, muestra lo que va haciendo y abre el reporte cuando llega a
+					un resultado válido. Solo puede leer el repo, correr comandos de solo lectura (git, grep, cat…) y
+					escribir <code>{outputFilename}</code>.
+				</p>
+				<div class="row">
+					<label class="field">
+						<span>Agente</span>
+						<AgentSelect
+							bind:value={agentChoice}
+							options={agentOptions}
+							onchange={() => (modelChoice = '')}
+						/>
+					</label>
+					<label class="field">
+						<span
+							>Modelo{#if modelsStatus === 'loading'}
+								<small class="loading-models"> · consultando modelos (puede tardar)…</small>{/if}</span
 						>
-							{launchingAgent ? 'Lanzando…' : 'Lanzar review'}
-						</button>
-					</div>
-					{#if !canLaunchAgent}
-						<p class="hint-text">Elegí un repo local y un branch distinto de la base.</p>
-					{/if}
+						<ModelSelect
+							bind:value={modelChoice}
+							options={modelOptions}
+							disabled={modelsStatus === 'loading' && !chosenAgent?.models.length}
+						/>
+					</label>
+				</div>
+				{#if modelsError}
+					<p class="error-line models-error">
+						{modelsError}
+						<button type="button" class="linkish" onclick={retryAgentModels}>Reintentar</button>
+					</p>
+				{:else if modelsEmpty}
+					<p class="hint-text models-error">
+						El agente no listó modelos por ACP; usá el default o la lista fija.
+						<button type="button" class="linkish" onclick={retryAgentModels}>Reintentar</button>
+					</p>
+				{/if}
+				<div class="actions">
+					<button
+						type="button"
+						class="primary"
+						onclick={() => void launchAgent()}
+						disabled={!canLaunchAgent || launchingAgent || !chosenAgent}
+					>
+						{launchingAgent ? 'Lanzando…' : 'Lanzar review'}
+					</button>
+				</div>
+				{#if !canLaunchAgent}
+					<p class="hint-text">Elegí un repo local y un branch distinto de la base.</p>
 				{/if}
 				{#if agentError}
 					<p class="error-line">{agentError}</p>
 				{/if}
 			{:else}
-				<p class="hint-text">Necesita el skill instalado (abajo). El agente ya tiene guardadas las reglas y el schema de salida.</p>
-				<div class="command-box"><code>{commandText}</code></div>
+				<p class="hint-text">
+					Copiá y pegalo en Claude, Cursor, Copilot u otro agente. El schema de salida va incluido.
+				</p>
+				<textarea value={promptText} oninput={onPromptInput}></textarea>
 				<div class="actions">
-					<button type="button" class="primary" onclick={copyCommand}
-						>{commandCopied ? 'Copiado ✓' : 'Copiar comando'}</button
-					>
-				</div>
-				<div class="skill-block">
-					<h3>¿No tenés el skill instalado?</h3>
-					<p class="hint-text">Define /diff-review y /diff-review-fix. Descargalo e instalalo en la carpeta indicada.</p>
-					<div class="skill-buttons">
-						<button type="button" onclick={() => downloadSkill('claude')}>Claude Code · .claude/commands/</button>
-						<button type="button" onclick={() => downloadSkill('cursor')}>Cursor · .cursor/commands/</button>
-						<button type="button" onclick={() => downloadSkill('copilot')}>Copilot · .github/prompts/</button>
-					</div>
+					<button type="button" class="primary" onclick={copyPrompt}>{copied ? 'Copiado ✓' : 'Copiar prompt'}</button>
 				</div>
 			{/if}
 
 			<h2 class="result-head">3. Resultado</h2>
 			<p class="hint-text"
-				>Soltá acá el <code>{outputFilename}</code> que generó el agente. Si trae <code>meta</code>, se
+				>Si lanzaste el agente desde acá o desde la CLI, el reporte se abre solo cuando hay un resultado válido.
+				También podés soltar o elegir el <code>{outputFilename}</code> a mano. Si trae <code>meta</code>, se
 				autocompletan repo y branches.
 				{#if canWatchRepo && autoWatch}
-					Con repo local, si el archivo aparece en la raíz lo abrimos solos.
+					Con repo local, si el archivo aparece en <code>.diff-review/</code> (o en la raíz, formato viejo) lo
+					abrimos solos.
 				{:else if canWatchRepo}
-					Con repo local, si el archivo está en la raíz podés abrirlo desde acá.
+					Con repo local, si el archivo está en <code>.diff-review/</code> (o en la raíz) podés abrirlo desde
+					acá.
 				{/if}
 			</p>
 			{#if canWatchRepo && detectedOutput && detectedOutput.filename === outputFilename && !hydrating && !autoImporting}
@@ -1109,7 +1293,7 @@
 					>
 				</p>
 			{:else if canWatchRepo && !detectedOutput && !hydrating && !autoImporting}
-				<p class="detect-wait">Esperando <code>{outputFilename}</code> en la raíz del repo…</p>
+				<p class="detect-wait">Esperando <code>{outputFilename}</code> en <code>.diff-review/</code>…</p>
 			{/if}
 			{#if autoImporting}
 				<p class="detect-wait">Detecté el JSON — abriendo reporte…</p>
@@ -1125,7 +1309,7 @@
 			>
 				<p>
 					{#if hydrating}
-						Calculando diff con git…
+						Abriendo el reporte…
 					{:else if pickingFile}
 						Eligiendo archivo…
 					{:else if autoImporting}
@@ -1164,15 +1348,15 @@
 						</ul>
 					</details>
 					<p class="hint-text">
-						Pasale este prompt al mismo agente que corrió la review: tiene el diff en contexto y solo
-						tiene que completar lo que falta. Después soltá de nuevo el <code>{outputFilename}</code>.
+						Pedile al agente (chat del reporte, o este prompt pegado) que complete lo que falta: ya tiene el
+						diff en contexto. Después el JSON se reabre solo, o soltalo de nuevo.
 					</p>
 					<textarea readonly rows="7" value={buildCoveragePromptText(meta, uncovered, { outputFilename })}></textarea>
 					<div class="coverage-actions">
 						<button type="button" class="primary" onclick={copyCoveragePrompt}>
 							{coverageCopied ? 'Copiado ✓' : 'Copiar prompt de corrección'}
 						</button>
-						<button type="button" onclick={() => pendingDoc && openNewReport(pendingDoc)}>Abrir igual</button>
+						<button type="button" onclick={() => void openPendingAnyway()}>Abrir igual</button>
 					</div>
 				</div>
 			{/if}
@@ -1272,10 +1456,11 @@
 					{/each}
 				</ul>
 			{:else}
-				<p class="hint-text">Todavía no hay reportes. Generá un prompt, corré tu agente y soltá el JSON.</p>
+				<p class="hint-text">Todavía no hay reportes. Lanzá el agente o copiá el prompt y abrí el JSON acá.</p>
 			{/if}
 		</aside>
 	</div>
+	{/if}
 </div>
 
 <style>
@@ -1283,6 +1468,12 @@
 		min-height: 100vh;
 		display: flex;
 		flex-direction: column;
+	}
+
+	.page.live {
+		min-height: 100vh;
+		height: 100vh;
+		overflow: hidden;
 	}
 
 	.diff-backdrop {
@@ -1320,6 +1511,38 @@
 		border-top-color: var(--accent);
 		border-radius: 50%;
 		animation: diff-spin 0.7s linear infinite;
+	}
+
+	.cli-wait {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+		padding: 32px 24px;
+		text-align: center;
+		background: var(--bg);
+	}
+	.cli-wait-title {
+		margin: 0;
+		font-size: 15px;
+		color: var(--text);
+	}
+	.cli-wait-detail {
+		margin: 0;
+		font-size: 13px;
+		color: var(--text-faint);
+	}
+	.cli-wait .ghost {
+		margin-top: 8px;
+		padding: 6px 12px;
+		font-size: 13px;
+		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-dim);
+		cursor: pointer;
 	}
 
 	@keyframes diff-spin {
@@ -1425,14 +1648,6 @@
 		align-items: baseline;
 		justify-content: space-between;
 		margin-top: 22px;
-	}
-
-	.link {
-		background: transparent;
-		border: 0;
-		color: var(--accent);
-		font-size: 12px;
-		padding: 0;
 	}
 
 	.hint-text {
@@ -1594,47 +1809,24 @@
 		color: var(--text);
 	}
 
-	.command-box {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 10px 12px;
-		overflow: auto;
-	}
-
-	.command-box code {
-		font-family: var(--mono);
-		font-size: 12.5px;
-		color: var(--text);
-		white-space: nowrap;
-	}
-
-	.agent-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 10px;
-		margin-bottom: 8px;
-	}
 	.loading-models {
 		color: var(--text-faint);
 		font-weight: 400;
 	}
-	.agent-head small {
-		margin-left: 8px;
-		color: var(--text-faint);
-		font-family: var(--mono);
-		font-size: 12px;
-	}
-	.agent-log {
+	.models-error {
 		display: flex;
-		height: 380px;
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		background: var(--bg-elev);
-		padding: 10px 12px;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 8px;
 	}
-	.agent-log :global(.log) {
-		flex: 1;
+	button.linkish {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--accent, #3b82f6);
+		cursor: pointer;
+		text-decoration: underline;
+		font: inherit;
 	}
 
 	.actions {
@@ -1648,32 +1840,6 @@
 		border-color: var(--btn-primary-border);
 		color: var(--btn-primary-text);
 		font-weight: 600;
-	}
-
-	button.ghost {
-		background: transparent;
-		color: var(--text-dim);
-	}
-
-	.skill-block {
-		margin-top: 16px;
-		padding-top: 14px;
-		border-top: 1px solid var(--border);
-	}
-
-	.skill-block h3 {
-		margin: 0 0 4px;
-		font-size: 11.5px;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
-		color: var(--text-faint);
-		font-weight: 650;
-	}
-
-	.skill-buttons {
-		display: flex;
-		gap: 8px;
-		flex-wrap: wrap;
 	}
 
 	.coverage-box {

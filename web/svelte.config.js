@@ -14,7 +14,10 @@ const config = {
     }
   },
   kit: {
-    adapter: adapter(),
+    adapter: adapter({
+      // Con `npm start` corriendo, Windows bloquea `web/build` (EBUSY). `DIFF_REVIEW_OUT=build-next`.
+      out: process.env.DIFF_REVIEW_OUT || 'build'
+    }),
     experimental: {
       remoteFunctions: true
     },

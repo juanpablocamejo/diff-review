@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { extractBranchDiff } from '$review/lib/extract.mjs';
+import { loadBranchDiff } from '$review/lib/extract.mjs';
 import {
 	assertGitRepo,
 	branchTips,
@@ -12,6 +12,7 @@ import {
 } from '$review/lib/git.mjs';
 import { decodePayload } from '$review/lib/json-payload.mjs';
 import { isOutputFilename, makeOutputFilename } from '$review/lib/output-name.mjs';
+import { companionPaths, ensureReviewDir, locateReviewFile, reviewDir } from '$review/lib/review-dir.mjs';
 import {
 	ensureRemoteWorktree,
 	listRemoteBranches,
@@ -105,7 +106,7 @@ export function takePendingImport(): PendingImport | null {
 export type DetectedOutput = { filename: string; path: string; mtimeMs: number };
 
 /**
- * Busca un JSON de review en la raíz del repo local.
+ * Busca un JSON de review en `.diff-review/` o (formato viejo) en la raíz del repo local.
  * Prefiere `preferredName` si existe; si no, el más reciente que matchee el patrón.
  */
 export function detectReviewOutput(repo: string, preferredName?: string): DetectedOutput | null {
@@ -120,8 +121,8 @@ export function detectReviewOutput(repo: string, preferredName?: string): Detect
 
 	const preferred = String(preferredName || '').trim();
 	if (preferred && isOutputFilename(preferred)) {
-		const preferredPath = join(root, preferred);
-		if (existsSync(preferredPath)) {
+		const preferredPath = locateReviewFile(root, preferred);
+		if (preferredPath) {
 			try {
 				const st = statSync(preferredPath);
 				return { filename: preferred, path: preferredPath, mtimeMs: st.mtimeMs };
@@ -132,10 +133,16 @@ export function detectReviewOutput(repo: string, preferredName?: string): Detect
 	}
 
 	let best: DetectedOutput | null = null;
-	try {
-		for (const name of readdirSync(root)) {
+	for (const dir of [reviewDir(root), root]) {
+		let names: string[];
+		try {
+			names = readdirSync(dir);
+		} catch {
+			continue;
+		}
+		for (const name of names) {
 			if (!isOutputFilename(name)) continue;
-			const full = join(root, name);
+			const full = join(dir, name);
 			try {
 				const st = statSync(full);
 				if (!st.isFile()) continue;
@@ -146,13 +153,11 @@ export function detectReviewOutput(repo: string, preferredName?: string): Detect
 				/* ignore */
 			}
 		}
-	} catch {
-		return null;
 	}
 	return best;
 }
 
-/** Lee y parsea un JSON de review en la raíz del repo (solo nombres válidos). */
+/** Lee y parsea un JSON de review de `.diff-review/` o la raíz del repo (solo nombres válidos). */
 export function readReviewOutput(repo: string, filename: string): PendingImport | null {
 	const raw = String(repo || '').trim();
 	const name = basename(String(filename || '').trim());
@@ -163,14 +168,28 @@ export function readReviewOutput(repo: string, filename: string): PendingImport 
 	} catch {
 		return null;
 	}
-	const filePath = join(root, name);
-	if (!existsSync(filePath)) return null;
+	const filePath = locateReviewFile(root, name);
+	if (!filePath) return null;
 	try {
 		const text = readFileSync(filePath, 'utf8');
 		return { filename: name, payload: decodePayload(text) };
 	} catch {
 		return null;
 	}
+}
+
+/** Escribe (o pisa) el JSON de review en `.diff-review/` para poder abrirlo luego solo con el puntero. */
+export function writeReviewOutput(repo: string, filename: string, payload: unknown): PendingImport {
+	const raw = String(repo || '').trim();
+	const name = basename(String(filename || '').trim());
+	if (!raw || !name || !isOutputFilename(name) || looksLikeGitUrl(raw)) {
+		throw new Error('Repo local y nombre de salida válidos requeridos para guardar el JSON.');
+	}
+	const root = assertGitRepo(raw);
+	ensureReviewDir(root);
+	const path = companionPaths(root, name).json;
+	writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+	return { filename: name, payload };
 }
 
 export async function pickLocalFolder(): Promise<string | null> {
@@ -199,6 +218,12 @@ export function resolveOutputName(repo: string, branch: string, base: string): O
 		const root = assertGitRepo(raw);
 		const tips = branchTips(root, b, baseRef);
 		const fp = fingerprint(tips.branchSha, tips.baseSha);
+		// El prompt manda el JSON a .diff-review/: que la carpeta ya exista y se ignore sola, aunque lo cree otro agente.
+		try {
+			ensureReviewDir(root);
+		} catch {
+			/* repo de solo lectura: el agente la crea */
+		}
 		return {
 			filename: makeOutputFilename({
 				branchSha: tips.branchSha,
@@ -216,13 +241,14 @@ export function resolveOutputName(repo: string, branch: string, base: string): O
 	}
 }
 
-/** Diálogo nativo de JSON; abre en la raíz del repo si es local. */
+/** Diálogo nativo de JSON; abre en `.diff-review/` (o la raíz) si el repo es local. */
 export async function pickReviewJsonFile(defaultDir?: string): Promise<PickedFile | null> {
 	const dir = String(defaultDir || '').trim();
 	let start = dir;
 	if (dir && !looksLikeGitUrl(dir)) {
 		try {
-			start = assertGitRepo(dir);
+			const root = assertGitRepo(dir);
+			start = existsSync(reviewDir(root)) ? reviewDir(root) : root;
 		} catch {
 			start = dir;
 		}
@@ -286,10 +312,27 @@ export function hydrateReviewPayload(input: {
 	base: string;
 	source?: RepoSource;
 	payload: unknown;
+	/** Nombre del JSON (`diff-rev_…json`): si hay companion `.diff`, se reutiliza en vez de `git diff`. */
+	outputFilename?: string;
 }): ReviewDocument {
 	const source = resolveSource(input.source, input.repo);
 	const repo = resolveWorktree(source, input.repo, input.branch, input.base || 'develop');
-	const skeleton = extractBranchDiff({ repo, branch: input.branch, base: input.base || 'develop' });
+	const base = input.base || 'develop';
+	let filename = String(input.outputFilename || '').trim();
+	if (!filename || !isOutputFilename(filename)) {
+		try {
+			const tips = branchTips(repo, input.branch, base);
+			filename = makeOutputFilename({ branchSha: tips.branchSha, baseSha: tips.baseSha });
+		} catch {
+			filename = '';
+		}
+	}
+	const skeleton = loadBranchDiff({
+		repo,
+		branch: input.branch,
+		base,
+		...(filename ? { filename } : {})
+	});
 	const extraNotes = Array.isArray((input.payload as { notes?: unknown })?.notes)
 		? ((input.payload as { notes: unknown[] }).notes.filter((n) => typeof n === 'string') as string[])
 		: [];

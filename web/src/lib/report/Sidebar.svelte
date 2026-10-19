@@ -5,7 +5,7 @@
 	import FileIcon from './FileIcon.svelte';
 	import { findingSeverityRank, maxFindingAccent } from './severity';
 	import { buildTreeRows, collectTreeDirPaths, type FileCount } from './tree';
-	import { plural } from './labels';
+	import { findingRef, plural, themeRef } from './labels';
 
 	let {
 		collapsed,
@@ -286,7 +286,7 @@
 											onclick={() => openGroup(g.id)}
 										>
 											<span class="row">
-												<span class="number">#{g.number}</span>
+												<span class="number">{themeRef(g.id, g.number)}</span>
 												<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
 												{#if count?.total}
 													<span
@@ -486,7 +486,7 @@
 									<span class="status" style:border-color={f.statusColor} style:color={f.statusColor}
 										>{f.statusMark}</span
 									>
-									<span class="number">#{f.number}</span>
+									<span class="number">{findingRef(f.id, f.number)}</span>
 									<span class="badge" style:color={f.badgeColor}>{f.badge}</span>
 								</span>
 								{#if f.decisionLabel}

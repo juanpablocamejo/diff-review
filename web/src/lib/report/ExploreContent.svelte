@@ -2,11 +2,12 @@
 	import type { FileSection, GroupSectionModel } from './build';
 	import type { DecoratedFinding } from './decorate';
 	import { fileAnchor, groupAnchor, groupFileAnchor } from './anchors';
+	import AskAgentButton from './AskAgentButton.svelte';
 	import DiffView from './DiffView.svelte';
 	import FileIcon from './FileIcon.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
 	import { maxFindingAccent } from './severity';
-	import { plural, pluralWord } from './labels';
+	import { askDraftBlock, askDraftTheme, plural, pluralWord, themeRef } from './labels';
 
 	let {
 		intentText,
@@ -28,12 +29,14 @@
 		splitRatio,
 		diffFontSize,
 		wrapLines,
+		agentId = '',
 		ontoggleexpand,
 		onopenfindings,
 		onresizeexplanation,
 		onresizesplit,
 		onrequestlines,
-		onactivefile
+		onactivefile,
+		onask
 	}: {
 		intentText: string;
 		notes: string[];
@@ -55,6 +58,7 @@
 		splitRatio: number;
 		diffFontSize: number;
 		wrapLines: boolean;
+		agentId?: string;
 		ontoggleexpand: (path: string) => void;
 		onopenfindings: (path: string) => void;
 		onresizeexplanation: (dx: number) => void;
@@ -62,6 +66,8 @@
 		onrequestlines?: (path: string) => Promise<string[] | null>;
 		/** Archivo más visible al scrollear Explore (para el sidebar). */
 		onactivefile?: (file: { groupId: string; path: string } | null) => void;
+		/** Abre el chat con un borrador (referencia a tema/bloque); no envía. */
+		onask?: (draft: string) => void;
 	} = $props();
 
 	let exploreRoot = $state<HTMLElement | null>(null);
@@ -240,6 +246,16 @@
 									<div class="explain-top">
 										<span class="lines">{row.lines}</span>
 										<span class="op">{row.opLabel}</span>
+										{#if onask}
+											<span class="explain-ask">
+												<AskAgentButton
+													{agentId}
+													title="Preguntar al agente sobre este bloque"
+													onclick={() =>
+														onask(askDraftBlock({ id: row.id, file: file.path, lines: row.lines }))}
+												/>
+											</span>
+										{/if}
 									</div>
 									<p class="what">{row.what}</p>
 									{#if row.why}
@@ -258,9 +274,18 @@
 	<section id={groupAnchor(g.id)} class="group" style:border-top={gi > 0 ? '1px solid var(--border-soft)' : 'none'}>
 		<div class="group-sticky">
 			<header class="group-head">
-				<span class="number">#{g.number}</span>
+				<span class="number">{themeRef(g.id, g.number)}</span>
 				<span class="kind-chip" style:color={g.kindColor}>{g.kindLabel}</span>
 				<h2>{g.title}</h2>
+				{#if onask}
+					<span class="group-ask">
+						<AskAgentButton
+							{agentId}
+							title="Preguntar al agente sobre este tema"
+							onclick={() => onask(askDraftTheme({ id: g.id, number: g.number, title: g.title }))}
+						/>
+					</span>
+				{/if}
 			</header>
 			{#if g.intentText}
 				<p class="group-intent">{g.intentText}</p>
@@ -381,9 +406,13 @@
 
 	.group-head {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		gap: 10px;
 		flex-wrap: wrap;
+	}
+
+	.group-ask {
+		margin-left: auto;
 	}
 
 	.group-head .number {
@@ -571,9 +600,13 @@
 
 	.explain-top {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		gap: 8px;
 		margin-bottom: 4px;
+	}
+
+	.explain-ask {
+		margin-left: auto;
 	}
 
 	.lines {

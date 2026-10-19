@@ -6,13 +6,28 @@ export type SessionStatus = 'starting' | 'working' | 'idle' | 'error' | 'closed'
 
 export type AgentEvent =
 	| { type: 'status'; status: SessionStatus; message?: string }
+	/** Fase visible en la UI en vivo: primero el diff precomputado, después el agente. */
+	| { type: 'phase'; phase: 'diff' | 'agent'; detail?: string }
 	/** Lo que se le mandó al agente. `review` = el prompt de la review (no se muestra entero). */
 	| { type: 'user'; text: string; mode: ChatMode | 'review' | 'fix' }
 	/** Texto del agente; los chunks consecutivos se acumulan en el mismo `seq`. */
 	| { type: 'text'; kind: 'message' | 'thought'; text: string }
 	| { type: 'tool'; id: string; title: string; kind: string; status: string }
 	| { type: 'plan'; entries: { content: string; status: string }[] }
-	| { type: 'permission'; title: string; allow: boolean; reason: string }
+	/** Pedido de permiso (política negó). `pending` = espera respuesta del usuario. */
+	| {
+			type: 'permission';
+			requestId: string;
+			title: string;
+			kind: string;
+			reason: string;
+			allow: boolean;
+			pending: boolean;
+			/** No mostrar línea individual (p. ej. resuelto en lote → ver `permission_summary`). */
+			quiet?: boolean;
+		}
+	/** Resumen compacto tras aprobar/rechazar varios permisos a la vez. */
+	| { type: 'permission_summary'; allow: boolean; count: number }
 	/** Resultado de validar el JSON después de un turno que lo escribió. `final` = no habrá otro reintento. */
 	| { type: 'review'; ok: boolean; filename: string; errors: string[]; final: boolean }
 	| { type: 'turn'; stopReason: string };
@@ -28,12 +43,23 @@ export type AgentSessionInfo = {
 	branch: string;
 	base: string;
 	outputFilename: string;
+	/** Id de sesión del lado del agente (para `session/load` / meta.agentSession). */
+	acpSessionId: string;
 	status: SessionStatus;
 	busy: boolean;
+	/** Último mensaje de status (p. ej. el error que también se imprime en la CLI). */
+	statusMessage?: string;
+	/** No preguntar permisos denegados por la política en esta sesión. */
+	sessionTrust?: boolean;
 };
 
-/** Modelos que el agente ofrece por ACP (`currentModel` = su default). */
-export type AcpModels = { models: { value: string; name: string }[]; currentModel: string };
+/** Modelos que el agente ofrece por ACP (`currentModel` = su default). `error` si el probe falló. */
+export type AcpModels = {
+	models: { value: string; name: string }[];
+	currentModel: string;
+	/** Si vino con fallo: la UI mantiene el fallback y puede reintentar. */
+	error?: string;
+};
 
 /** Agente con modo ACP instalado, para el select de la web. */
 export type AcpAgentOption = {
@@ -63,6 +89,10 @@ export function applyEvent(events: SeqEvent[], event: SeqEvent): SeqEvent[] {
 			};
 			return [...events.slice(0, i), merged, ...events.slice(i + 1)];
 		}
+	}
+	if (event.type === 'permission') {
+		const i = events.findIndex((e) => e.type === 'permission' && e.requestId === event.requestId);
+		if (i >= 0) return [...events.slice(0, i), event, ...events.slice(i + 1)];
 	}
 	return [...events, event];
 }
