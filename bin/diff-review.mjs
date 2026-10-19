@@ -565,6 +565,8 @@ O reinstalá el paquete (el tarball de npm incluye el build).`);
 			HOST: cfg.host,
 			PORT: String(port),
 			ORIGIN: origin,
+			// Reviews con seed/diff o import JSON suelen pasar los 512K por defecto del adapter-node.
+			BODY_SIZE_LIMIT: process.env.BODY_SIZE_LIMIT || '16M',
 			DIFF_REVIEW_LAUNCH_CWD: cfg.launchCwd,
 			...(cfg.importFile ? { DIFF_REVIEW_IMPORT_FILE: cfg.importFile } : {}),
 			...(cfg.agentRun ? { DIFF_REVIEW_AGENT_RUN: JSON.stringify(cfg.agentRun), DIFF_REVIEW_MIRROR: '1' } : {})

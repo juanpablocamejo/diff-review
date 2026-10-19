@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import AgentIcon from './AgentIcon.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import AgentSelect from './AgentSelect.svelte';
+	import { agentShortName } from './agent-icons';
 	import TrustSessionToggle from './TrustSessionToggle.svelte';
 	import {
 		acpAgentModels,
@@ -18,8 +20,13 @@
 	import { hydrateFromGit, loadDetectedOutput } from './git.remote';
 	import { buildAcpModelSelectOptions, sortModelSelectOptions } from './model-label';
 	import ModelSelect from './ModelSelect.svelte';
-	import { loadChat, replaceReportDocument, saveChat, updateReportMeta } from './storage';
+	import ResizeHandle from './ResizeHandle.svelte';
+	import { canLoadFromDisk, loadChat, replaceReportDocument, saveChat, updateReportMeta } from './storage';
 	import type { SavedReport } from './types';
+
+	const CHAT_WIDTH_DEFAULT = 480;
+	const CHAT_WIDTH_MIN = 320;
+	const CHAT_WIDTH_MAX = 720;
 
 	let {
 		report,
@@ -51,12 +58,15 @@
 	/** Hubo un pedido de cambio: el próximo JSON válido reemplaza el reporte. */
 	let pendingEdit = false;
 	let composerEl = $state<HTMLTextAreaElement | null>(null);
+	let chatWidth = $state(CHAT_WIDTH_DEFAULT);
 
 	let agentOptions = $state<AcpAgentOption[]>([]);
 	let agentChoice = $state('');
 	let modelChoice = $state('');
 	let agentModels = $state<Record<string, AcpModels | 'loading'>>({});
 	let modelsForce = $state<Record<string, boolean>>({});
+
+	const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
 	const ref = $derived(report.meta.agentSession);
 	const busy = $derived(sending || starting || connecting || Boolean(stream?.busy));
@@ -67,6 +77,10 @@
 	const sessionReady = $derived(Boolean(info));
 	const showPicker = $derived(!ref && !info && !connecting);
 	const displayModel = $derived(modelChoice || info?.model || report.meta.model || '');
+	const headerAgentId = $derived(info?.agentId || ref?.agentId || agentChoice || '');
+	const headerAgentName = $derived(
+		agentShortName(headerAgentId, info?.agentLabel || report.meta.agent || '')
+	);
 
 	const chosenAgent = $derived(agentOptions.find((a) => a.id === modelsAgentId) ?? null);
 	const modelOptions = $derived.by(() => {
@@ -113,10 +127,18 @@
 		return raw || undefined;
 	}
 
-	const seed = $derived({
-		payload: reviewSeedPayload(report.document, report.meta),
-		diff: reviewSeedDiff(report.document)
-	});
+	/**
+	 * Seed solo si el JSON/diff no están ya en `.diff-review/` (p. ej. import solo en memoria).
+	 * Mandar el diff completo en el body del remote rompe el límite de 512K del adapter.
+	 */
+	const seed = $derived(
+		canLoadFromDisk(report.meta)
+			? null
+			: {
+					payload: reviewSeedPayload(report.document, report.meta),
+					diff: reviewSeedDiff(report.document)
+				}
+	);
 
 	$effect(() => {
 		void sessionKey;
@@ -383,10 +405,16 @@
 	}
 </script>
 
-<aside class="chat" aria-label="Chat con el agente">
+<div class="chat-shell" style:width="{chatWidth}px" aria-label="Chat con el agente">
+	<!-- Arrastrar a la izquierda ensancha (borde izquierdo del panel). -->
+	<ResizeHandle ondrag={(dx) => (chatWidth = clamp(chatWidth - dx, CHAT_WIDTH_MIN, CHAT_WIDTH_MAX))} />
+	<aside class="chat">
 	<header>
 		<div class="title">
-			<strong>{info?.agentLabel || report.meta.agent || 'Agente'}</strong>
+			{#if headerAgentId}
+				<AgentIcon id={headerAgentId} size={16} />
+			{/if}
+			<strong>{headerAgentName}</strong>
 			{#if displayModel}
 				<small title={displayModel}>{displayModel}</small>
 			{/if}
@@ -475,12 +503,6 @@
 					{/if}
 				</div>
 			{:else}
-				{#if info?.id}
-					<TrustSessionToggle
-						enabled={Boolean(info.sessionTrust)}
-						onchange={onSessionTrust}
-					/>
-				{/if}
 				<div class="log">
 					<AgentLog
 						events={[...history, ...(stream?.events ?? [])]}
@@ -534,13 +556,21 @@
 				onkeydown={onKeydown}
 			></textarea>
 			<div class="actions">
-				<span class="kbd">Ctrl+Enter</span>
+				{#if info?.id}
+					<TrustSessionToggle
+						inline
+						enabled={Boolean(info.sessionTrust)}
+						onchange={onSessionTrust}
+					/>
+				{/if}
+				<span class="actions-spacer"></span>
 				{#if stream?.busy && info}
 					<button type="button" onclick={() => void cancelAgent({ id: info!.id })}>Cancelar</button>
 				{/if}
 				<button
 					type="button"
 					class="primary"
+					title="Ctrl+Enter"
 					onclick={() => void send()}
 					disabled={!text.trim() || busy || !sessionReady}
 				>
@@ -555,12 +585,21 @@
 			</div>
 		</div>
 	{/if}
-</aside>
+	</aside>
+</div>
 
 <style>
-	.chat {
-		width: 400px;
+	.chat-shell {
 		flex-shrink: 0;
+		display: flex;
+		min-width: 0;
+		min-height: 0;
+		align-self: stretch;
+	}
+
+	.chat {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
@@ -574,11 +613,24 @@
 		padding: 10px 14px;
 		border-bottom: 1px solid var(--border);
 	}
+	.title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+	.title strong {
+		font-size: 13.5px;
+		font-weight: 650;
+	}
 	.title small {
-		margin-left: 8px;
 		font-family: var(--mono);
 		font-size: 11.5px;
 		color: var(--text-faint);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
 	}
 	.close {
 		background: transparent;
@@ -617,14 +669,6 @@
 		gap: 4px;
 		font-size: 12px;
 		color: var(--text-dim);
-	}
-	.field input {
-		font: inherit;
-		font-size: 13px;
-		padding: 6px 8px;
-		background: var(--bg-card);
-		color: var(--text);
-		border: 1px solid var(--border);
 	}
 	.field :global(.agent-select .trigger) {
 		font-size: 13px;
@@ -718,10 +762,6 @@
 		flex: 1;
 		min-width: 140px;
 	}
-	.model-field :global(.model-select .trigger) {
-		font-size: 12px;
-		padding: 5px 8px;
-	}
 	.mode-toggle {
 		display: flex;
 		border: 1px solid var(--border);
@@ -754,13 +794,11 @@
 	.actions {
 		display: flex;
 		align-items: center;
-		justify-content: flex-end;
 		gap: 8px;
 	}
-	.kbd {
-		margin-right: auto;
-		font-size: 11px;
-		color: var(--text-faint);
+	.actions-spacer {
+		flex: 1;
+		min-width: 0;
 	}
 	.actions button {
 		padding: 6px 12px;

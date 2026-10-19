@@ -60,3 +60,29 @@ const BY_ID: Record<string, AgentIconDef> = {
 export function agentIcon(id: string): AgentIconDef {
 	return BY_ID[id] ?? FALLBACK;
 }
+
+const SHORT_NAME: Record<string, string> = {
+	claude: 'Claude',
+	cursor: 'Cursor',
+	copilot: 'Copilot',
+	codex: 'Codex',
+	gemini: 'Gemini'
+};
+
+/**
+ * Nombre corto para el header del chat (sin “CLI” / “Code”).
+ * Si el id no es conocido, limpia sufijos habituales del label.
+ */
+export function agentShortName(id: string, label = ''): string {
+	const key = String(id || '')
+		.trim()
+		.toLowerCase();
+	if (key && SHORT_NAME[key]) return SHORT_NAME[key];
+	const raw = String(label || '').trim();
+	if (!raw) return 'Agente';
+	return raw
+		.replace(/\bGitHub\s+/i, '')
+		.replace(/\s+CLI\b/i, '')
+		.replace(/\s+Code\b/i, '')
+		.trim() || raw;
+}

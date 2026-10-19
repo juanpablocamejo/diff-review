@@ -1,9 +1,12 @@
 <script lang="ts">
 	let {
 		enabled = false,
+		/** Compacto para el footer del chat (ancho al contenido). */
+		inline = false,
 		onchange
 	}: {
 		enabled?: boolean;
+		inline?: boolean;
 		onchange?: (enabled: boolean) => void;
 	} = $props();
 
@@ -16,6 +19,7 @@
 	type="button"
 	class="trust"
 	class:on={enabled}
+	class:inline
 	role="switch"
 	aria-checked={enabled}
 	title="Si está activo, no pide confirmación cuando la política niega un permiso (solo esta sesión)."
@@ -26,8 +30,10 @@
 		<span class="knob"></span>
 	</span>
 	<span class="trust-text">
-		<strong>Auto-aprobar permisos</strong>
-		<small>Solo esta sesión</small>
+		<strong>{inline ? 'Auto-aprobar' : 'Auto-aprobar permisos'}</strong>
+		{#if !inline}
+			<small>· Solo esta sesión</small>
+		{/if}
 	</span>
 </button>
 
@@ -35,17 +41,22 @@
 	.trust {
 		display: flex;
 		align-items: center;
-		gap: 10px;
+		gap: 8px;
 		flex: none;
 		width: 100%;
-		padding: 8px 10px;
+		padding: 5px 8px;
 		border: 1px solid var(--border);
-		border-radius: 8px;
+		border-radius: 6px;
 		background: var(--bg-card);
 		text-align: left;
 		cursor: pointer;
 		user-select: none;
 		font: inherit;
+	}
+	.trust.inline {
+		width: auto;
+		max-width: 100%;
+		padding: 4px 8px;
 	}
 	.trust.on {
 		border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
@@ -58,8 +69,8 @@
 	.switch {
 		position: relative;
 		flex: none;
-		width: 36px;
-		height: 20px;
+		width: 30px;
+		height: 16px;
 		border: 1px solid var(--border);
 		border-radius: 999px;
 		background: var(--bg-elev);
@@ -73,10 +84,10 @@
 	}
 	.knob {
 		position: absolute;
-		top: 2px;
-		left: 2px;
-		width: 14px;
-		height: 14px;
+		top: 1px;
+		left: 1px;
+		width: 12px;
+		height: 12px;
 		border-radius: 50%;
 		background: var(--text);
 		opacity: 0.55;
@@ -86,23 +97,25 @@
 			opacity 0.15s ease;
 	}
 	.trust.on .knob {
-		transform: translateX(16px);
+		transform: translateX(14px);
 		background: var(--bg-card);
 		opacity: 1;
 	}
 	.trust-text {
 		display: flex;
-		flex-direction: column;
-		gap: 2px;
+		align-items: baseline;
+		gap: 4px;
 		min-width: 0;
+		flex-wrap: wrap;
+		line-height: 1.2;
 	}
 	.trust-text strong {
-		font-size: 12.5px;
+		font-size: 12px;
 		font-weight: 600;
 		color: var(--text);
 	}
 	.trust-text small {
-		font-size: 11.5px;
+		font-size: 11px;
 		color: var(--text-faint);
 	}
 </style>

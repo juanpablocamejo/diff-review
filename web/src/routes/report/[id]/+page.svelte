@@ -2,6 +2,8 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { downloadReport, type ExportFormat } from '$lib/report/export';
+	import AgentIcon from '$lib/report/AgentIcon.svelte';
+	import { agentShortName } from '$lib/report/agent-icons';
 	import ChatPanel from '$lib/report/ChatPanel.svelte';
 	import ReportView from '$lib/report/ReportView.svelte';
 	import { resolveSavedReport } from '$lib/report/resolve-report';
@@ -86,6 +88,9 @@
 		pendingAsk = draft;
 		chatOpen = true;
 	}
+
+	const chatAgentId = $derived(report?.meta.agentSession?.agentId || '');
+	const chatAgentName = $derived(agentShortName(chatAgentId, report?.meta.agent || ''));
 </script>
 
 <svelte:window
@@ -217,12 +222,15 @@
 			{#if report}
 				<button
 					type="button"
-					class="ghost"
+					class="ghost agent-btn"
 					class:on={chatOpen}
 					title="Preguntarle al agente o pedirle cambios en el reporte"
 					onclick={() => (chatOpen = !chatOpen)}
 				>
-					Agente
+					{#if chatAgentId}
+						<AgentIcon id={chatAgentId} size={14} />
+					{/if}
+					{chatAgentName}
 				</button>
 				<div class="menu-wrap">
 					<button
@@ -331,6 +339,7 @@
 	}
 
 	.body > :global(.report-shell) {
+		flex: 1;
 		min-width: 0;
 	}
 
@@ -654,6 +663,12 @@
 		padding: 7px 12px;
 		font-size: 12.5px;
 		color: var(--text);
+	}
+
+	.agent-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 	}
 
 	.download-btn {

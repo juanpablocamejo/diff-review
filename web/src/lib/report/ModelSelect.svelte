@@ -169,15 +169,15 @@
 	.trigger {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 6px;
 		width: 100%;
 		min-width: 0;
-		padding: 9px 12px;
+		padding: 6px 10px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
 		color: var(--text);
 		font: inherit;
-		font-size: inherit;
+		font-size: 12px;
 		text-align: left;
 		cursor: pointer;
 	}
@@ -213,13 +213,13 @@
 	}
 
 	.badge {
-		padding: 1px 6px;
+		padding: 0 5px;
 		border: 1px solid var(--border);
 		border-radius: 999px;
 		background: var(--bg-elev, var(--bg-card));
 		color: var(--text-dim, var(--text-faint));
-		font-size: 11px;
-		line-height: 1.4;
+		font-size: 10px;
+		line-height: 1.35;
 		font-family: var(--mono, ui-monospace, monospace);
 		white-space: nowrap;
 	}
@@ -227,7 +227,7 @@
 	.hint {
 		flex-shrink: 0;
 		color: var(--text-faint);
-		font-size: 11px;
+		font-size: 10px;
 		font-family: var(--mono, ui-monospace, monospace);
 	}
 
@@ -267,15 +267,15 @@
 	.option {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 6px;
 		width: 100%;
-		padding: 8px 10px;
+		padding: 6px 8px;
 		border: 0;
 		border-radius: 2px;
 		background: transparent;
 		color: var(--text);
 		font: inherit;
-		font-size: inherit;
+		font-size: 12px;
 		text-align: left;
 		cursor: pointer;
 	}
