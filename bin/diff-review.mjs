@@ -201,12 +201,15 @@ function defaultBase(listed, branch) {
 	return listed.branches.find((b) => b !== branch) || preferred || '';
 }
 
-function branchOptions(listed) {
-	return listed.branches.map((b) => ({
-		value: b,
-		label: b,
-		hint: b === listed.current ? 'actual' : b === listed.defaultBase ? 'base típica' : undefined
-	}));
+function branchOptions(listed, exclude = '') {
+	const skip = String(exclude || '').trim();
+	return listed.branches
+		.filter((b) => !skip || b !== skip)
+		.map((b) => ({
+			value: b,
+			label: b,
+			hint: b === listed.current ? 'actual' : b === listed.defaultBase ? 'base típica' : undefined
+		}));
 }
 
 /** Selects solo con terminal interactiva. (`p.isTTY` de Clack es una función, no un booleano.) */
@@ -270,12 +273,18 @@ async function resolveBranchBase(launch, opts) {
 		p.log.step(`Branch: ${branch}`);
 	}
 
+	const baseOptions = branchOptions(launch.listed, branch);
+	if (!baseOptions.length) {
+		p.cancel(`No hay otra base disponible distinta de \`${branch}\`.`);
+		process.exit(1);
+	}
+
 	let base = flagBase;
 	if (!base) {
 		base = ensureValue(
 			await autocompleteEs({
 				message: 'Base (merge-base)',
-				options,
+				options: baseOptions,
 				initialValue: defaultBase(launch.listed, branch) || undefined,
 				maxItems: 12
 			}),
@@ -285,12 +294,18 @@ async function resolveBranchBase(launch, opts) {
 		p.log.step(`Base: ${base}`);
 	}
 
-	while (branch === base) {
-		p.log.warn(`Branch y base son iguales (${branch}): el diff estaría vacío.`);
+	while (branch === base || sameCommitTips(launch.repo, branch, base)) {
+		if (branch === base) {
+			p.log.warn(`Branch y base son iguales (${branch}): el diff estaría vacío.`);
+		} else {
+			p.log.warn(
+				`\`${branch}\` y \`${base}\` apuntan al mismo commit: no hay diff que revisar.`
+			);
+		}
 		base = ensureValue(
 			await autocompleteEs({
 				message: 'Elegí otra base',
-				options,
+				options: baseOptions,
 				initialValue: defaultBase(launch.listed, branch) || undefined,
 				maxItems: 12
 			}),
@@ -299,6 +314,23 @@ async function resolveBranchBase(launch, opts) {
 	}
 
 	return { branch, base, prompted: true };
+}
+
+/** ¿Branch y base resuelven al mismo SHA? (diff vacío aunque los nombres difieran). */
+function sameCommitTips(repo, branch, base) {
+	try {
+		const { branchSha, baseSha } = branchTips(repo, branch, base);
+		return Boolean(branchSha && baseSha && branchSha === baseSha);
+	} catch {
+		return false;
+	}
+}
+
+function emptyDiffMessage(branch, base) {
+	if (branch === base) {
+		return `Branch y base son iguales (${branch}): no hay diff que revisar.`;
+	}
+	return `\`${branch}\` y \`${base}\` apuntan al mismo commit: no hay diff que revisar.`;
 }
 
 function buildOutputFilename(repo, branch, base) {
@@ -697,19 +729,11 @@ async function main() {
 
 	const { branch, base, prompted } = await resolveBranchBase(launch, opts);
 
-	if (branch === base) {
-		// Ambos flags iguales / sin TTY: no se puede corregir en selects.
-		console.log(
-			`Branch y base son iguales (${branch}): el diff estaría vacío.\nAbro la UI para que elijas otra combinación.`
-		);
-		await startServer({
-			host: opts.host,
-			port: opts.port,
-			open: opts.open,
-			launchCwd,
-			openPath: '/'
-		});
-		return;
+	if (branch === base || sameCommitTips(launch.repo, branch, base)) {
+		const msg = emptyDiffMessage(branch, base);
+		if (prompted) p.cancel(msg);
+		else console.error(msg);
+		process.exit(1);
 	}
 
 	const outputFilename = buildOutputFilename(launch.repo, branch, base);

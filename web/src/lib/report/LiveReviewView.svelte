@@ -667,14 +667,29 @@
 		align-items: center;
 		gap: 10px;
 		flex: none;
+		flex-wrap: wrap;
 		padding-top: 10px;
 		margin-top: auto;
 		border-top: 1px solid var(--border);
 		border-radius: 0;
+		min-width: 0;
+	}
+
+	/* TrustSessionToggle trae width:100%; en el footer no puede comerse Permitir/Rechazar. */
+	.stage-footer :global(.trust) {
+		width: auto;
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	.footer-spacer {
-		flex: 1;
+		flex: 1 1 8px;
+		min-width: 8px;
+	}
+
+	.stage-footer :global(.perm-actions) {
+		flex: none;
 	}
 
 	.launch-banner {

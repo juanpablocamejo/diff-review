@@ -565,6 +565,7 @@ ${SERVER_VALIDATES}`;
 }
 
 async function checkOutput(entry: Entry, since: number, retriesLeft: number): Promise<void> {
+	if (entry.cancelled) return;
 	const path = companionPaths(entry.repo, entry.outputFilename).json;
 	const touched = existsSync(path) && mtime(path) >= since;
 	if (!touched) {
@@ -577,9 +578,10 @@ async function checkOutput(entry: Entry, since: number, retriesLeft: number): Pr
 					? 'Seguí: hubo comandos rechazados; escribí el JSON con la tool de archivos.'
 					: 'Seguí: el JSON no se escribió en este turno.'
 			);
+			if (entry.cancelled || again == null) return;
 			return checkOutput(entry, again, retriesLeft - 1);
 		}
-		if (entry.mode === 'review') {
+		if (entry.mode === 'review' && !entry.cancelled) {
 			emit(entry, {
 				type: 'review',
 				ok: false,
@@ -607,6 +609,7 @@ async function checkOutput(entry: Entry, since: number, retriesLeft: number): Pr
 		return;
 	}
 
+	if (entry.cancelled) return;
 	const canRetry = retriesLeft > 0;
 	emit(entry, { type: 'review', ok: false, filename: entry.outputFilename, errors: result.errors, final: !canRetry });
 	if (!canRetry) return;
@@ -615,22 +618,34 @@ async function checkOutput(entry: Entry, since: number, retriesLeft: number): Pr
 		invalidJsonFixPrompt(entry, path, result),
 		'Corregí los errores de validación del JSON.'
 	);
+	if (entry.cancelled || again == null) return;
 	await checkOutput(entry, again, retriesLeft - 1);
 }
 
-/** Turno extra que pide el server (corregir el JSON, seguir después de un rechazo). Devuelve cuándo empezó. */
-async function followUp(entry: Entry, prompt: string, shown: string): Promise<number> {
+/**
+ * Turno extra que pide el server (corregir el JSON, seguir después de un rechazo).
+ * Devuelve cuándo empezó, o `null` si el usuario canceló (no hay que seguir reintentando).
+ */
+async function followUp(entry: Entry, prompt: string, shown: string): Promise<number | null> {
+	if (entry.cancelled) return null;
 	emit(entry, { type: 'user', text: shown, mode: 'fix' });
 	const acp = await ensureAcp(entry);
+	if (entry.cancelled) return null;
 	const started = Date.now();
 	entry.rejections = [];
 	const { stopReason } = await acp.prompt(prompt);
 	emit(entry, { type: 'turn', stopReason });
+	if (entry.cancelled || stopReason === 'cancelled') {
+		entry.cancelled = true;
+		return null;
+	}
 	return started;
 }
 
 async function runTurn(entry: Entry, text: string, mode: PolicyMode, opts: { model?: string; shown: string }) {
 	if (entry.busy) throw new Error('El agente todavía está trabajando en el pedido anterior.');
+	// Turno nuevo (Reintentar / chat): limpia cancelación previa.
+	entry.cancelled = false;
 	entry.busy = true;
 	entry.mode = mode;
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
@@ -638,16 +653,32 @@ async function runTurn(entry: Entry, text: string, mode: PolicyMode, opts: { mod
 	try {
 		if (!entry.acp) setStatus(entry, 'starting', `Lanzando ${entry.agentLabel}…`);
 		const acp = await ensureAcp(entry, opts.model);
+		if (entry.cancelled) {
+			entry.busy = false;
+			setStatus(entry, 'idle', 'Cancelado.');
+			return;
+		}
 		setStatus(entry, 'working', 'El agente está revisando…');
 		const since = Date.now();
 		entry.rejections = [];
 		const { stopReason } = await acp.prompt(text);
 		emit(entry, { type: 'turn', stopReason });
-		if (mode !== 'ask' && stopReason !== 'cancelled') await checkOutput(entry, since, OUTPUT_AUTO_RETRIES);
+		if (entry.cancelled || stopReason === 'cancelled') {
+			entry.cancelled = true;
+			entry.busy = false;
+			setStatus(entry, 'idle', 'Cancelado.');
+			return;
+		}
+		if (mode !== 'ask') await checkOutput(entry, since, OUTPUT_AUTO_RETRIES);
 		entry.busy = false;
-		setStatus(entry, 'idle');
+		if (entry.cancelled) setStatus(entry, 'idle', 'Cancelado.');
+		else setStatus(entry, 'idle');
 	} catch (err) {
 		entry.busy = false;
+		if (entry.cancelled) {
+			setStatus(entry, 'idle', 'Cancelado.');
+			return;
+		}
 		const raw = err instanceof Error ? err.message : String(err);
 		const auth = authFailureMessage(entry.agentId, entry.agentLabel, raw);
 		setStatus(entry, 'error', auth || raw);
@@ -981,13 +1012,23 @@ export async function cancelTurn(id: string): Promise<void> {
 	const entry = sessions.get(id);
 	if (!entry) return;
 	entry.cancelled = true;
+	// Permisos pendientes: rechazarlos para no dejar el turno colgado.
+	for (const [requestId, pending] of [...entry.pendingPermissions]) {
+		clearTimeout(pending.timer);
+		entry.pendingPermissions.delete(requestId);
+		pending.resolve(false, { quiet: true });
+	}
 	if (entry.acp && entry.busy) {
-		await entry.acp.cancel();
+		try {
+			await entry.acp.cancel();
+		} catch {
+			/* el turno en curso verá cancelled / stopReason */
+		}
 		return;
 	}
 	// Aún en “preparando el contexto” (sin ACP): cortar el prep y avisar a la UI.
 	entry.busy = false;
-	setStatus(entry, 'error', 'Cancelado.');
+	setStatus(entry, 'idle', 'Cancelado.');
 }
 
 export function subscribe(id: string, listener: Listener): (() => void) | null {
