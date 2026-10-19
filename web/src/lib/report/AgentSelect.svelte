@@ -129,6 +129,8 @@
 		gap: 8px;
 		width: 100%;
 		min-width: 0;
+		box-sizing: border-box;
+		min-height: 38px;
 		padding: 9px 12px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);

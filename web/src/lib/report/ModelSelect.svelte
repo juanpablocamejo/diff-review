@@ -169,15 +169,17 @@
 	.trigger {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 8px;
 		width: 100%;
 		min-width: 0;
-		padding: 6px 10px;
+		box-sizing: border-box;
+		min-height: 38px;
+		padding: 9px 12px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
 		color: var(--text);
 		font: inherit;
-		font-size: 12px;
+		font-size: inherit;
 		text-align: left;
 		cursor: pointer;
 	}
