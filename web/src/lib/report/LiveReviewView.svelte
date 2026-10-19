@@ -36,8 +36,10 @@
 	let loginBusy = $state(false);
 	let loginNote = $state('');
 	let loginErr = $state('');
+	/** Optimistic: true as soon as the user clicks Cancelar (before the SSE idle event). */
+	let userCancelled = $state(false);
 
-	type Stage = 'diff' | 'launching' | 'reviewing' | 'opening' | 'error' | 'gone';
+	type Stage = 'diff' | 'launching' | 'reviewing' | 'opening' | 'cancelled' | 'error' | 'gone';
 
 	const hasAgentActivity = $derived(
 		events.some(
@@ -75,6 +77,19 @@
 		return '';
 	});
 
+	/** Last status event was idle + "Cancelado…" (server ack after cancel). */
+	const cancelledByEvent = $derived.by(() => {
+		for (let i = events.length - 1; i >= 0; i--) {
+			const e = events[i];
+			if (e.type === 'status') {
+				return e.status === 'idle' && /Cancelado/i.test(e.message || '');
+			}
+		}
+		return false;
+	});
+
+	const cancelled = $derived(userCancelled || cancelledByEvent);
+
 	/**
 	 * Solo fallos reales (`status: error`), no el último status informativo
 	 * (p. ej. "Lanzando…" no debe pintar la pantalla de error).
@@ -105,6 +120,7 @@
 	const stage = $derived.by((): Stage => {
 		if (displayError) return 'error';
 		if (gone) return 'gone';
+		if (cancelled && !busy) return 'cancelled';
 		if (events.some((e) => e.type === 'review' && e.ok)) return 'opening';
 		if (hasReviewContent) return 'reviewing';
 		if (
@@ -118,7 +134,15 @@
 	});
 
 	const statusLabel = $derived(
-		displayError ? 'error' : busy ? 'en curso' : gone ? 'sesión cerrada' : 'listo'
+		displayError
+			? 'error'
+			: busy
+				? 'en curso'
+				: gone
+					? 'sesión cerrada'
+					: cancelled
+						? 'cancelado'
+						: 'listo'
 	);
 
 	const statusTone = $derived(
@@ -198,19 +222,25 @@
 		phase.detail && phase.current === 'agent' && phase.detail !== launchingTitle ? phase.detail : ''
 	);
 
-	/** En curso (diff / lanzando / agente): Cancelar. Solo idle/error/gone: Nueva review. */
+	/**
+	 * En curso (diff / lanzando / agente): Cancelar.
+	 * Cancelado / error / gone / opening-done: Nueva review.
+	 */
 	const showCancel = $derived(
-		stage === 'diff' ||
-			stage === 'launching' ||
-			stage === 'reviewing' ||
-			stage === 'opening' ||
-			busy
+		!cancelled &&
+			(stage === 'diff' ||
+				stage === 'launching' ||
+				stage === 'reviewing' ||
+				stage === 'opening' ||
+				busy)
 	);
 
 	function onHeaderAction() {
 		if (showCancel) {
-			if (info.id) oncancel();
-			else onreset();
+			if (info.id) {
+				userCancelled = true;
+				oncancel();
+			} else onreset();
 			return;
 		}
 		onreset();
@@ -279,6 +309,14 @@
 				<div class="center">
 					<div class="spinner" aria-hidden="true"></div>
 					<p class="title">Abriendo el reporte…</p>
+				</div>
+			{:else if stage === 'cancelled'}
+				<div class="center fail">
+					<p class="title">Cancelado</p>
+					<p class="detail">La review fue cancelada. Podés empezar una nueva.</p>
+					<div class="auth-actions">
+						<button type="button" class="ghost" onclick={onreset}>Nueva review</button>
+					</div>
 				</div>
 			{:else if stage === 'error' || stage === 'gone'}
 				<div class="center fail">

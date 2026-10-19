@@ -300,6 +300,21 @@
 			if (agentInfo) agentInfo = { ...agentInfo, status: 'error', statusMessage: agentError };
 			return;
 		}
+		if (
+			event.type === 'status' &&
+			event.status === 'idle' &&
+			/Cancelado/i.test(event.message || '')
+		) {
+			if (agentInfo) {
+				agentInfo = {
+					...agentInfo,
+					status: 'idle',
+					statusMessage: event.message || 'Cancelado.',
+					busy: false
+				};
+			}
+			return;
+		}
 		if (event.type !== 'review' || !event.ok || !agentInfo) return;
 		try {
 			const loaded = await loadDetectedOutput({ repo: agentInfo.repo, filename: event.filename });
@@ -334,6 +349,20 @@
 	}
 
 	function resetAgentSession() {
+		if (agentInfo) {
+			const repo = agentInfo.repo?.trim();
+			if (repo) {
+				updateMeta({
+					source: 'local',
+					repo,
+					branch: agentInfo.branch || meta.branch,
+					base: agentInfo.base || meta.base
+				});
+				void loadRepoBranches(repo, 'local');
+			}
+			if (agentInfo.agentId) agentChoice = agentInfo.agentId;
+			if (agentInfo.model) modelChoice = agentInfo.model;
+		}
 		agentStream?.close();
 		agentStream = null;
 		agentInfo = null;
