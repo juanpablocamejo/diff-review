@@ -532,6 +532,7 @@
 				</div>
 				<div class="model-field">
 					<ModelSelect
+						compact
 						bind:value={modelChoice}
 						options={modelOptions}
 						disabled={!sessionReady || (Boolean(stream?.busy) && sending)}
@@ -759,8 +760,10 @@
 		gap: 10px;
 	}
 	.model-field {
-		flex: 1;
-		min-width: 140px;
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: min(220px, 42%);
+		margin-left: auto;
 	}
 	.mode-toggle {
 		display: flex;

@@ -13,11 +13,14 @@
 		value = $bindable(''),
 		options,
 		disabled = false,
+		/** Más chico (p. ej. composer del chat en el viewer). */
+		compact = false,
 		onchange
 	}: {
 		value?: string;
 		options: ModelSelectOption[];
 		disabled?: boolean;
+		compact?: boolean;
 		onchange?: () => void;
 	} = $props();
 
@@ -96,6 +99,7 @@
 	class:open
 	class:drop-up={dropUp}
 	class:disabled
+	class:compact
 	bind:this={rootEl}
 	{@attach closeOnOutside}
 >
@@ -182,6 +186,13 @@
 		font-size: inherit;
 		text-align: left;
 		cursor: pointer;
+	}
+
+	.model-select.compact .trigger {
+		min-height: 30px;
+		padding: 5px 10px;
+		gap: 6px;
+		font-size: 12px;
 	}
 
 	.trigger:hover:not(:disabled) {

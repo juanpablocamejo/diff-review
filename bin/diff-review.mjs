@@ -233,8 +233,9 @@ function ensureValue(value, label) {
  * Selects interactivos salvo que --branch y --base vengan juntos.
  * @param {{ listed: { branches: string[], current: string, defaultBase: string }, repo: string }} launch
  * @param {{ branch: string, base: string }} opts
+ * @param {{ skipIntro?: boolean }} [pickOpts]
  */
-async function resolveBranchBase(launch, opts) {
+async function resolveBranchBase(launch, opts, pickOpts = {}) {
 	const flagBranch = String(opts.branch || '').trim();
 	const flagBase = String(opts.base || '').trim();
 	const bothFlags = Boolean(flagBranch && flagBase);
@@ -255,59 +256,84 @@ async function resolveBranchBase(launch, opts) {
 	}
 
 	const options = branchOptions(launch.listed);
-	p.intro('diff-review');
-	p.log.info(launch.repo);
+	if (!pickOpts.skipIntro) {
+		p.intro('diff-review');
+		p.log.info(launch.repo);
+	}
 
+	/** @type {string} */
 	let branch = flagBranch;
-	if (!branch) {
-		branch = ensureValue(
-			await autocompleteEs({
-				message: 'Branch a revisar',
-				options,
-				initialValue: defaultBranch(launch.listed) || undefined,
-				maxItems: 12
-			}),
-			'branch'
-		);
-	} else {
-		p.log.step(`Branch: ${branch}`);
-	}
-
-	const baseOptions = branchOptions(launch.listed, branch);
-	if (!baseOptions.length) {
-		p.cancel(`No hay otra base disponible distinta de \`${branch}\`.`);
-		process.exit(1);
-	}
-
+	/** @type {string} */
 	let base = flagBase;
-	if (!base) {
-		base = ensureValue(
-			await autocompleteEs({
-				message: 'Base (merge-base)',
-				options: baseOptions,
-				initialValue: defaultBase(launch.listed, branch) || undefined,
-				maxItems: 12
-			}),
-			'base'
-		);
-	} else {
-		p.log.step(`Base: ${base}`);
-	}
+	let first = true;
 
-	while (branch === base) {
-		p.log.warn(`Branch y base son iguales (${branch}): el diff estaría vacío.`);
-		base = ensureValue(
-			await autocompleteEs({
-				message: 'Elegí otra base',
-				options: baseOptions,
-				initialValue: defaultBase(launch.listed, branch) || undefined,
-				maxItems: 12
-			}),
-			'base'
-		);
+	for (;;) {
+		if (!first) {
+			// Diff vacío / tips iguales: volver a preguntar branch y base (no solo la base).
+			branch = '';
+			base = '';
+		}
+		first = false;
+
+		if (!branch) {
+			branch = ensureValue(
+				await autocompleteEs({
+					message: 'Branch a revisar',
+					options,
+					initialValue: defaultBranch(launch.listed) || undefined,
+					maxItems: 12
+				}),
+				'branch'
+			);
+		} else {
+			p.log.step(`Branch: ${branch}`);
+		}
+
+		const baseOptions = branchOptions(launch.listed, branch);
+		if (!baseOptions.length) {
+			p.cancel(`No hay otra base disponible distinta de \`${branch}\`.`);
+			process.exit(1);
+		}
+
+		if (!base) {
+			base = ensureValue(
+				await autocompleteEs({
+					message: 'Base (merge-base)',
+					options: baseOptions,
+					initialValue: defaultBase(launch.listed, branch) || undefined,
+					maxItems: 12
+				}),
+				'base'
+			);
+		} else {
+			p.log.step(`Base: ${base}`);
+		}
+
+		if (branch === base || sameCommitTips(launch.repo, branch, base)) {
+			p.log.warn(emptyDiffPickMessage(branch, base));
+			continue;
+		}
+		break;
 	}
 
 	return { branch, base, prompted: true };
+}
+
+/** ¿Branch y base resuelven al mismo SHA? (diff committed vacío aunque los nombres difieran). */
+function sameCommitTips(repo, branch, base) {
+	try {
+		const { branchSha, baseSha } = branchTips(repo, branch, base);
+		return Boolean(branchSha && baseSha && branchSha === baseSha);
+	} catch {
+		return false;
+	}
+}
+
+function emptyDiffPickMessage(branch, base) {
+	if (branch === base) {
+		return `Branch y base son iguales (${branch}): no hay diff que revisar.`;
+	}
+	return `\`${branch}\` y \`${base}\` apuntan al mismo commit: no hay diff que revisar.`;
 }
 
 function buildOutputFilename(repo, branch, base) {
@@ -327,10 +353,10 @@ function buildOutputFilename(repo, branch, base) {
 }
 
 /**
- * Precomputa el diff en CLI (spinner si hay Clack). Si el resultado no tiene archivos, sale con error.
- * @returns {ReturnType<typeof prepareReviewPromptOpts>}
+ * Precomputa el diff en CLI (spinner si hay Clack).
+ * @returns {{ empty: true, message: string } | { empty: false, promptOpts: ReturnType<typeof prepareReviewPromptOpts> }}
  */
-function prepareContextOrFail(launch, branch, base, outputFilename, { useClack }) {
+function prepareContext(launch, branch, base, outputFilename, { useClack }) {
 	const spin = useClack ? p.spinner() : null;
 	if (!useClack) console.log('Preparando el contexto…');
 	spin?.start('Preparando el contexto…');
@@ -351,22 +377,22 @@ function prepareContextOrFail(launch, branch, base, outputFilename, { useClack }
 		else console.warn('No pude precomputar el diff:', msg);
 		ensureReviewDir(launch.repo);
 		writeDiffCache(launch.repo, outputFilename, { branch, base });
-		return promptOpts;
+		return { empty: false, promptOpts };
 	}
 
 	const n = Array.isArray(promptOpts.files) ? promptOpts.files.length : 0;
 	if (n === 0) {
 		spin?.stop('Diff vacío');
-		const msg = `El diff entre \`${branch}\` y \`${base}\` está vacío: no hay nada que revisar.`;
-		if (useClack) p.cancel(msg);
-		else console.error(msg);
-		process.exit(1);
+		return {
+			empty: true,
+			message: `El diff entre \`${branch}\` y \`${base}\` está vacío: no hay nada que revisar.`
+		};
 	}
 
 	const done = `Contexto listo · ${n} archivo${n === 1 ? '' : 's'}`;
 	spin?.stop(done);
 	if (!useClack) console.log(done);
-	return promptOpts;
+	return { empty: false, promptOpts };
 }
 
 function copyPromptOrWarn(prompt) {
@@ -674,9 +700,15 @@ async function runUiMode(opts, launch, launchCwd) {
 	if (launch) {
 		console.log(`Repo:   ${launch.repo}`);
 		console.log(`Branch: ${branch}  (base: ${base})`);
-		const promptOpts = prepareContextOrFail(launch, branch, base, outputFilename, {
-			useClack: false
-		});
+		if (branch === base || sameCommitTips(launch.repo, branch, base)) {
+			console.error(emptyDiffPickMessage(branch, base));
+			process.exit(1);
+		}
+		const prep = prepareContext(launch, branch, base, outputFilename, { useClack: false });
+		if (prep.empty) {
+			console.error(prep.message);
+			process.exit(1);
+		}
 		const prompt = buildPrompt(
 			{
 				source: 'local',
@@ -685,7 +717,7 @@ async function runUiMode(opts, launch, launchCwd) {
 				base,
 				remoteUrl: launch.remoteUrl
 			},
-			promptOpts
+			prep.promptOpts
 		);
 		if (copyTextToClipboard(prompt)) {
 			console.log('Prompt copiado al portapapeles.');
@@ -734,27 +766,59 @@ async function main() {
 		process.exit(1);
 	}
 
-	const { branch, base, prompted } = await resolveBranchBase(launch, opts);
+	/** @type {{ branch: string, base: string }} */
+	let pick = { branch: opts.branch, base: opts.base };
+	let skipIntro = false;
+	/** @type {string} */
+	let branch;
+	/** @type {string} */
+	let base;
+	/** @type {boolean} */
+	let prompted;
+	/** @type {string} */
+	let outputFilename;
+	/** @type {ReturnType<typeof prepareReviewPromptOpts>} */
+	let promptOpts;
 
-	if (branch === base) {
-		const msg = `Branch y base son iguales (${branch}): no hay diff que revisar.`;
-		if (prompted) p.cancel(msg);
-		else console.error(msg);
-		process.exit(1);
+	for (;;) {
+		({ branch, base, prompted } = await resolveBranchBase(launch, pick, { skipIntro }));
+		if (prompted) skipIntro = true;
+
+		if (branch === base || sameCommitTips(launch.repo, branch, base)) {
+			const msg = emptyDiffPickMessage(branch, base);
+			if (prompted || isInteractive()) {
+				p.log.warn(msg);
+				pick = { branch: '', base: '' };
+				continue;
+			}
+			console.error(msg);
+			process.exit(1);
+		}
+
+		outputFilename = buildOutputFilename(launch.repo, branch, base);
+		if (!prompted) {
+			console.log(`Repo:   ${launch.repo}`);
+			console.log(`Branch: ${branch}  (base: ${base})`);
+		} else {
+			p.note(`${branch}  →  ${base}\n${outputRelPath(outputFilename)}`, 'Review');
+		}
+
+		// El agente escribe en .diff-review/ (que se ignora sola) y lee de ahí el diff ya calculado.
+		const prep = prepareContext(launch, branch, base, outputFilename, {
+			useClack: prompted || isInteractive()
+		});
+		if (prep.empty) {
+			if (prompted || isInteractive()) {
+				p.log.warn(prep.message);
+				pick = { branch: '', base: '' };
+				continue;
+			}
+			console.error(prep.message);
+			process.exit(1);
+		}
+		promptOpts = prep.promptOpts;
+		break;
 	}
-
-	const outputFilename = buildOutputFilename(launch.repo, branch, base);
-	if (!prompted) {
-		console.log(`Repo:   ${launch.repo}`);
-		console.log(`Branch: ${branch}  (base: ${base})`);
-	} else {
-		p.note(`${branch}  →  ${base}\n${outputRelPath(outputFilename)}`, 'Review');
-	}
-
-	// El agente escribe en .diff-review/ (que se ignora sola) y lee de ahí el diff ya calculado.
-	const promptOpts = prepareContextOrFail(launch, branch, base, outputFilename, {
-		useClack: prompted || isInteractive()
-	});
 
 	const prompt = buildPrompt(
 		{
