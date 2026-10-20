@@ -3,8 +3,9 @@
 	import { resolve } from '$app/paths';
 	import { downloadReport, type ExportFormat } from '$lib/report/export';
 	import AgentIcon from '$lib/report/AgentIcon.svelte';
-	import { agentShortName } from '$lib/report/agent-icons';
+	import { agentShortName, reportAgentId } from '$lib/report/agent-icons';
 	import { acpAgents } from '$lib/report/agent.remote';
+	import type { AcpAgentOption } from '$lib/report/agent-events';
 	import ChatPanel from '$lib/report/ChatPanel.svelte';
 	import ReportView from '$lib/report/ReportView.svelte';
 	import { resolveSavedReport } from '$lib/report/resolve-report';
@@ -27,10 +28,14 @@
 	let downloadOpen = $state(false);
 	let kebabOpen = $state(false);
 	let chatOpen = $state(false);
+	/** Agentes ACP instalados: para no mostrar Cursor/Claude en el header si no están. */
+	let installedAgents = $state<AcpAgentOption[]>([]);
 	/** Borrador para el compositor del ChatPanel (referencia a tema/bloque/hallazgo); no se envía solo. */
 	let pendingAsk = $state<string | null>(null);
 	/** Prompt de corrección para auto-enviar en modo fix. */
-	let pendingFix = $state<{ text: string; autoSend?: boolean } | null>(null);
+	let pendingFix = $state<{ text: string; autoSend?: boolean; findingIds?: string[] } | null>(null);
+	/** Resumen del agente tras un turno fix exitoso → ReportView marca Corregido. */
+	let pendingFixApplied = $state<{ findingIds: string[]; summary: string } | null>(null);
 
 	$effect(() => {
 		const id = params.id;
@@ -52,6 +57,20 @@
 				if (cancelled) return;
 				report = null;
 				loadError = err instanceof Error ? err.message : String(err);
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	$effect(() => {
+		let cancelled = false;
+		void acpAgents()
+			.then((agents) => {
+				if (!cancelled) installedAgents = agents;
+			})
+			.catch(() => {
+				if (!cancelled) installedAgents = [];
 			});
 		return () => {
 			cancelled = true;
@@ -94,21 +113,36 @@
 	}
 
 	/** Abre el chat en Corregir código. `false` si no hay agente ACP → el footer muestra Copiar prompt. */
-	async function fixWithAgent(text: string): Promise<boolean> {
+	async function fixWithAgent(text: string, findingIds: string[] = []): Promise<boolean> {
 		if (!report || !text.trim()) return false;
 		try {
 			const agents = await acpAgents();
-			if (!agents.length && !report.meta.agentSession?.agentId) return false;
-		} catch {
+			if (!agents.length && !report.meta.agentSession?.agentId) {
+				console.warn('No hay agente ACP disponible; fallback a copiar prompt');
+				return false;
+			}
+		} catch (err) {
+			console.warn('Error al verificar agente ACP:', err);
 			if (!report.meta.agentSession?.agentId) return false;
 		}
 		pendingAsk = null;
-		pendingFix = { text, autoSend: true };
+		pendingFix = { text, autoSend: true, findingIds };
 		chatOpen = true;
 		return true;
 	}
 
-	const chatAgentId = $derived(report?.meta.agentSession?.agentId || '');
+	/**
+	 * Agente del botón del header: sesión ACP, o provenance de meta si ese agente
+	 * sigue instalado. Si hay que elegir → id vacío y label "Agente".
+	 */
+	const chatAgentId = $derived.by(() => {
+		if (!report) return '';
+		const preferred = reportAgentId(report.meta);
+		if (!preferred) return '';
+		if (report.meta.agentSession?.agentId) return preferred;
+		if (!installedAgents.length) return preferred;
+		return installedAgents.some((a) => a.id === preferred) ? preferred : '';
+	});
 	const chatAgentName = $derived(agentShortName(chatAgentId, report?.meta.agent || ''));
 </script>
 
@@ -246,9 +280,7 @@
 					title="Preguntarle al agente o pedirle cambios en el reporte"
 					onclick={() => (chatOpen = !chatOpen)}
 				>
-					{#if chatAgentId}
-						<AgentIcon id={chatAgentId} size={14} />
-					{/if}
+					<AgentIcon id={chatAgentId} size={14} />
 					{chatAgentName}
 				</button>
 				<div class="menu-wrap">
@@ -327,6 +359,8 @@
 				{wrapLines}
 				{sidebarCollapsed}
 				{showExplanations}
+				{pendingFixApplied}
+				onpendingfixappliedconsumed={() => (pendingFixApplied = null)}
 				onask={askAbout}
 				onfixwithagent={fixWithAgent}
 				onreportupdated={(updated) => (report = updated)}
@@ -338,6 +372,7 @@
 					onpendingaskconsumed={() => (pendingAsk = null)}
 					{pendingFix}
 					onpendingfixconsumed={() => (pendingFix = null)}
+					onfixapplied={(payload) => (pendingFixApplied = payload)}
 					onclose={() => (chatOpen = false)}
 					onreportupdated={(updated) => (report = updated)}
 				/>

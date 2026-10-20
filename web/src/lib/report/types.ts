@@ -47,6 +47,15 @@ export type ReviewBlock = {
 	source: WhySource;
 };
 
+/** Triage del hallazgo en el JSON (UI / reopen). Ausente = abierto. */
+export type FindingResolutionKind = 'ignored' | 'fix' | 'corrected';
+
+export type FindingResolution = {
+	kind: FindingResolutionKind;
+	/** Qué se cambió al marcar Corregido (resumen del agente). */
+	detail?: string;
+};
+
 export type ReviewFinding = {
 	id: string;
 	class: FindingClass;
@@ -58,6 +67,8 @@ export type ReviewFinding = {
 	block: string;
 	what: string;
 	fix: string;
+	/** Decisión de triage persistida; la UI la escribe al marcar Ignorar / Corregir / Corregido. */
+	resolution?: FindingResolution;
 };
 
 export type ReviewSkipped = {

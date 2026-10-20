@@ -4,6 +4,7 @@
 		hasFixSelection,
 		fixSelectionCount,
 		ignoredCount = 0,
+		agentName = 'Agente',
 		onfixwithagent,
 		oncopyfixprompt,
 		onopenpublishprompt,
@@ -13,11 +14,15 @@
 		hasFixSelection: boolean;
 		fixSelectionCount: number;
 		ignoredCount?: number;
+		/** Nombre corto del agente (mismo que el header / chat: Claude, Cursor, …). */
+		agentName?: string;
 		onfixwithagent: () => void;
 		oncopyfixprompt: () => void;
 		onopenpublishprompt: () => void;
 		onpurgeignored?: () => void;
 	} = $props();
+
+	const fixLabel = $derived(`Corregir con ${agentName} (${fixSelectionCount})`);
 </script>
 
 <footer class="footer">
@@ -29,12 +34,12 @@
 			>
 		{/if}
 		{#if hasFixSelection}
-			<button type="button" class="fix" onclick={onfixwithagent}
-				>Corregir con el agente ({fixSelectionCount})</button
-			>
 			<button type="button" class="ghost" onclick={oncopyfixprompt}>Copiar prompt</button>
 			<button type="button" class="publish" onclick={onopenpublishprompt}
 				>Publicar Revisión ({fixSelectionCount})</button
+			>
+			<button type="button" class="fix" onclick={onfixwithagent} aria-label={fixLabel}
+				>{fixLabel}</button
 			>
 		{/if}
 	</div>

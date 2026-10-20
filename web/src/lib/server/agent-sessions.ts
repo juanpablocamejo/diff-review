@@ -35,6 +35,7 @@ import {
 	readSessionRef,
 	writeDiffCache,
 	writeDiffText,
+	writeHandoffChat,
 	writeSessionRef
 } from '$review/lib/review-dir.mjs';
 import {
@@ -81,6 +82,10 @@ type Entry = AgentSessionInfo & {
 	needsContext: boolean;
 	/** Lo que muestra la web (JSON sin diffs + diff), para escribirlo en `.diff-review/` antes de pasar el contexto. */
 	seed: { payload?: unknown; diff?: string } | null;
+	/** Nota extra (p. ej. handoff al cambiar de agente) que se antepone al primer mensaje con `needsContext`. */
+	handoffNote: string | null;
+	/** Markdown legible del chat anterior; se escribe a `.chat.md` al materializar el contexto. */
+	handoffChatMarkdown: string | null;
 	/** Paths del diff ya resueltos al arrancar la review (evita `git diff` al validar). */
 	diffPaths: string[] | null;
 	/** Permisos pendientes de confirmación del usuario (política negó). */
@@ -226,9 +231,22 @@ function materializeSeed(entry: Entry) {
 	}
 }
 
+/** Escribe (pisa) el companion `.chat.md` de handoff si hay markdown pendiente. */
+function materializeHandoffChat(entry: Entry) {
+	const text = entry.handoffChatMarkdown;
+	if (text == null) return;
+	try {
+		writeHandoffChat(entry.repo, entry.outputFilename, text);
+	} catch {
+		/* sin .diff-review escribible */
+	}
+	entry.handoffChatMarkdown = null;
+}
+
 /** Prefijo del primer mensaje cuando la sesión ACP es nueva. */
-function contextPreamble(entry: Entry): string {
+function contextPreamble(entry: Entry, handoffNote?: string | null): string {
 	materializeSeed(entry);
+	materializeHandoffChat(entry);
 	const paths = companionPaths(entry.repo, entry.outputFilename);
 	const jsonRel = outputRelPath(entry.outputFilename);
 	const diffRel = `${outputRelPath(entry.outputFilename).replace(/\.json$/i, '')}.diff`;
@@ -246,8 +264,15 @@ function contextPreamble(entry: Entry): string {
 			? `- Diff (relative to repo root): \`${diffRel}\` — read this file.`
 			: `- Diff file: not available on disk (no seed/diff and git cache failed). Say so if you need it.`,
 		'',
-		'User message:'
+		'The user question or fix request is the priority. The review JSON is reference context — do not re-litigate or re-review findings unless the user asks.',
+		'',
+		'Findings may include optional `resolution` ({ kind: ignored|fix|corrected, detail?: string }) written by the UI. Preserve those fields when editing the JSON. Corrected findings and their detail are prior work — use them as context; do not undo them unless the user asks.'
 	];
+	const note = String(handoffNote || '').trim();
+	if (note) {
+		lines.push('', note);
+	}
+	lines.push('', 'User message:');
 	return lines.join('\n');
 }
 
@@ -529,7 +554,7 @@ function checkEntryReport(entry: Entry) {
 function invalidJsonFixPrompt(entry: Entry, path: string, result: { ok: boolean; errors: string[]; notes: string[] }) {
 	return `${formatCheckReport(path, validateCliCommand(entry.outputFilename), result)}
 
-Critical: do NOT only bump meta.generatedAt or rewrite notes. Edit \`${outputRelPath(entry.outputFilename).replace(/\\/g, '/')}\` so every problem above is fixed (add blocks or skipped for each missing path). Do not claim success until coverage is complete.
+Critical: fix ONLY the listed schema/validation errors above. Do NOT regenerate or reshuffle findings unnecessarily. Preserve existing finding ids and any \`resolution\` fields when possible. Do NOT only bump meta.generatedAt or rewrite notes. Edit \`${outputRelPath(entry.outputFilename).replace(/\\/g, '/')}\` so every problem above is fixed (add blocks or skipped for each missing path). Do not claim success until coverage is complete.
 
 ${TOOL_RULES}
 
@@ -723,6 +748,8 @@ function newEntry(agent: DetectedAgent, fields: {
 		// openChat lo prende si la sesión es nueva o no se pudo retomar; startReview no lo usa.
 		needsContext: false,
 		seed: null,
+		handoffNote: null,
+		handoffChatMarkdown: null,
 		diffPaths: null,
 		pendingPermissions: new Map(),
 		sessionAllowDenied: false,
@@ -832,12 +859,21 @@ export async function openChat(input: {
 	base: string;
 	model?: string;
 	seed?: { payload?: unknown; diff?: string } | null;
+	/** Se antepone al `contextPreamble` en el primer mensaje (`needsContext`). */
+	handoffNote?: string;
+	/** Markdown del chat anterior → `.diff-review/<stem>.chat.md` al materializar. */
+	handoffChatMarkdown?: string;
 }): Promise<AgentSessionInfo> {
 	const sessionId = String(input.sessionId || '').trim();
+	const handoffNote = String(input.handoffNote || '').trim() || null;
+	const handoffChat =
+		input.handoffChatMarkdown != null ? String(input.handoffChatMarkdown) : null;
 	if (sessionId) {
 		for (const entry of sessions.values()) {
 			if (entry.acpSessionId === sessionId && entry.repo === input.repo) {
 				if (input.seed) entry.seed = input.seed;
+				if (handoffNote) entry.handoffNote = handoffNote;
+				if (handoffChat != null) entry.handoffChatMarkdown = handoffChat;
 				return info(entry);
 			}
 		}
@@ -849,6 +885,8 @@ export async function openChat(input: {
 		acpSessionId: sessionId
 	});
 	if (input.seed) entry.seed = input.seed;
+	if (handoffNote) entry.handoffNote = handoffNote;
+	if (handoffChat != null) entry.handoffChatMarkdown = handoffChat;
 	if (!sessionId) entry.needsContext = true;
 	// Lanzar el proceso ya: la UI puede persistir acpSessionId y encolar el primer mensaje.
 	try {
@@ -867,24 +905,28 @@ export function sendMessage(
 	id: string,
 	text: string,
 	mode: ChatMode,
-	opts?: { model?: string }
+	opts?: { model?: string; handoffNote?: string; handoffChatMarkdown?: string }
 ): AgentSessionInfo {
 	const entry = sessions.get(id);
 	if (!entry) throw new Error('La sesión del agente ya no existe. Recargá la página.');
 	const body = text.trim();
 	if (!body) throw new Error('El mensaje está vacío.');
 	if (entry.busy) throw new Error('El agente todavía está trabajando en el pedido anterior.');
+	const sendHandoff = String(opts?.handoffNote || '').trim();
+	if (sendHandoff) entry.handoffNote = sendHandoff;
+	if (opts?.handoffChatMarkdown != null) entry.handoffChatMarkdown = String(opts.handoffChatMarkdown);
 	let agentText = body;
 	if (entry.needsContext) {
-		agentText = `${contextPreamble(entry)}\n${body}`;
+		agentText = `${contextPreamble(entry, entry.handoffNote)}\n${body}`;
 		entry.needsContext = false;
+		entry.handoffNote = null;
 		entry.seed = null;
 	}
 	const prompt =
 		mode === 'edit'
-			? `${agentText}\n\nApply this by editing ${entry.outputFilename} in place (keep everything else as is). Reply briefly in Spanish with what you changed.\n\n${SERVER_VALIDATES}`
+			? `${agentText}\n\nApply this by editing ${entry.outputFilename} in place (keep everything else as is; preserve finding ids and any \`resolution\` fields). Reply briefly in Spanish with what you changed.\n\n${SERVER_VALIDATES}`
 			: mode === 'fix'
-				? `${agentText}\n\nApply ONLY the listed code fixes by editing files inside this repo. Do not rewrite the review JSON. Touch nothing else. Reply briefly in Spanish summarizing what you changed.`
+				? `${agentText}\n\nApply ONLY the listed code fixes by editing files inside this repo. Do not rewrite the review JSON. Touch nothing else. Reply briefly in Spanish with a short per-finding detail suitable for resolution.detail.`
 				: `${agentText}\n\nAnswer in Spanish. This is a question about the review: do not modify any file.`;
 	const model = String(opts?.model || '').trim() || undefined;
 	void runTurn(entry, prompt, mode, { shown: body, model });
@@ -1032,6 +1074,44 @@ export async function cancelTurn(id: string): Promise<void> {
 	// Aún en “preparando el contexto” (sin ACP): cortar el prep y avisar a la UI.
 	entry.busy = false;
 	setStatus(entry, 'idle', 'Cancelado.');
+}
+
+/**
+ * Cierra la sesión de chat: ACP, Map y permisos pendientes.
+ * La UI lo usa al cambiar de agente (el reporte / triage se mantienen).
+ */
+export async function closeChat(id: string): Promise<void> {
+	const entry = sessions.get(String(id || ''));
+	if (!entry) return;
+	entry.cancelled = true;
+	for (const [requestId, pending] of [...entry.pendingPermissions]) {
+		clearTimeout(pending.timer);
+		entry.pendingPermissions.delete(requestId);
+		try {
+			pending.resolve(false, { quiet: true });
+		} catch {
+			/* ignore */
+		}
+	}
+	if (entry.idleTimer) {
+		clearTimeout(entry.idleTimer);
+		entry.idleTimer = null;
+	}
+	try {
+		if (entry.acp && entry.busy) {
+			try {
+				await entry.acp.cancel();
+			} catch {
+				/* ignore */
+			}
+		}
+		entry.acp?.close();
+	} catch {
+		/* ignore */
+	}
+	entry.acp = null;
+	entry.listeners.clear();
+	sessions.delete(entry.id);
 }
 
 export function subscribe(id: string, listener: Listener): (() => void) | null {

@@ -1,5 +1,6 @@
 import type {
 	AgentSessionRef,
+	FindingResolution,
 	ReportMeta,
 	RepoSource,
 	ReviewBlock,
@@ -143,6 +144,14 @@ function coerceBlock(raw: unknown): ReviewBlock {
 	};
 }
 
+function coerceResolution(raw: unknown): FindingResolution | undefined {
+	const rec = asRecord(raw);
+	const kind = str(rec.kind);
+	if (kind !== 'ignored' && kind !== 'fix' && kind !== 'corrected') return undefined;
+	const detail = str(rec.detail);
+	return detail ? { kind, detail } : { kind };
+}
+
 function coerceFile(raw: unknown): ReviewFile | null {
 	const rec = asRecord(raw);
 	const path = str(rec.path);
@@ -177,6 +186,7 @@ export function coerceDocument(raw: unknown): ReviewDocument {
 	const findings = Array.isArray(d.findings)
 		? (d.findings as unknown[]).map((f) => {
 				const rec = asRecord(f);
+				const resolution = coerceResolution(rec.resolution);
 				return {
 					id: str(rec.id),
 					class: rec.class === 'quality' ? 'quality' : 'risk',
@@ -188,7 +198,8 @@ export function coerceDocument(raw: unknown): ReviewDocument {
 					line: Number.isFinite(Number(rec.line)) ? Number(rec.line) : null,
 					block: str(rec.block),
 					what: str(rec.what),
-					fix: str(rec.fix)
+					fix: str(rec.fix),
+					...(resolution ? { resolution } : {})
 				} as ReviewFinding;
 			})
 		: [];

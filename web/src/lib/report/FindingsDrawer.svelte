@@ -87,23 +87,38 @@
 								<h4>Sugerencia de corrección</h4>
 								<p class="fix">{f.fix}</p>
 							</div>
+							{#if f.corrected && f.fixedDetail}
+								<details class="fix-detail">
+									<summary>Detalle</summary>
+									<p>{f.fixedDetail}</p>
+								</details>
+							{/if}
 							<div class="item-actions">
 								{#if onaskfinding}
 									<AskAgentButton {agentId} onclick={() => onaskfinding(f.id)} />
 								{/if}
-								<div class="decision-group">
-									<button type="button" class:on={f.decided && !f.fixSelected} onclick={() => onignore(f.id)}
-										>Ignorar</button
-									>
-									<button type="button" class:on={f.decided && f.fixSelected} onclick={() => onfix(f.id)}
-										>Corregir</button
-									>
-									{#if f.decided}
+								{#if f.corrected}
+									<div class="decision-group corrected">
+										<span class="corrected-label">Corregido</span>
 										<button type="button" class="clear" title="Limpiar decisión" onclick={() => onclear(f.id)}
 											>✕</button
 										>
-									{/if}
-								</div>
+									</div>
+								{:else}
+									<div class="decision-group">
+										<button type="button" class:on={f.decided && !f.fixSelected} onclick={() => onignore(f.id)}
+											>Ignorar</button
+										>
+										<button type="button" class:on={f.decided && f.fixSelected} onclick={() => onfix(f.id)}
+											>Corregir</button
+										>
+										{#if f.decided}
+											<button type="button" class="clear" title="Limpiar decisión" onclick={() => onclear(f.id)}
+												>✕</button
+											>
+										{/if}
+									</div>
+								{/if}
 							</div>
 						</div>
 					{/if}
@@ -296,6 +311,18 @@
 		flex-shrink: 0;
 	}
 
+	.decision-group.corrected {
+		border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+		background: var(--ok-bg);
+	}
+
+	.corrected-label {
+		padding: 7px 14px;
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--ok);
+	}
+
 	.decision-group button {
 		padding: 7px 14px;
 		font-size: 12px;
@@ -322,5 +349,30 @@
 	.decision-group .clear {
 		padding: 7px 10px;
 		color: var(--text-faint);
+		border-left: 1px solid var(--border);
+	}
+
+	.fix-detail {
+		border: 1px solid var(--border);
+		background: var(--ok-bg);
+		padding: 8px 10px;
+	}
+
+	.fix-detail summary {
+		cursor: pointer;
+		font-size: 11px;
+		font-weight: 650;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--ok);
+		user-select: none;
+	}
+
+	.fix-detail p {
+		margin: 8px 0 0;
+		font-size: 12.5px;
+		line-height: 1.45;
+		color: var(--text);
+		white-space: pre-wrap;
 	}
 </style>

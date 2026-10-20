@@ -8,7 +8,7 @@ export type AgentEvent =
 	| { type: 'status'; status: SessionStatus; message?: string }
 	/** Fase visible en la UI en vivo: primero el diff precomputado, después el agente. */
 	| { type: 'phase'; phase: 'diff' | 'agent'; detail?: string }
-	/** Lo que se le mandó al agente. `review` = el prompt de la review (no se muestra entero). */
+	/** Lo que se le mandó al agente. `review` = el prompt de la review (no se muestra entero). Siempre usa ChatMode (ask/edit/fix). */
 	| { type: 'user'; text: string; mode: ChatMode | 'review' }
 	/** Texto del agente; los chunks consecutivos se acumulan en el mismo `seq`. */
 	| { type: 'text'; kind: 'message' | 'thought'; text: string }

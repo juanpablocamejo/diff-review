@@ -3,6 +3,7 @@ import { command, query } from '$app/server';
 import {
 	agentModels,
 	cancelTurn,
+	closeChat as closeChatSession,
 	listAcpAgents,
 	loginCommand,
 	openAgentLogin as openAgentLoginSession,
@@ -96,6 +97,10 @@ export type OpenChatInput = {
 	model?: string;
 	/** JSON (sin files) + diff del reporte abierto, para materializar en `.diff-review/`. */
 	seed?: { payload?: unknown; diff?: string } | null;
+	/** Nota de handoff (cambio de agente) antepuesta al preamble del primer mensaje. */
+	handoffNote?: string;
+	/** Markdown legible del chat anterior → companion `.chat.md` en `.diff-review/`. */
+	handoffChatMarkdown?: string;
 };
 
 export const openChat = command('unchecked', async (input: OpenChatInput): Promise<AgentSessionInfo> => {
@@ -115,7 +120,10 @@ export const openChat = command('unchecked', async (input: OpenChatInput): Promi
 			branch: String(input?.branch || '').trim(),
 			base: String(input?.base || 'develop').trim(),
 			model: input?.model,
-			seed: input?.seed ?? null
+			seed: input?.seed ?? null,
+			handoffNote: String(input?.handoffNote || '').trim() || undefined,
+			handoffChatMarkdown:
+				input?.handoffChatMarkdown != null ? String(input.handoffChatMarkdown) : undefined
 		});
 	} catch (err) {
 		fail(err);
@@ -129,12 +137,17 @@ export const sendMessage = command(
 		text: string;
 		mode: ChatMode;
 		model?: string;
+		handoffNote?: string;
+		handoffChatMarkdown?: string;
 	}): Promise<AgentSessionInfo> => {
 		try {
 			const mode: ChatMode =
 				input?.mode === 'edit' ? 'edit' : input?.mode === 'fix' ? 'fix' : 'ask';
 			return sendSessionMessage(String(input?.id || ''), String(input?.text || ''), mode, {
-				model: String(input?.model || '').trim() || undefined
+				model: String(input?.model || '').trim() || undefined,
+				handoffNote: String(input?.handoffNote || '').trim() || undefined,
+				handoffChatMarkdown:
+					input?.handoffChatMarkdown != null ? String(input.handoffChatMarkdown) : undefined
 			});
 		} catch (err) {
 			fail(err);
@@ -186,6 +199,11 @@ export const setPermissionTrust = command(
 
 export const cancelAgent = command('unchecked', async (input: { id: string }): Promise<void> => {
 	await cancelTurn(String(input?.id || ''));
+});
+
+/** Cierra la sesión ACP del server (cambio de agente). No toca el reporte ni el triage. */
+export const closeChat = command('unchecked', async (input: { id: string }): Promise<void> => {
+	await closeChatSession(String(input?.id || ''));
 });
 
 /** Reintenta escribir/validar el JSON en la misma sesión de review. */

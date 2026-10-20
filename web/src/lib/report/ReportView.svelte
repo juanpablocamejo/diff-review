@@ -7,12 +7,29 @@
 	import ReportFooter from './ReportFooter.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
 	import Sidebar from './Sidebar.svelte';
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
+	import { agentShortName, reportAgentId } from './agent-icons';
+	import { acpAgents } from './agent.remote';
+	import type { AcpAgentOption } from './agent-events';
 	import { fileAnchor, groupFileAnchor, scrollToAnchor } from './anchors';
-	import { fileLines } from './git.remote';
 	import { askDraftFinding } from './labels';
-	import { buildFixPromptText, buildPublishText, type PublishPlatform } from './prompts';
-	import { loadTriage, replaceReportDocument, saveTriage } from './storage';
+	import { reviewSeedPayload } from './document';
+	import { fileLines, writeReviewOutput } from './git.remote';
+	import { buildFixPromptText, buildPublishText, splitFixSummary, type PublishPlatform } from './prompts';
+	import {
+		canLoadFromDisk,
+		loadTriage,
+		replaceReportDocument,
+		reportOutputFilename,
+		saveTriage,
+		type TriageState
+	} from './storage';
+	import {
+		applyTriageToFindings,
+		mergeTriage,
+		triageFromFindings,
+		triageNeedsDocumentWrite
+	} from './triage';
 	import type { SavedReport } from './types';
 
 	let {
@@ -22,6 +39,8 @@
 		wrapLines,
 		sidebarCollapsed = false,
 		showExplanations = true,
+		pendingFixApplied = null,
+		onpendingfixappliedconsumed,
 		onask,
 		onfixwithagent,
 		onreportupdated
@@ -33,22 +52,41 @@
 		/** Los dos paneles laterales se prenden y apagan desde el header de la página. */
 		sidebarCollapsed?: boolean;
 		showExplanations?: boolean;
+		/** Resultado de un turno Corregir código: marcar hallazgos como Corregido. */
+		pendingFixApplied?: { findingIds: string[]; summary: string } | null;
+		onpendingfixappliedconsumed?: () => void;
 		/** Abre el chat con un borrador (referencia); el usuario completa y envía. */
 		onask?: (draft: string) => void;
 		/** Abre el chat en modo fix y auto-envía el prompt. `false` = sin agente ACP → panel de copiar. */
-		onfixwithagent?: (text: string) => boolean | Promise<boolean>;
+		onfixwithagent?: (text: string, findingIds: string[]) => boolean | Promise<boolean>;
 		onreportupdated?: (report: SavedReport) => void;
 	} = $props();
 
 	const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
 	const model = $derived(buildReportModel(report.document));
-	const agentId = $derived(report.meta.agentSession?.agentId ?? '');
+
+	let installedAgents = $state<AcpAgentOption[]>([]);
+	/**
+	 * Sesión ACP, o provenance de meta.agent si ese agente sigue instalado.
+	 * Vacío → iconos genéricos + "Agente" (no inventar Cursor/Claude).
+	 */
+	const agentId = $derived.by(() => {
+		const preferred = reportAgentId(report.meta);
+		if (!preferred) return '';
+		if (report.meta.agentSession?.agentId) return preferred;
+		if (!installedAgents.length) return preferred;
+		return installedAgents.some((a) => a.id === preferred) ? preferred : '';
+	});
+	/** Mismo nombre corto que el botón del header / chat (Claude, Cursor, … o "Agente"). */
+	const agentName = $derived(agentShortName(agentId, report.meta.agent || ''));
 
 	let reportMode = $state<'explore' | 'findings'>('explore');
 	let activeFindingId = $state<string | null>(null);
 	let decided = $state<Record<string, boolean>>({});
 	let fixSelected = $state<Record<string, boolean>>({});
+	let corrected = $state<Record<string, boolean>>({});
+	let fixedDetail = $state<Record<string, string>>({});
 	let sidebarWidth = $state(270);
 	let explanationWidth = $state(360);
 	let splitRatio = $state(0.5);
@@ -64,11 +102,36 @@
 	let publishCopyLabel = $state('Copiar');
 	/** Archivo más visible en Explore → resalte en el acordeón de temas. */
 	let activeExploreFile = $state<{ groupId: string; path: string } | null>(null);
+	/** Evita resetear Explorar/Hallazgos cuando `onreportupdated` reemplaza el mismo reporte. */
+	let hydratedReportId: string | null = null;
 
 	$effect(() => {
-		const triage = loadTriage(report.id);
-		decided = triage.decided;
-		fixSelected = triage.fixSelected;
+		let cancelled = false;
+		void acpAgents()
+			.then((agents) => {
+				if (!cancelled) installedAgents = agents;
+			})
+			.catch(() => {
+				if (!cancelled) installedAgents = [];
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	$effect(() => {
+		// Solo al cambiar de reporte: persistir triage / meta reasigna `report` con el mismo id.
+		const id = report.id;
+		if (hydratedReportId === id) return;
+		hydratedReportId = id;
+		const findings = untrack(() => report.document.findings);
+		const fromDoc = triageFromFindings(findings);
+		const merged = mergeTriage(fromDoc, loadTriage(id));
+		decided = merged.decided;
+		fixSelected = merged.fixSelected;
+		corrected = merged.corrected;
+		fixedDetail = merged.fixedDetail;
+		saveTriage(id, merged);
 		reportMode = 'explore';
 		activeFindingId = null;
 		drawerFilePath = null;
@@ -77,14 +140,59 @@
 		showPublishPrompt = false;
 		fileOpen = {};
 		activeExploreFile = null;
+		if (triageNeedsDocumentWrite(fromDoc, merged)) {
+			void persistTriageState(merged);
+		}
 	});
 
-	function persistTriage() {
-		saveTriage(report.id, { decided, fixSelected });
+	$effect(() => {
+		const payload = pendingFixApplied;
+		if (!payload?.findingIds?.length) return;
+		applyFixFromAgent(payload.findingIds, payload.summary || '');
+		onpendingfixappliedconsumed?.();
+	});
+
+	function currentTriage(): TriageState {
+		return { decided, fixSelected, corrected, fixedDetail };
 	}
 
-	const decoratedFindingsNav = $derived(model.findingsNav.map((f) => decorateFinding(f, decided, fixSelected)));
-	const decoratedOrphans = $derived(model.orphanFindings.map((f) => decorateFinding(f, decided, fixSelected)));
+	function documentWithTriage(triage: TriageState = currentTriage()) {
+		return {
+			...report.document,
+			findings: applyTriageToFindings(report.document.findings, triage)
+		};
+	}
+
+	/** localStorage + documento (+ `.diff-review/*.json` si el reporte es file-backed). */
+	async function persistTriageState(triage: TriageState = currentTriage()) {
+		saveTriage(report.id, triage);
+		const document = documentWithTriage(triage);
+		const updated = replaceReportDocument(report.id, document, report.meta);
+		if (!updated) {
+			console.error('No se pudo guardar el triage en el reporte');
+			return;
+		}
+		onreportupdated?.(updated);
+		if (!canLoadFromDisk(updated.meta)) return;
+		const filename = reportOutputFilename(updated.meta);
+		if (!filename) return;
+		try {
+			await writeReviewOutput({
+				repo: updated.meta.repo,
+				filename,
+				payload: reviewSeedPayload(updated.document, updated.meta)
+			});
+		} catch (err) {
+			console.error('No se pudo escribir el JSON de review en disco:', err);
+		}
+	}
+
+	const decoratedFindingsNav = $derived(
+		model.findingsNav.map((f) => decorateFinding(f, decided, fixSelected, corrected, fixedDetail))
+	);
+	const decoratedOrphans = $derived(
+		model.orphanFindings.map((f) => decorateFinding(f, decided, fixSelected, corrected, fixedDetail))
+	);
 
 	function fileFindings(path: string) {
 		return decoratedFindingsNav.filter((f) => f.file === path);
@@ -96,36 +204,87 @@
 	const activeFile = $derived(activeFinding ? (model.fileSectionsByPath.get(activeFinding.file) ?? null) : null);
 	const drawerFindings = $derived(drawerFilePath ? fileFindings(drawerFilePath) : []);
 
-	const fixSelectionFindings = $derived(decoratedFindingsNav.filter((f) => fixSelected[f.id]));
+	const fixSelectionFindings = $derived(
+		decoratedFindingsNav.filter((f) => fixSelected[f.id] && !corrected[f.id])
+	);
 	const fixSelectionCount = $derived(fixSelectionFindings.length);
-	const ignoredFindings = $derived(decoratedFindingsNav.filter((f) => f.decided && !f.fixSelected));
+	const ignoredFindings = $derived(
+		decoratedFindingsNav.filter((f) => f.decided && !f.fixSelected && !f.corrected)
+	);
 	const ignoredCount = $derived(ignoredFindings.length);
 	const reviewedCount = $derived(decoratedFindingsNav.filter((f) => f.decided).length);
 	const reviewedLabel = $derived(`${reviewedCount} de ${decoratedFindingsNav.length} revisados`);
 
 	const fixPromptText = $derived(
-		showFixPrompt ? buildFixPromptText(fixSelectionFindings, report.document, report.meta) : ''
+		showFixPrompt
+			? buildFixPromptText(
+					fixSelectionFindings,
+					documentWithTriage({ decided, fixSelected, corrected, fixedDetail }),
+					report.meta
+				)
+			: ''
 	);
 	const publishText = $derived(showPublishPrompt ? buildPublishText(fixSelectionFindings, publishPlatform, report.meta) : '');
 	const publishTargetLabel = $derived(publishPlatform === 'gitlab' ? 'merge request de GitLab' : 'pull request de GitHub');
 
 	function setFindingDecision(id: string, fix: boolean) {
-		decided = { ...decided, [id]: true };
-		fixSelected = { ...fixSelected, [id]: fix };
-		persistTriage();
+		const next: TriageState = {
+			decided: { ...decided, [id]: true },
+			fixSelected: { ...fixSelected, [id]: fix },
+			corrected: { ...corrected },
+			fixedDetail: { ...fixedDetail }
+		};
+		if (next.corrected[id] || next.fixedDetail[id]) {
+			next.corrected[id] = false;
+			next.fixedDetail[id] = '';
+		}
+		decided = next.decided;
+		fixSelected = next.fixSelected;
+		corrected = next.corrected;
+		fixedDetail = next.fixedDetail;
+		void persistTriageState(next);
 		// Con varios hallazgos, pasar al siguiente; si es el único (o el último), dejarlo abierto.
 		if (drawerFilePath && drawerExpandedFindingId === id) {
 			const list = fileFindings(drawerFilePath);
 			const idx = list.findIndex((f) => f.id === id);
-			const next = list[idx + 1];
-			if (next) drawerExpandedFindingId = next.id;
+			const nextFinding = list[idx + 1];
+			if (nextFinding) drawerExpandedFindingId = nextFinding.id;
 		}
 	}
 
 	function clearDecision(id: string) {
-		decided = { ...decided, [id]: false };
-		fixSelected = { ...fixSelected, [id]: false };
-		persistTriage();
+		const next: TriageState = {
+			decided: { ...decided, [id]: false },
+			fixSelected: { ...fixSelected, [id]: false },
+			corrected: { ...corrected, [id]: false },
+			fixedDetail: { ...fixedDetail, [id]: '' }
+		};
+		decided = next.decided;
+		fixSelected = next.fixSelected;
+		corrected = next.corrected;
+		fixedDetail = next.fixedDetail;
+		void persistTriageState(next);
+	}
+
+	function applyFixFromAgent(findingIds: string[], summary: string) {
+		const details = splitFixSummary(summary, findingIds);
+		const next: TriageState = {
+			decided: { ...decided },
+			fixSelected: { ...fixSelected },
+			corrected: { ...corrected },
+			fixedDetail: { ...fixedDetail }
+		};
+		for (const id of findingIds) {
+			next.decided[id] = true;
+			next.fixSelected[id] = false;
+			next.corrected[id] = true;
+			next.fixedDetail[id] = details[id] || summary.trim();
+		}
+		decided = next.decided;
+		fixSelected = next.fixSelected;
+		corrected = next.corrected;
+		fixedDetail = next.fixedDetail;
+		void persistTriageState(next);
 	}
 
 	function openDrawerFile(path: string) {
@@ -212,17 +371,18 @@
 	}
 
 	async function fixWithAgent() {
-		const text = buildFixPromptText(fixSelectionFindings, report.document, report.meta);
+		const ids = fixSelectionFindings.map((f) => f.id);
+		const text = buildFixPromptText(fixSelectionFindings, documentWithTriage(), report.meta);
 		if (!text.trim()) return;
 		if (!onfixwithagent) {
 			openCopyFixPrompt();
 			return;
 		}
-		const ok = await onfixwithagent(text);
+		const ok = await onfixwithagent(text, ids);
 		if (!ok) openCopyFixPrompt();
 	}
 
-	function purgeIgnored() {
+	async function purgeIgnored() {
 		const ids = new Set(ignoredFindings.map((f) => f.id));
 		if (!ids.size) return;
 		const n = ids.size;
@@ -233,17 +393,41 @@
 		) {
 			return;
 		}
+		const triage = currentTriage();
 		const document = {
 			...report.document,
-			findings: report.document.findings.filter((f) => !ids.has(f.id))
+			findings: applyTriageToFindings(
+				report.document.findings.filter((f) => !ids.has(f.id)),
+				triage
+			)
 		};
 		const updated = replaceReportDocument(report.id, document, report.meta);
-		if (!updated) return;
-		const triage = loadTriage(report.id);
-		decided = triage.decided;
-		fixSelected = triage.fixSelected;
+		if (!updated) {
+			console.error('Error al eliminar hallazgos ignorados: no se pudo guardar el documento');
+			alert('Error: No se pudo guardar los cambios. Intenta de nuevo.');
+			return;
+		}
+		const next = loadTriage(report.id);
+		decided = next.decided;
+		fixSelected = next.fixSelected;
+		corrected = next.corrected;
+		fixedDetail = next.fixedDetail;
 		if (activeFindingId && ids.has(activeFindingId)) activeFindingId = null;
 		onreportupdated?.(updated);
+		if (canLoadFromDisk(updated.meta)) {
+			const filename = reportOutputFilename(updated.meta);
+			if (filename) {
+				try {
+					await writeReviewOutput({
+						repo: updated.meta.repo,
+						filename,
+						payload: reviewSeedPayload(updated.document, updated.meta)
+					});
+				} catch (err) {
+					console.error('No se pudo escribir el JSON tras purgar ignorados:', err);
+				}
+			}
+		}
 	}
 </script>
 
@@ -356,6 +540,7 @@
 	hasFixSelection={fixSelectionCount > 0}
 	{fixSelectionCount}
 	{ignoredCount}
+	{agentName}
 	onfixwithagent={() => void fixWithAgent()}
 	oncopyfixprompt={openCopyFixPrompt}
 	onopenpublishprompt={() => {

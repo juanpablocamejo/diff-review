@@ -18,7 +18,9 @@
 		onrespondpermission,
 		onretry,
 		actionsExternal = false,
-		pendingCursor = $bindable(0)
+		pendingCursor = $bindable(0),
+		/** Incrementar para forzar scroll al final (p. ej. Corregir / envío programático). */
+		scrollSignal = 0
 	}: {
 		events: SeqEvent[];
 		busy?: boolean;
@@ -29,6 +31,7 @@
 		/** Si true, los botones de permiso los renderiza el padre (p. ej. footer del stage). */
 		actionsExternal?: boolean;
 		pendingCursor?: number;
+		scrollSignal?: number;
 	} = $props();
 
 	const lastFinalFailSeq = $derived.by(() => {
@@ -53,13 +56,39 @@
 	);
 	const currentPending = $derived(pending[pendingIndex] ?? null);
 
+	function scrollToBottom() {
+		if (!box) return;
+		box.scrollTop = box.scrollHeight;
+	}
+
+	/** Tras DOM update + layout (flex del panel puede no tener altura en el primer tick). */
+	function scheduleScrollToBottom(force = false) {
+		if (!force && !pinned) return;
+		if (force) pinned = true;
+		void tick().then(() => {
+			scrollToBottom();
+			requestAnimationFrame(() => {
+				scrollToBottom();
+				requestAnimationFrame(scrollToBottom);
+			});
+		});
+	}
+
 	$effect(() => {
 		void events.length;
 		const last = events[events.length - 1];
 		void (last?.type === 'text' ? last.text.length : 0);
 		void pending.length;
-		if (!pinned || !box) return;
-		void tick().then(() => box && (box.scrollTop = box.scrollHeight));
+		void busy;
+		if (!box) return;
+		scheduleScrollToBottom(false);
+	});
+
+	/** Padre pide ir al fondo aunque el usuario hubiera scrolleado arriba. */
+	$effect(() => {
+		const signal = scrollSignal;
+		if (!signal || !box) return;
+		scheduleScrollToBottom(true);
 	});
 
 	function onScroll() {

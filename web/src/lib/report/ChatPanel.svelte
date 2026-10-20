@@ -3,12 +3,13 @@
 	import AgentIcon from './AgentIcon.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import AgentSelect from './AgentSelect.svelte';
-	import { agentShortName } from './agent-icons';
+	import { agentShortName, reportAgentId } from './agent-icons';
 	import TrustSessionToggle from './TrustSessionToggle.svelte';
 	import {
 		acpAgentModels,
 		acpAgents,
 		cancelAgent,
+		closeChat,
 		openChat,
 		respondPermission,
 		sendMessage,
@@ -20,8 +21,21 @@
 	import { hydrateFromGit, loadDetectedOutput } from './git.remote';
 	import { buildAcpModelSelectOptions, sortModelSelectOptions } from './model-label';
 	import ModelSelect from './ModelSelect.svelte';
+	import {
+		AGENT_SWITCH_BOOTSTRAP,
+		buildAgentSwitchHandoff,
+		formatReadableChatMarkdown,
+		handoffChatRelPath
+	} from './prompts';
 	import ResizeHandle from './ResizeHandle.svelte';
-	import { canLoadFromDisk, loadChat, replaceReportDocument, saveChat, updateReportMeta } from './storage';
+	import {
+		canLoadFromDisk,
+		clearChat,
+		loadChat,
+		replaceReportDocument,
+		saveChat,
+		updateReportMeta
+	} from './storage';
 	import type { SavedReport } from './types';
 
 	const CHAT_WIDTH_DEFAULT = 480;
@@ -35,7 +49,8 @@
 		pendingAsk = null,
 		onpendingaskconsumed,
 		pendingFix = null,
-		onpendingfixconsumed
+		onpendingfixconsumed,
+		onfixapplied
 	}: {
 		report: SavedReport;
 		onclose: () => void;
@@ -44,8 +59,10 @@
 		pendingAsk?: string | null;
 		onpendingaskconsumed?: () => void;
 		/** Prompt de corrección: modo fix; con `autoSend` se envía cuando la sesión esté lista. */
-		pendingFix?: { text: string; autoSend?: boolean } | null;
+		pendingFix?: { text: string; autoSend?: boolean; findingIds?: string[] } | null;
 		onpendingfixconsumed?: () => void;
+		/** Tras un turno fix exitoso (`end_turn`) lanzado con findingIds. */
+		onfixapplied?: (payload: { findingIds: string[]; summary: string }) => void;
 	} = $props();
 
 	let info = $state<AgentSessionInfo | null>(null);
@@ -64,29 +81,51 @@
 	let pendingEdit = false;
 	/** Enviar el compositor apenas la sesión ACP esté lista (p. ej. Corregir con el agente). */
 	let pendingAutoSend = $state(false);
+	/** Ids de hallazgos del próximo envío fix (desde pendingFix). */
+	let queuedFixIds: string[] | null = null;
+	/** Ids en vuelo: marcar Corregido al terminar el turno con end_turn. */
+	let awaitingFixIds: string[] | null = null;
 	let composerEl = $state<HTMLTextAreaElement | null>(null);
 	let chatWidth = $state(CHAT_WIDTH_DEFAULT);
+	/** Bumps AgentLog scroll-to-bottom (Corregir / envío; ignora pin del usuario). */
+	let logScrollSignal = $state(0);
+
+	function bumpLogScroll() {
+		logScrollSignal += 1;
+	}
 
 	let agentOptions = $state<AcpAgentOption[]>([]);
 	let agentChoice = $state('');
 	let modelChoice = $state('');
 	let agentModels = $state<Record<string, AcpModels | 'loading'>>({});
 	let modelsForce = $state<Record<string, boolean>>({});
+	/** Cambio de agente en curso (cierra sesión + abre otra). */
+	let switching = $state(false);
+	/** Confirmación ES antes de perder el chat del agente actual. */
+	let pendingSwitch = $state<{ nextId: string; nextLabel: string; currentLabel: string } | null>(
+		null
+	);
 
 	const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
 	const ref = $derived(report.meta.agentSession);
-	const busy = $derived(sending || starting || connecting || Boolean(stream?.busy));
+	const busy = $derived(sending || starting || connecting || switching || Boolean(stream?.busy));
 	/** Reconectar solo si cambia el reporte o la sesión (no cuando el agente actualiza el documento). */
 	const sessionKey = $derived(`${report.id}|${ref?.agentId ?? ''}|${ref?.sessionId ?? ''}`);
 	/** Agente del que listamos modelos: sesión activa, ref guardada, o picker. */
 	const modelsAgentId = $derived(info?.agentId || ref?.agentId || agentChoice);
 	const sessionReady = $derived(Boolean(info));
-	const showPicker = $derived(!ref && !info && !connecting);
+	const showPicker = $derived(!ref && !info && !connecting && !switching);
 	const displayModel = $derived(modelChoice || info?.model || report.meta.model || '');
 	const headerAgentId = $derived(info?.agentId || ref?.agentId || agentChoice || '');
+	/** En el picker vacío no fingir un agente distinto al elegido (ni al de meta si aún no hay choice). */
 	const headerAgentName = $derived(
-		agentShortName(headerAgentId, info?.agentLabel || report.meta.agent || '')
+		showPicker && !agentChoice
+			? 'Agente'
+			: agentShortName(headerAgentId, info?.agentLabel || report.meta.agent || '')
+	);
+	const headerSelectDisabled = $derived(
+		busy || updating || connecting || starting || switching || Boolean(pendingSwitch)
 	);
 
 	const chosenAgent = $derived(agentOptions.find((a) => a.id === modelsAgentId) ?? null);
@@ -245,29 +284,214 @@
 	$effect(() => {
 		const fix = pendingFix;
 		if (!fix?.text) return;
+		pendingAsk = null;
 		text = fix.text;
 		mode = 'fix';
 		pendingAutoSend = Boolean(fix.autoSend);
+		queuedFixIds = fix.findingIds?.length ? [...fix.findingIds] : null;
 		onpendingfixconsumed?.();
+		bumpLogScroll();
 		queueMicrotask(() => {
 			composerEl?.focus();
 			const len = composerEl?.value.length ?? 0;
 			composerEl?.setSelectionRange(len, len);
+			bumpLogScroll();
 		});
 	});
 
+	let autoSendTimeout: ReturnType<typeof setTimeout> | null = null;
+
 	$effect(() => {
-		if (!pendingAutoSend || !sessionReady || busy || !text.trim()) return;
+		if (!pendingAutoSend || !sessionReady || busy || !text.trim()) {
+			if (autoSendTimeout) clearTimeout(autoSendTimeout);
+			return;
+		}
 		pendingAutoSend = false;
 		void send();
+	});
+
+	$effect(() => {
+		// Timeout si sessionReady demora: fallback a envío manual después de 10s
+		if (!pendingAutoSend || sessionReady || !text.trim()) {
+			if (autoSendTimeout) clearTimeout(autoSendTimeout);
+			return;
+		}
+		if (autoSendTimeout) clearTimeout(autoSendTimeout);
+		autoSendTimeout = setTimeout(() => {
+			pendingAutoSend = false;
+			autoSendTimeout = null;
+		}, 10000);
 	});
 
 	async function loadAgents() {
 		try {
 			agentOptions = await acpAgents();
-			if (!agentOptions.some((a) => a.id === agentChoice)) agentChoice = agentOptions[0]?.id ?? '';
+			if (agentOptions.some((a) => a.id === agentChoice)) return;
+			// Preferí el agente de la review (sesión o meta.agent) si sigue instalado.
+			const preferred = reportAgentId(report.meta);
+			if (preferred && agentOptions.some((a) => a.id === preferred)) {
+				agentChoice = preferred;
+				return;
+			}
+			// No elegir Cursor/Claude al azar: el usuario elige en el picker.
+			agentChoice = '';
 		} catch {
 			agentOptions = [];
+		}
+	}
+
+	// Mantener el select del header alineado con la sesión viva / ref guardada.
+	$effect(() => {
+		const id = info?.agentId || ref?.agentId;
+		if (!id || switching || pendingSwitch) return;
+		if (agentChoice !== id) agentChoice = id;
+	});
+
+	function lastFixUserText(events: SeqEvent[]): string {
+		for (let i = events.length - 1; i >= 0; i--) {
+			const e = events[i];
+			if (e.type === 'user' && e.mode === 'fix') return e.text;
+		}
+		return '';
+	}
+
+	function captureFixRequeue(): { text: string; findingIds: string[] | null } | null {
+		const ids = queuedFixIds?.length ? queuedFixIds : awaitingFixIds?.length ? awaitingFixIds : null;
+		const fromComposer = mode === 'fix' && text.trim() ? text.trim() : '';
+		const fromHistory = lastFixUserText([...(history || []), ...(stream?.events ?? [])]);
+		const body = fromComposer || fromHistory;
+		const inFlight =
+			Boolean(ids) ||
+			pendingAutoSend ||
+			(mode === 'fix' && Boolean(fromComposer)) ||
+			Boolean(awaitingFixIds?.length);
+		if (!inFlight || !body) return null;
+		return { text: body, findingIds: ids };
+	}
+
+	/** Sin sesión abierta: solo cambia choice + reset modelo (picker). */
+	function onPickerAgentChange() {
+		modelChoice = '';
+	}
+
+	/**
+	 * Con sesión viva o `meta.agentSession`: pedir confirmación ES.
+	 * Mismo agente → no-op (AgentSelect ya no llama si id === value).
+	 */
+	function onHeaderAgentBeforeChange(nextId: string): boolean {
+		if (nextId === (info?.agentId || ref?.agentId || agentChoice)) return false;
+		if (!info && !ref) {
+			modelChoice = '';
+			return true;
+		}
+		if (headerSelectDisabled) return false;
+		const next = agentOptions.find((a) => a.id === nextId);
+		pendingSwitch = {
+			nextId,
+			nextLabel: agentShortName(nextId, next?.label || ''),
+			currentLabel: headerAgentName
+		};
+		return false;
+	}
+
+	function cancelPendingSwitch() {
+		pendingSwitch = null;
+	}
+
+	async function confirmPendingSwitch() {
+		const pending = pendingSwitch;
+		pendingSwitch = null;
+		if (!pending) return;
+		await switchAgent(pending.nextId, pending.nextLabel, pending.currentLabel);
+	}
+
+	function onSwitchDialogKeydown(e: KeyboardEvent) {
+		if (!pendingSwitch) return;
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			cancelPendingSwitch();
+		}
+	}
+
+	async function switchAgent(nextAgentId: string, nextLabel: string, currentLabel: string) {
+		const nextAgent = agentOptions.find((a) => a.id === nextAgentId);
+		if (!nextAgent || switching) return;
+		if (nextAgentId === (info?.agentId || ref?.agentId)) return;
+
+		switching = true;
+		error = '';
+		const outputFilename =
+			report.meta.agentSession?.outputFilename || report.meta.outputFilename || '';
+		const transcript = [...(history || []), ...(stream?.events ?? [])];
+		const pendingUserText = text.trim();
+		const fixRequeue = captureFixRequeue();
+		const chatRel = outputFilename ? handoffChatRelPath(outputFilename) : '';
+		const handoffChatMarkdown = formatReadableChatMarkdown(transcript);
+		const handoffNote = buildAgentSwitchHandoff({
+			document: report.document,
+			fromAgentLabel: currentLabel || headerAgentName,
+			toAgentLabel: nextLabel || agentShortName(nextAgentId, nextAgent.label),
+			transcript,
+			chatRelPath: handoffChatMarkdown && chatRel ? chatRel : null
+		});
+
+		try {
+			if (info && (stream?.busy || sending || info.busy)) {
+				await cancelAgent({ id: info.id });
+			}
+			if (info) {
+				await closeChat({ id: info.id });
+			}
+
+			stream?.close();
+			stream = null;
+			info = null;
+			history = [];
+			pendingEdit = false;
+			awaitingFixIds = null;
+			queuedFixIds = null;
+			pendingAutoSend = false;
+			clearChat(report.id);
+
+			const cleared = updateReportMeta(report.id, { agentSession: undefined });
+			if (cleared) onreportupdated(cleared);
+
+			agentChoice = nextAgentId;
+			modelChoice = '';
+
+			const opened = await openChat({
+				agentId: nextAgentId,
+				sessionId: '',
+				outputFilename,
+				repo: report.meta.repo,
+				branch: report.meta.branch,
+				base: report.meta.base,
+				model: undefined,
+				seed,
+				handoffNote,
+				handoffChatMarkdown: handoffChatMarkdown || undefined
+			});
+			attachSession(report.id, opened);
+
+			// Encolar el primer mensaje: autoSend corre cuando `switching` baja y la sesión está lista
+			// (así el preamble + handoffNote viajan con needsContext).
+			if (fixRequeue) {
+				text = fixRequeue.text;
+				mode = 'fix';
+				pendingAutoSend = true;
+				queuedFixIds = fixRequeue.findingIds;
+			} else if (pendingUserText) {
+				text = pendingUserText;
+				pendingAutoSend = true;
+			} else {
+				text = AGENT_SWITCH_BOOTSTRAP;
+				mode = 'ask';
+				pendingAutoSend = true;
+			}
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		} finally {
+			switching = false;
 		}
 	}
 
@@ -333,10 +557,41 @@
 	}
 
 	async function onEvent(event: SeqEvent) {
-		if (event.type === 'status' && event.status === 'error') pendingEdit = false;
+		if (event.type === 'status' && event.status === 'error') {
+			pendingEdit = false;
+			awaitingFixIds = null;
+		}
+		if (event.type === 'turn' && awaitingFixIds?.length) {
+			const ids = awaitingFixIds;
+			awaitingFixIds = null;
+			if (event.stopReason === 'end_turn') {
+				const summary = lastAgentMessageText([...(history || []), ...(stream?.events ?? [])]);
+				onfixapplied?.({ findingIds: ids, summary });
+			}
+		}
 		if (event.type !== 'review' || !event.ok || !pendingEdit || !info) return;
 		pendingEdit = false;
 		await reloadReport(event.filename);
+	}
+
+	/** Texto del agente tras el último user en modo fix (chunks `text` kind message). */
+	function lastAgentMessageText(events: SeqEvent[]): string {
+		let lastFixUser = -1;
+		for (let i = events.length - 1; i >= 0; i--) {
+			const e = events[i];
+			if (e.type === 'user' && e.mode === 'fix') {
+				lastFixUser = i;
+				break;
+			}
+		}
+		if (lastFixUser < 0) return '';
+		const parts: string[] = [];
+		for (let i = lastFixUser + 1; i < events.length; i++) {
+			const e = events[i];
+			if (e.type === 'turn') break;
+			if (e.type === 'text' && e.kind === 'message') parts.push(e.text);
+		}
+		return parts.join('').trim();
 	}
 
 	/** El agente dejó el JSON válido: hidratar el viewer (reusa el companion `.diff` si existe). */
@@ -367,8 +622,11 @@
 		if (!body || !info || busy) return;
 		sending = true;
 		error = '';
+		const fixIds = sendMode === 'fix' && queuedFixIds?.length ? queuedFixIds : null;
+		queuedFixIds = null;
 		try {
 			if (sendMode === 'edit') pendingEdit = true;
+			if (fixIds) awaitingFixIds = fixIds;
 			const next = await sendMessage({
 				id: info.id,
 				text: body,
@@ -379,6 +637,7 @@
 			if (next.model) modelChoice = next.model;
 		} catch (err) {
 			pendingEdit = false;
+			if (fixIds) awaitingFixIds = null;
 			error = err instanceof Error ? err.message : String(err);
 		} finally {
 			sending = false;
@@ -390,6 +649,7 @@
 		if (!body || !info || busy) return;
 		const sendMode = mode;
 		text = '';
+		bumpLogScroll();
 		await sendText(body, sendMode);
 	}
 
@@ -434,16 +694,27 @@
 	}
 </script>
 
+<svelte:window onkeydown={onSwitchDialogKeydown} />
+
 <div class="chat-shell" style:width="{chatWidth}px" aria-label="Chat con el agente">
 	<!-- Arrastrar a la izquierda ensancha (borde izquierdo del panel). -->
 	<ResizeHandle ondrag={(dx) => (chatWidth = clamp(chatWidth - dx, CHAT_WIDTH_MIN, CHAT_WIDTH_MAX))} />
 	<aside class="chat">
 	<header>
 		<div class="title">
-			{#if headerAgentId}
+			{#if !showPicker && agentOptions.length}
+				<div class="header-agent">
+					<AgentSelect
+						bind:value={agentChoice}
+						options={agentOptions}
+						disabled={headerSelectDisabled}
+						beforechange={onHeaderAgentBeforeChange}
+					/>
+				</div>
+			{:else}
 				<AgentIcon id={headerAgentId} size={16} />
+				<strong>{headerAgentName}</strong>
 			{/if}
-			<strong>{headerAgentName}</strong>
 			{#if displayModel}
 				<small title={displayModel}>{displayModel}</small>
 			{/if}
@@ -463,7 +734,7 @@
 					<AgentSelect
 						bind:value={agentChoice}
 						options={agentOptions}
-						onchange={() => (modelChoice = '')}
+						onchange={onPickerAgentChange}
 					/>
 				</label>
 				<label class="field">
@@ -537,6 +808,7 @@
 						events={[...history, ...(stream?.events ?? [])]}
 						busy={busy || updating}
 						sessionId={info?.id ?? null}
+						scrollSignal={logScrollSignal}
 						onrespondpermission={onRespondPermission}
 					/>
 				</div>
@@ -626,6 +898,28 @@
 	</aside>
 </div>
 
+{#if pendingSwitch}
+	<div class="switch-backdrop" role="presentation" onclick={cancelPendingSwitch}></div>
+	<div
+		class="switch-dialog"
+		role="alertdialog"
+		aria-modal="true"
+		aria-labelledby="switch-agent-title"
+		aria-describedby="switch-agent-desc"
+	>
+		<h2 id="switch-agent-title">¿Cambiar a {pendingSwitch.nextLabel}?</h2>
+		<p id="switch-agent-desc">
+			Vas a perder la sesión abierta con <strong>{pendingSwitch.currentLabel}</strong> (historial de chat de ese
+			agente). El reporte y el triage se mantienen. Se abrirá una sesión nueva y se le pasará el contexto de la
+			review.
+		</p>
+		<div class="switch-actions">
+			<button type="button" onclick={cancelPendingSwitch}>Cancelar</button>
+			<button type="button" class="primary" onclick={() => void confirmPendingSwitch()}>Cambiar agente</button>
+		</div>
+	</div>
+{/if}
+
 <style>
 	.chat-shell {
 		flex-shrink: 0;
@@ -669,6 +963,26 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 0;
+	}
+	.header-agent {
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: min(200px, 55%);
+	}
+	.header-agent :global(.agent-select .trigger) {
+		min-height: 28px;
+		padding: 4px 8px;
+		font-size: 13px;
+		font-weight: 650;
+		background: transparent;
+		border-color: transparent;
+	}
+	.header-agent :global(.agent-select .trigger:hover:not(:disabled)) {
+		border-color: var(--border);
+		background: var(--bg-card);
+	}
+	.header-agent :global(.agent-select .menu) {
+		min-width: 180px;
 	}
 	.close {
 		background: transparent;
@@ -868,5 +1182,58 @@
 	}
 	.actions button:disabled {
 		opacity: 0.5;
+	}
+
+	.switch-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 80;
+		background: color-mix(in srgb, #000 40%, transparent);
+	}
+	.switch-dialog {
+		position: fixed;
+		z-index: 81;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		width: min(420px, calc(100vw - 32px));
+		padding: 18px 20px;
+		background: var(--bg-elev);
+		border: 1px solid var(--border);
+		box-shadow: 0 16px 40px color-mix(in srgb, #000 28%, transparent);
+	}
+	.switch-dialog h2 {
+		margin: 0 0 10px;
+		font-size: 15px;
+		font-weight: 650;
+	}
+	.switch-dialog p {
+		margin: 0;
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--text-dim);
+	}
+	.switch-dialog strong {
+		color: var(--text);
+		font-weight: 650;
+	}
+	.switch-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		margin-top: 16px;
+	}
+	.switch-actions button {
+		padding: 7px 12px;
+		font-size: 13px;
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		color: var(--text);
+		cursor: pointer;
+	}
+	.switch-actions button.primary {
+		background: var(--btn-primary-bg);
+		border-color: var(--btn-primary-border);
+		color: var(--btn-primary-text);
 	}
 </style>

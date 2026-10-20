@@ -43,8 +43,12 @@ const GEMINI: AgentIconDef = {
 	color: '#8E75B2'
 };
 
-const FALLBACK: AgentIconDef = {
-	path: 'M12 2a4 4 0 0 1 4 4v1h1.5A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-7A2.5 2.5 0 0 1 6.5 7H8V6a4 4 0 0 1 4-4zm-1.5 11a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5zm3 0a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5z',
+/**
+ * Destello genérico (estilo Zed / AI chat) — no es marca de un agente concreto.
+ * Se usa cuando no hay id de agente o el id no es conocido.
+ */
+const SPARKLE: AgentIconDef = {
+	path: 'M12 1.75c.28 3.55 2.7 5.97 6.25 6.25-3.55.28-5.97 2.7-6.25 6.25-.28-3.55-2.7-5.97-6.25-6.25 3.55-.28 5.97-2.7 6.25-6.25zm6.35 11.05c.14 1.55 1.15 2.56 2.7 2.7-1.55.14-2.56 1.15-2.7 2.7-.14-1.55-1.15-2.56-2.7-2.7 1.55-.14 2.56-1.15 2.7-2.7zM5.65 4.5c.12 1.2.9 1.98 2.1 2.1-1.2.12-1.98.9-2.1 2.1-.12-1.2-.9-1.98-2.1-2.1 1.2-.12 1.98-.9 2.1-2.1z',
 	color: 'currentColor'
 };
 
@@ -56,9 +60,12 @@ const BY_ID: Record<string, AgentIconDef> = {
 	gemini: GEMINI
 };
 
-/** Icono para el id de agente de `lib/agents.mjs` (o fallback genérico). */
+/** Icono para el id de agente de `lib/agents.mjs` (o destello genérico). */
 export function agentIcon(id: string): AgentIconDef {
-	return BY_ID[id] ?? FALLBACK;
+	const key = String(id || '')
+		.trim()
+		.toLowerCase();
+	return (key && BY_ID[key]) || SPARKLE;
 }
 
 const SHORT_NAME: Record<string, string> = {
@@ -70,19 +77,60 @@ const SHORT_NAME: Record<string, string> = {
 };
 
 /**
- * Nombre corto para el header del chat (sin “CLI” / “Code”).
- * Si el id no es conocido, limpia sufijos habituales del label.
+ * Resuelve un id de agente conocido desde `meta.agentSession.agentId` o `meta.agent`
+ * (label tipo "Claude Code" / "Cursor CLI"). Vacío si no se reconoce.
+ */
+export function matchAgentId(hint: string): string {
+	const raw = String(hint || '')
+		.trim()
+		.toLowerCase();
+	if (!raw) return '';
+	if (SHORT_NAME[raw] || BY_ID[raw]) return raw;
+	for (const [id, name] of Object.entries(SHORT_NAME)) {
+		if (name.toLowerCase() === raw) return id;
+	}
+	for (const id of Object.keys(SHORT_NAME)) {
+		if (raw === id || raw.startsWith(`${id} `) || raw.includes(` ${id}`) || raw.startsWith(SHORT_NAME[id].toLowerCase())) {
+			return id;
+		}
+	}
+	return '';
+}
+
+/**
+ * Id efectivo para UI: sesión ACP, o label de provenance si mapea a un agente conocido.
+ */
+export function reportAgentId(meta: { agent?: string; agentSession?: { agentId?: string } } | null | undefined): string {
+	const fromSession = String(meta?.agentSession?.agentId || '')
+		.trim()
+		.toLowerCase();
+	if (fromSession && (SHORT_NAME[fromSession] || BY_ID[fromSession])) return fromSession;
+	if (fromSession) return fromSession;
+	return matchAgentId(meta?.agent || '');
+}
+
+/**
+ * Nombre corto para UI (sin “CLI” / “Code”).
+ * Solo nombres de agentes conocidos; si no hay match → "Agente".
  */
 export function agentShortName(id: string, label = ''): string {
 	const key = String(id || '')
 		.trim()
 		.toLowerCase();
 	if (key && SHORT_NAME[key]) return SHORT_NAME[key];
-	const raw = String(label || '').trim();
-	if (!raw) return 'Agente';
-	return raw
-		.replace(/\bGitHub\s+/i, '')
-		.replace(/\s+CLI\b/i, '')
-		.replace(/\s+Code\b/i, '')
-		.trim() || raw;
+	const matched = matchAgentId(key || label);
+	if (matched && SHORT_NAME[matched]) return SHORT_NAME[matched];
+	if (key) {
+		const raw = String(label || '').trim();
+		if (raw) {
+			return (
+				raw
+					.replace(/\bGitHub\s+/i, '')
+					.replace(/\s+CLI\b/i, '')
+					.replace(/\s+Code\b/i, '')
+					.trim() || 'Agente'
+			);
+		}
+	}
+	return 'Agente';
 }

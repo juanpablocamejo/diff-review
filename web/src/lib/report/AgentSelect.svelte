@@ -8,12 +8,15 @@
 		value = $bindable(''),
 		options,
 		disabled = false,
-		onchange
+		onchange,
+		beforechange
 	}: {
 		value?: string;
 		options: AgentSelectOption[];
 		disabled?: boolean;
 		onchange?: () => void;
+		/** Si retorna `false`, no aplica el cambio (p. ej. confirmación al cambiar de agente). */
+		beforechange?: (id: string) => boolean | void;
 	} = $props();
 
 	let open = $state(false);
@@ -21,11 +24,24 @@
 	const selected = $derived(options.find((o) => o.id === value) ?? null);
 
 	function assign(id: string, close = true) {
-		if (id !== value) {
+		if (id === value) {
+			if (close) open = false;
+			return;
+		}
+		// Flechas: no aplicar ni confirmar; el commit es click / Enter (`close`).
+		if (!close) {
+			if (beforechange) return;
 			value = id;
 			onchange?.();
+			return;
 		}
-		if (close) open = false;
+		if (beforechange?.(id) === false) {
+			open = false;
+			return;
+		}
+		value = id;
+		onchange?.();
+		open = false;
 	}
 
 	function toggle() {

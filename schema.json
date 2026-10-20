@@ -123,7 +123,22 @@
           "line": { "type": ["integer", "null"], "description": "Línea de la post-imagen (columna derecha / @@ +N)." },
           "block": { "type": ["string", "null"], "description": "Id del bloque, o vacío/null si es transversal." },
           "what": { "type": "string" },
-          "fix": { "type": "string", "description": "Acción concreta." }
+          "fix": { "type": "string", "description": "Acción concreta." },
+          "resolution": {
+            "type": "object",
+            "description": "Triage de la UI (Ignorar / Corregir / Corregido). Lo escribe el viewer; el agente debe preservarlo al editar el JSON.",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["ignored", "fix", "corrected"]
+              },
+              "detail": {
+                "type": "string",
+                "description": "Resumen de la corrección aplicada (solo con kind=corrected)."
+              }
+            }
+          }
         }
       }
     },

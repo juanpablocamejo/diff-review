@@ -15,6 +15,10 @@ const memoryReports = new Map<string, SavedReport>();
 export type TriageState = {
 	decided: Record<string, boolean>;
 	fixSelected: Record<string, boolean>;
+	/** Hallazgos ya corregidos por el agente (o marcados como tales). */
+	corrected: Record<string, boolean>;
+	/** Resumen corto de la corrección aplicada, por finding id. */
+	fixedDetail: Record<string, string>;
 };
 
 function safeParse<T>(raw: string | null, fallback: T): T {
@@ -234,6 +238,10 @@ export function updateReportMeta(id: string, patch: Partial<ReportMeta>): SavedR
 		...patch,
 		...(filename ? { outputFilename: filename } : {})
 	};
+	// Permitir borrar la sesión ACP (`{ agentSession: undefined }`) al cambiar de agente.
+	if ('agentSession' in patch && patch.agentSession == null) {
+		delete nextMeta.agentSession;
+	}
 
 	if (mem?.document || stored?.document) {
 		return replaceReportDocument(id, (mem?.document || stored!.document)!, nextMeta);
@@ -281,10 +289,17 @@ export function replaceReportDocument(id: string, document: ReviewDocument, meta
 	saveReportsIndex(index);
 
 	const ids = new Set(document.findings.map((f) => f.id));
-	const keep = (record: Record<string, boolean>) =>
+	const keepBool = (record: Record<string, boolean>) =>
+		Object.fromEntries(Object.entries(record).filter(([fid]) => ids.has(fid)));
+	const keepStr = (record: Record<string, string>) =>
 		Object.fromEntries(Object.entries(record).filter(([fid]) => ids.has(fid)));
 	const triage = loadTriage(id);
-	saveTriage(id, { decided: keep(triage.decided), fixSelected: keep(triage.fixSelected) });
+	saveTriage(id, {
+		decided: keepBool(triage.decided),
+		fixSelected: keepBool(triage.fixSelected),
+		corrected: keepBool(triage.corrected),
+		fixedDetail: keepStr(triage.fixedDetail)
+	});
 
 	return full;
 }
@@ -298,6 +313,15 @@ export function loadChat(id: string): ChatHistory {
 
 export function saveChat(id: string, chat: ChatHistory) {
 	persistJson(CHAT_KEY(id), JSON.stringify(chat));
+}
+
+/** Borra el historial de chat guardado con el reporte (p. ej. al cambiar de agente). */
+export function clearChat(id: string) {
+	try {
+		localStorage.removeItem(CHAT_KEY(id));
+	} catch {
+		/* ignore */
+	}
 }
 
 /** Entrada cruda de localStorage (sin hidratar). */
@@ -340,7 +364,13 @@ export function deleteReport(id: string) {
 }
 
 export function loadTriage(id: string): TriageState {
-	return safeParse(localStorage.getItem(TRIAGE_KEY(id)), { decided: {}, fixSelected: {} });
+	const raw = safeParse<Partial<TriageState> | null>(localStorage.getItem(TRIAGE_KEY(id)), null);
+	return {
+		decided: raw?.decided ?? {},
+		fixSelected: raw?.fixSelected ?? {},
+		corrected: raw?.corrected ?? {},
+		fixedDetail: raw?.fixedDetail ?? {}
+	};
 }
 
 export function saveTriage(id: string, triage: TriageState) {

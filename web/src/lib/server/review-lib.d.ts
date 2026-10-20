@@ -30,6 +30,7 @@ declare module '$review/lib/output-name.mjs' {
 	export function isOutputFilename(name: string): boolean;
 	export const OUTPUT_DIR: string;
 	export function outputRelPath(filename: string): string;
+	export function chatRelPath(filename: string): string;
 }
 
 declare module '$review/lib/prompt.mjs' {
@@ -326,11 +327,17 @@ declare module '$review/lib/review-dir.mjs' {
 	export const OUTPUT_DIR: string;
 	export function reviewDir(repoRoot: string): string;
 	export function ensureReviewDir(repoRoot: string): string;
-	export function companionPaths(repoRoot: string, filename: string): { json: string; diff: string; session: string };
+	export function companionPaths(repoRoot: string, filename: string): {
+		json: string;
+		diff: string;
+		session: string;
+		chat: string;
+	};
 	export function locateReviewFile(repoRoot: string, filename: string): string | null;
 	export function writeDiffCache(repoRoot: string, filename: string, refs: { branch: string; base: string }): string | null;
 	export function writeDiffText(repoRoot: string, filename: string, text: string): string;
 	export function readDiffCache(repoRoot: string, filename: string): string | null;
 	export function readSessionRef(repoRoot: string, filename: string): SessionRef | null;
 	export function writeSessionRef(repoRoot: string, filename: string, ref: SessionRef): SessionRef;
+	export function writeHandoffChat(repoRoot: string, filename: string, text: string): string;
 }
