@@ -59,7 +59,7 @@
 					{/if}
 				</span>
 			</span>
-			<button type="button" class="close" onclick={onclose}>✕</button>
+			<button type="button" class="close" onclick={onclose} aria-label="Cerrar">✕</button>
 		</div>
 		<div class="list">
 			{#each findings as f (f.id)}
@@ -161,8 +161,8 @@
 
 	.file-ref {
 		display: flex;
-		align-items: baseline;
-		gap: 8px;
+		flex-direction: column;
+		gap: 1px;
 		min-width: 0;
 		overflow: hidden;
 	}
@@ -172,7 +172,10 @@
 		font-weight: 600;
 		color: var(--text);
 		font-family: var(--mono);
-		flex-shrink: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
 	}
 
 	.dir {
@@ -282,6 +285,7 @@
 		align-items: center;
 		gap: 8px;
 		flex-wrap: wrap;
+		min-width: 0;
 	}
 
 	.decision-group {
@@ -289,6 +293,7 @@
 		border: 1px solid var(--border);
 		overflow: hidden;
 		width: fit-content;
+		flex-shrink: 0;
 	}
 
 	.decision-group button {

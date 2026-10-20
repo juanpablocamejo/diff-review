@@ -33,7 +33,9 @@
 		onclose,
 		onreportupdated,
 		pendingAsk = null,
-		onpendingaskconsumed
+		onpendingaskconsumed,
+		pendingFix = null,
+		onpendingfixconsumed
 	}: {
 		report: SavedReport;
 		onclose: () => void;
@@ -41,6 +43,9 @@
 		/** Borrador para el compositor en modo ask (referencia a tema/bloque/hallazgo); no se envía solo. */
 		pendingAsk?: string | null;
 		onpendingaskconsumed?: () => void;
+		/** Prompt de corrección: modo fix; con `autoSend` se envía cuando la sesión esté lista. */
+		pendingFix?: { text: string; autoSend?: boolean } | null;
+		onpendingfixconsumed?: () => void;
 	} = $props();
 
 	let info = $state<AgentSessionInfo | null>(null);
@@ -57,6 +62,8 @@
 	let connecting = $state(false);
 	/** Hubo un pedido de cambio: el próximo JSON válido reemplaza el reporte. */
 	let pendingEdit = false;
+	/** Enviar el compositor apenas la sesión ACP esté lista (p. ej. Corregir con el agente). */
+	let pendingAutoSend = $state(false);
 	let composerEl = $state<HTMLTextAreaElement | null>(null);
 	let chatWidth = $state(CHAT_WIDTH_DEFAULT);
 
@@ -223,6 +230,7 @@
 	$effect(() => {
 		const ask = pendingAsk;
 		if (!ask) return;
+		pendingAutoSend = false;
 		text = ask;
 		mode = 'ask';
 		onpendingaskconsumed?.();
@@ -231,6 +239,27 @@
 			const len = composerEl?.value.length ?? 0;
 			composerEl?.setSelectionRange(len, len);
 		});
+	});
+
+	// Corregir con el agente: modo fix + texto; auto-envío cuando la sesión esté lista.
+	$effect(() => {
+		const fix = pendingFix;
+		if (!fix?.text) return;
+		text = fix.text;
+		mode = 'fix';
+		pendingAutoSend = Boolean(fix.autoSend);
+		onpendingfixconsumed?.();
+		queueMicrotask(() => {
+			composerEl?.focus();
+			const len = composerEl?.value.length ?? 0;
+			composerEl?.setSelectionRange(len, len);
+		});
+	});
+
+	$effect(() => {
+		if (!pendingAutoSend || !sessionReady || busy || !text.trim()) return;
+		pendingAutoSend = false;
+		void send();
 	});
 
 	async function loadAgents() {
@@ -524,12 +553,14 @@
 		{/if}
 		<div class="composer">
 			<div class="composer-top">
-				<div class="mode-toggle">
-					<button type="button" class:on={mode === 'ask'} onclick={() => (mode = 'ask')}>Preguntar</button>
-					<button type="button" class:on={mode === 'edit'} onclick={() => (mode = 'edit')}
-						>Modificar el reporte</button
-					>
-				</div>
+				<label class="mode-field">
+					<span class="sr-only">Modo</span>
+					<select class="mode-select" bind:value={mode} disabled={busy}>
+						<option value="ask">Preguntar</option>
+						<option value="edit">Modificar reporte</option>
+						<option value="fix">Corregir código</option>
+					</select>
+				</label>
 				<div class="model-field">
 					<ModelSelect
 						compact
@@ -553,7 +584,9 @@
 					? 'Podés ir escribiendo; se habilita el envío cuando la sesión esté lista…'
 					: mode === 'ask'
 						? '¿Por qué el hallazgo f2 es bloqueante?'
-						: 'Bajá la severidad de f3 a low: el caso no llega a producción.'}
+						: mode === 'edit'
+							? 'Bajá la severidad de f3 a low: el caso no llega a producción.'
+							: 'Aplicá los hallazgos marcados para corregir en el código del repo.'}
 				onkeydown={onKeydown}
 			></textarea>
 			<div class="actions">
@@ -579,8 +612,12 @@
 						Conectando…
 					{:else if sending || stream?.busy}
 						Enviando…
+					{:else if mode === 'ask'}
+						Preguntar
+					{:else if mode === 'edit'}
+						Pedir cambio
 					{:else}
-						{mode === 'ask' ? 'Preguntar' : 'Pedir cambio'}
+						Corregir
 					{/if}
 				</button>
 			</div>
@@ -762,27 +799,41 @@
 	.model-field {
 		flex: 0 1 auto;
 		min-width: 0;
-		max-width: min(220px, 42%);
+		max-width: min(280px, 48%);
 		margin-left: auto;
 	}
-	.mode-toggle {
-		display: flex;
-		border: 1px solid var(--border);
-		align-self: flex-start;
-		flex-shrink: 0;
+	.mode-field {
+		flex: 0 1 auto;
+		min-width: 0;
+		align-self: flex-end;
 	}
-	.mode-toggle button {
-		padding: 5px 10px;
+	.mode-select {
+		display: block;
+		width: 100%;
+		max-width: 180px;
+		padding: 5px 8px;
+		font: inherit;
 		font-size: 12px;
-		border: 0;
-		background: transparent;
 		color: var(--text);
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		border-radius: 0;
+		cursor: pointer;
 	}
-	.mode-toggle button + button {
-		border-left: 1px solid var(--border);
+	.mode-select:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
-	.mode-toggle button.on {
-		background: var(--accent-soft);
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 	textarea {
 		resize: vertical;

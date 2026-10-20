@@ -12,7 +12,7 @@
 	import { fileLines } from './git.remote';
 	import { askDraftFinding } from './labels';
 	import { buildFixPromptText, buildPublishText, type PublishPlatform } from './prompts';
-	import { loadTriage, saveTriage } from './storage';
+	import { loadTriage, replaceReportDocument, saveTriage } from './storage';
 	import type { SavedReport } from './types';
 
 	let {
@@ -22,7 +22,9 @@
 		wrapLines,
 		sidebarCollapsed = false,
 		showExplanations = true,
-		onask
+		onask,
+		onfixwithagent,
+		onreportupdated
 	}: {
 		report: SavedReport;
 		diffMode: 'unified' | 'split';
@@ -33,6 +35,9 @@
 		showExplanations?: boolean;
 		/** Abre el chat con un borrador (referencia); el usuario completa y envía. */
 		onask?: (draft: string) => void;
+		/** Abre el chat en modo fix y auto-envía el prompt. `false` = sin agente ACP → panel de copiar. */
+		onfixwithagent?: (text: string) => boolean | Promise<boolean>;
+		onreportupdated?: (report: SavedReport) => void;
 	} = $props();
 
 	const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
@@ -93,6 +98,8 @@
 
 	const fixSelectionFindings = $derived(decoratedFindingsNav.filter((f) => fixSelected[f.id]));
 	const fixSelectionCount = $derived(fixSelectionFindings.length);
+	const ignoredFindings = $derived(decoratedFindingsNav.filter((f) => f.decided && !f.fixSelected));
+	const ignoredCount = $derived(ignoredFindings.length);
 	const reviewedCount = $derived(decoratedFindingsNav.filter((f) => f.decided).length);
 	const reviewedLabel = $derived(`${reviewedCount} de ${decoratedFindingsNav.length} revisados`);
 
@@ -196,6 +203,47 @@
 		};
 		if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(done);
 		else done();
+	}
+
+	function openCopyFixPrompt() {
+		showFixPrompt = true;
+		showPublishPrompt = false;
+		reportMode = 'findings';
+	}
+
+	async function fixWithAgent() {
+		const text = buildFixPromptText(fixSelectionFindings, report.document, report.meta);
+		if (!text.trim()) return;
+		if (!onfixwithagent) {
+			openCopyFixPrompt();
+			return;
+		}
+		const ok = await onfixwithagent(text);
+		if (!ok) openCopyFixPrompt();
+	}
+
+	function purgeIgnored() {
+		const ids = new Set(ignoredFindings.map((f) => f.id));
+		if (!ids.size) return;
+		const n = ids.size;
+		if (
+			!confirm(
+				`¿Eliminar ${n} hallazgo${n === 1 ? '' : 's'} ignorado${n === 1 ? '' : 's'} del reporte? No se puede deshacer.`
+			)
+		) {
+			return;
+		}
+		const document = {
+			...report.document,
+			findings: report.document.findings.filter((f) => !ids.has(f.id))
+		};
+		const updated = replaceReportDocument(report.id, document, report.meta);
+		if (!updated) return;
+		const triage = loadTriage(report.id);
+		decided = triage.decided;
+		fixSelected = triage.fixSelected;
+		if (activeFindingId && ids.has(activeFindingId)) activeFindingId = null;
+		onreportupdated?.(updated);
 	}
 </script>
 
@@ -307,8 +355,15 @@
 	{reviewedLabel}
 	hasFixSelection={fixSelectionCount > 0}
 	{fixSelectionCount}
-	onopenfixprompt={() => (showFixPrompt = true)}
-	onopenpublishprompt={() => (showPublishPrompt = true)}
+	{ignoredCount}
+	onfixwithagent={() => void fixWithAgent()}
+	oncopyfixprompt={openCopyFixPrompt}
+	onopenpublishprompt={() => {
+		showPublishPrompt = true;
+		showFixPrompt = false;
+		reportMode = 'findings';
+	}}
+	onpurgeignored={purgeIgnored}
 />
 </div>
 

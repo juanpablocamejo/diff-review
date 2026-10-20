@@ -1,6 +1,6 @@
 /** Eventos de una sesión con el agente, tal como los ve la web (server → SSE → UI). */
 
-export type ChatMode = 'ask' | 'edit';
+export type ChatMode = 'ask' | 'edit' | 'fix';
 
 export type SessionStatus = 'starting' | 'working' | 'idle' | 'error' | 'closed';
 
@@ -9,7 +9,7 @@ export type AgentEvent =
 	/** Fase visible en la UI en vivo: primero el diff precomputado, después el agente. */
 	| { type: 'phase'; phase: 'diff' | 'agent'; detail?: string }
 	/** Lo que se le mandó al agente. `review` = el prompt de la review (no se muestra entero). */
-	| { type: 'user'; text: string; mode: ChatMode | 'review' | 'fix' }
+	| { type: 'user'; text: string; mode: ChatMode | 'review' }
 	/** Texto del agente; los chunks consecutivos se acumulan en el mismo `seq`. */
 	| { type: 'text'; kind: 'message' | 'thought'; text: string }
 	| { type: 'tool'; id: string; title: string; kind: string; status: string }

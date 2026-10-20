@@ -3,23 +3,38 @@
 		reviewedLabel,
 		hasFixSelection,
 		fixSelectionCount,
-		onopenfixprompt,
-		onopenpublishprompt
+		ignoredCount = 0,
+		onfixwithagent,
+		oncopyfixprompt,
+		onopenpublishprompt,
+		onpurgeignored
 	}: {
 		reviewedLabel: string;
 		hasFixSelection: boolean;
 		fixSelectionCount: number;
-		onopenfixprompt: () => void;
+		ignoredCount?: number;
+		onfixwithagent: () => void;
+		oncopyfixprompt: () => void;
 		onopenpublishprompt: () => void;
+		onpurgeignored?: () => void;
 	} = $props();
 </script>
 
 <footer class="footer">
 	<span class="reviewed">{reviewedLabel}</span>
 	<div class="right">
+		{#if ignoredCount > 0 && onpurgeignored}
+			<button type="button" class="purge" onclick={onpurgeignored}
+				>Eliminar ignorados ({ignoredCount})</button
+			>
+		{/if}
 		{#if hasFixSelection}
-			<button type="button" class="fix" onclick={onopenfixprompt}>Generar correcciones ({fixSelectionCount})</button>
-			<button type="button" class="publish" onclick={onopenpublishprompt}>Publicar Revisión ({fixSelectionCount})</button
+			<button type="button" class="fix" onclick={onfixwithagent}
+				>Corregir con el agente ({fixSelectionCount})</button
+			>
+			<button type="button" class="ghost" onclick={oncopyfixprompt}>Copiar prompt</button>
+			<button type="button" class="publish" onclick={onopenpublishprompt}
+				>Publicar Revisión ({fixSelectionCount})</button
 			>
 		{/if}
 	</div>
@@ -42,7 +57,9 @@
 	.right {
 		display: flex;
 		align-items: center;
-		gap: 12px;
+		gap: 8px;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 	}
 
 	.reviewed {
@@ -51,11 +68,14 @@
 	}
 
 	.fix,
-	.publish {
+	.publish,
+	.ghost,
+	.purge {
 		padding: 6px 12px;
 		font-weight: 600;
 		font-size: 11.5px;
 		border: 1px solid;
+		cursor: pointer;
 	}
 
 	.fix {
@@ -68,5 +88,27 @@
 		background: var(--publish-bg);
 		border-color: var(--publish-border);
 		color: var(--publish-text);
+	}
+
+	.ghost {
+		background: transparent;
+		border-color: var(--border);
+		color: var(--text);
+		font-weight: 500;
+	}
+
+	.ghost:hover {
+		border-color: var(--accent);
+	}
+
+	.purge {
+		background: transparent;
+		border-color: var(--border);
+		color: var(--danger);
+		font-weight: 500;
+	}
+
+	.purge:hover {
+		border-color: var(--danger);
 	}
 </style>

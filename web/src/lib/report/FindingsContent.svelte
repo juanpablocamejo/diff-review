@@ -83,6 +83,13 @@
 		const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
 		return slash >= 0 ? path.slice(0, slash) : '';
 	}
+
+	const findingDir = $derived(activeFinding ? fileDir(activeFinding.file) : '');
+	const findingBase = $derived(
+		activeFinding
+			? `${fileName(activeFinding.file)}${activeFinding.line != null ? `:${activeFinding.line}` : ''}`
+			: ''
+	);
 </script>
 
 {#if showFixPrompt}
@@ -126,36 +133,32 @@
 <div class="detail-panel">
 	{#if activeFinding}
 		<div class="detail-head">
-			<div class="detail-head-left">
-				<span class="number">{findingRef(activeFinding.id, activeFinding.number)}</span>
-				<span class="badge" style:color={activeFinding.badgeColor}>{activeFinding.badge}</span>
-				<span class="file-line" title={activeFinding.fileLine}>
-					<span class="file-name"
-						>{fileName(activeFinding.file)}{activeFinding.line != null
-							? `:${activeFinding.line}`
-							: ''}</span
-					>
-					{#if fileDir(activeFinding.file)}
-						<span class="file-dir">{fileDir(activeFinding.file)}</span>
+			<div class="detail-head-row">
+				<div class="detail-head-left">
+					<span class="number">{findingRef(activeFinding.id, activeFinding.number)}</span>
+					<span class="badge" style:color={activeFinding.badgeColor}>{activeFinding.badge}</span>
+					<span class="file-name" title={activeFinding.fileLine}>{findingBase}</span>
+				</div>
+				<div class="head-actions">
+					{#if onaskfinding}
+						<AskAgentButton {agentId} onclick={onaskfinding} />
 					{/if}
-				</span>
-			</div>
-			<div class="head-actions">
-				{#if onaskfinding}
-					<AskAgentButton {agentId} onclick={onaskfinding} />
-				{/if}
-				<div class="decision-group">
-					<button type="button" class:on={activeFinding.decided && !activeFinding.fixSelected} onclick={onignore}
-						>Ignorar</button
-					>
-					<button type="button" class:on={activeFinding.decided && activeFinding.fixSelected} onclick={onfix}
-						>Corregir</button
-					>
-					{#if activeFinding.decided}
-						<button type="button" class="clear" title="Limpiar decisión" onclick={onclear}>✕</button>
-					{/if}
+					<div class="decision-group">
+						<button type="button" class:on={activeFinding.decided && !activeFinding.fixSelected} onclick={onignore}
+							>Ignorar</button
+						>
+						<button type="button" class:on={activeFinding.decided && activeFinding.fixSelected} onclick={onfix}
+							>Corregir</button
+						>
+						{#if activeFinding.decided}
+							<button type="button" class="clear" title="Limpiar decisión" onclick={onclear}>✕</button>
+						{/if}
+					</div>
 				</div>
 			</div>
+			{#if findingDir}
+				<span class="file-dir" title={findingDir}>{findingDir}</span>
+			{/if}
 		</div>
 	{/if}
 
@@ -319,46 +322,55 @@
 		background: var(--bg-elev);
 		flex-shrink: 0;
 		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.detail-head-row {
+		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
+		min-width: 0;
 	}
 
 	.detail-head-left {
 		display: flex;
 		align-items: center;
 		gap: 8px;
+		min-width: 0;
+		overflow: hidden;
 	}
 
 	.number {
 		font-size: 12px;
 		color: var(--text);
 		font-weight: 700;
+		flex-shrink: 0;
 	}
 
 	.badge {
 		font-size: 10px;
 		font-weight: 700;
-	}
-
-	.file-line {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-		min-width: 0;
-		font-family: var(--mono);
+		flex-shrink: 0;
 	}
 
 	.file-name {
 		font-size: 12px;
 		color: var(--text);
 		font-weight: 600;
-		flex-shrink: 0;
+		font-family: var(--mono);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.file-dir {
 		font-size: 11px;
 		color: var(--text-faint);
+		font-family: var(--mono);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

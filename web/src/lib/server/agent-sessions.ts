@@ -669,7 +669,8 @@ async function runTurn(entry: Entry, text: string, mode: PolicyMode, opts: { mod
 			setStatus(entry, 'idle', 'Cancelado.');
 			return;
 		}
-		if (mode !== 'ask') await checkOutput(entry, since, OUTPUT_AUTO_RETRIES);
+		// ask/fix no reescriben el JSON de review: no validar salida.
+		if (mode !== 'ask' && mode !== 'fix') await checkOutput(entry, since, OUTPUT_AUTO_RETRIES);
 		entry.busy = false;
 		if (entry.cancelled) setStatus(entry, 'idle', 'Cancelado.');
 		else setStatus(entry, 'idle');
@@ -882,7 +883,9 @@ export function sendMessage(
 	const prompt =
 		mode === 'edit'
 			? `${agentText}\n\nApply this by editing ${entry.outputFilename} in place (keep everything else as is). Reply briefly in Spanish with what you changed.\n\n${SERVER_VALIDATES}`
-			: `${agentText}\n\nAnswer in Spanish. This is a question about the review: do not modify any file.`;
+			: mode === 'fix'
+				? `${agentText}\n\nApply ONLY the listed code fixes by editing files inside this repo. Do not rewrite the review JSON. Touch nothing else. Reply briefly in Spanish summarizing what you changed.`
+				: `${agentText}\n\nAnswer in Spanish. This is a question about the review: do not modify any file.`;
 	const model = String(opts?.model || '').trim() || undefined;
 	void runTurn(entry, prompt, mode, { shown: body, model });
 	return info(entry);

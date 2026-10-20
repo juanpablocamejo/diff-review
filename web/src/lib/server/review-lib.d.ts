@@ -250,7 +250,7 @@ declare module '$review/lib/models-cache.mjs' {
 }
 
 declare module '$review/lib/acp-policy.mjs' {
-	export type PolicyMode = 'review' | 'ask' | 'edit';
+	export type PolicyMode = 'review' | 'ask' | 'edit' | 'fix';
 	export type Decision = { allow: boolean; reason: string };
 	export function decidePermission(
 		toolCall: unknown,

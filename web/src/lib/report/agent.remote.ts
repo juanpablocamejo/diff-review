@@ -131,12 +131,11 @@ export const sendMessage = command(
 		model?: string;
 	}): Promise<AgentSessionInfo> => {
 		try {
-			return sendSessionMessage(
-				String(input?.id || ''),
-				String(input?.text || ''),
-				input?.mode === 'edit' ? 'edit' : 'ask',
-				{ model: String(input?.model || '').trim() || undefined }
-			);
+			const mode: ChatMode =
+				input?.mode === 'edit' ? 'edit' : input?.mode === 'fix' ? 'fix' : 'ask';
+			return sendSessionMessage(String(input?.id || ''), String(input?.text || ''), mode, {
+				model: String(input?.model || '').trim() || undefined
+			});
 		} catch (err) {
 			fail(err);
 		}

@@ -4,6 +4,7 @@
 	import { downloadReport, type ExportFormat } from '$lib/report/export';
 	import AgentIcon from '$lib/report/AgentIcon.svelte';
 	import { agentShortName } from '$lib/report/agent-icons';
+	import { acpAgents } from '$lib/report/agent.remote';
 	import ChatPanel from '$lib/report/ChatPanel.svelte';
 	import ReportView from '$lib/report/ReportView.svelte';
 	import { resolveSavedReport } from '$lib/report/resolve-report';
@@ -28,6 +29,8 @@
 	let chatOpen = $state(false);
 	/** Borrador para el compositor del ChatPanel (referencia a tema/bloque/hallazgo); no se envía solo. */
 	let pendingAsk = $state<string | null>(null);
+	/** Prompt de corrección para auto-enviar en modo fix. */
+	let pendingFix = $state<{ text: string; autoSend?: boolean } | null>(null);
 
 	$effect(() => {
 		const id = params.id;
@@ -85,8 +88,24 @@
 	}
 
 	function askAbout(draft: string) {
+		pendingFix = null;
 		pendingAsk = draft;
 		chatOpen = true;
+	}
+
+	/** Abre el chat en Corregir código. `false` si no hay agente ACP → el footer muestra Copiar prompt. */
+	async function fixWithAgent(text: string): Promise<boolean> {
+		if (!report || !text.trim()) return false;
+		try {
+			const agents = await acpAgents();
+			if (!agents.length && !report.meta.agentSession?.agentId) return false;
+		} catch {
+			if (!report.meta.agentSession?.agentId) return false;
+		}
+		pendingAsk = null;
+		pendingFix = { text, autoSend: true };
+		chatOpen = true;
+		return true;
 	}
 
 	const chatAgentId = $derived(report?.meta.agentSession?.agentId || '');
@@ -309,12 +328,16 @@
 				{sidebarCollapsed}
 				{showExplanations}
 				onask={askAbout}
+				onfixwithagent={fixWithAgent}
+				onreportupdated={(updated) => (report = updated)}
 			/>
 			{#if chatOpen}
 				<ChatPanel
 					{report}
 					{pendingAsk}
 					onpendingaskconsumed={() => (pendingAsk = null)}
+					{pendingFix}
+					onpendingfixconsumed={() => (pendingFix = null)}
 					onclose={() => (chatOpen = false)}
 					onreportupdated={(updated) => (report = updated)}
 				/>

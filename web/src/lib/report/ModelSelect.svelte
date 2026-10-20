@@ -271,6 +271,21 @@
 		box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
 	}
 
+	/* Compact (chat composer): menú más ancho que el trigger, anclado a la derecha. */
+	.model-select.compact .menu {
+		left: auto;
+		right: 0;
+		width: max-content;
+		min-width: max(100%, 280px);
+		max-width: min(360px, 90vw);
+	}
+
+	.model-select.compact .option .title {
+		white-space: normal;
+		overflow: visible;
+		text-overflow: unset;
+	}
+
 	.model-select.drop-up .menu {
 		top: auto;
 		bottom: calc(100% + 4px);
