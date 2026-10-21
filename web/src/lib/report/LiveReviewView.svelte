@@ -273,10 +273,10 @@
 				</div>
 				<div>
 					<dt>Branch → Base</dt>
-					<dd>
+					<dd class="branch-base" title={`${info.branch} → ${info.base}`}>
 						<span class="branch">{info.branch}</span>
 						<span class="arrow">→</span>
-						{info.base}
+						<span class="base">{info.base}</span>
 					</dd>
 				</div>
 				<div>
@@ -535,6 +535,15 @@
 		color: var(--text);
 	}
 
+	/* Long branch tips: wrap (keep base visible) + full string on hover via title. */
+	.fields dd.branch-base {
+		white-space: normal;
+		overflow: visible;
+		text-overflow: unset;
+		overflow-wrap: anywhere;
+		line-height: 1.35;
+	}
+
 	.branch {
 		color: var(--accent);
 		font-weight: 600;
@@ -543,6 +552,10 @@
 	.arrow {
 		color: var(--text-faint);
 		margin: 0 2px;
+	}
+
+	.base {
+		color: var(--text);
 	}
 
 	.card-note {
