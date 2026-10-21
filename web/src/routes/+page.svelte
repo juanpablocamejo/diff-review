@@ -1268,8 +1268,14 @@
 						class="primary"
 						onclick={() => void launchAgent()}
 						disabled={!canLaunchAgent || launchingAgent || !chosenAgent}
+						aria-busy={launchingAgent}
 					>
-						{launchingAgent ? 'Lanzando…' : 'Lanzar review'}
+						{#if launchingAgent}
+							<span class="btn-spinner" aria-hidden="true"></span>
+							Lanzando…
+						{:else}
+							Lanzar review
+						{/if}
 					</button>
 				</div>
 				{#if !canLaunchAgent}
@@ -1822,7 +1828,9 @@
 	}
 
 	.mode-toggle button.on {
-		background: var(--accent-soft);
+		background: var(--btn-primary-bg);
+		color: var(--btn-primary-text);
+		font-weight: 600;
 	}
 
 	textarea {
@@ -1865,10 +1873,30 @@
 	}
 
 	button.primary {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
 		background: var(--btn-primary-bg);
 		border-color: var(--btn-primary-border);
 		color: var(--btn-primary-text);
 		font-weight: 600;
+	}
+
+	.btn-spinner {
+		width: 14px;
+		height: 14px;
+		border: 2px solid color-mix(in srgb, var(--btn-primary-text) 35%, transparent);
+		border-top-color: var(--btn-primary-text);
+		border-radius: 50%;
+		animation: btn-spin 0.75s linear infinite;
+		flex-shrink: 0;
+	}
+
+	@keyframes btn-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	.coverage-box {
@@ -2032,14 +2060,16 @@
 	}
 
 	.kebab {
-		width: 26px;
-		height: 26px;
+		width: 40px;
+		height: 40px;
+		min-width: 40px;
+		min-height: 40px;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		border: 1px solid transparent;
 		background: transparent;
-		color: var(--text-faint);
+		color: var(--text-dim);
 		padding: 0;
 		cursor: pointer;
 	}
@@ -2186,6 +2216,30 @@
 		.reports-col {
 			position: static;
 			max-height: none;
+		}
+	}
+
+	@media (max-width: 768px) {
+		.repo-row {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.repo-row button {
+			width: 100%;
+		}
+
+		.branches-row {
+			flex-direction: column;
+		}
+
+		.branches-row .field {
+			min-width: 0;
+			width: 100%;
+		}
+
+		.row {
+			flex-direction: column;
 		}
 	}
 </style>

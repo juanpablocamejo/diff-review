@@ -764,8 +764,14 @@
 					class="primary start"
 					onclick={() => void startFresh()}
 					disabled={!agentChoice || starting || (modelsStatus === 'loading' && !chosenAgent?.models.length)}
+					aria-busy={starting}
 				>
-					{starting ? 'Abriendo…' : 'Iniciar chat'}
+					{#if starting}
+						<span class="spinner sm" aria-hidden="true"></span>
+						Abriendo…
+					{:else}
+						Iniciar chat
+					{/if}
 				</button>
 			{:else}
 				<p class="hint">No hay agentes ACP instalados en este equipo.</p>
@@ -792,13 +798,25 @@
 							</button>
 						{/if}
 					{:else}
-						<p class="connecting-title">Conectando con el agente…</p>
+						<div class="connecting-progress" aria-hidden="true">
+							<div class="spinner"></div>
+						</div>
+						<p class="connecting-title">
+							{starting || connecting ? `Lanzando ${report.meta.agent || 'agente'}…` : 'Conectando con el agente…'}
+						</p>
 						<p class="connecting-detail">
 							{report.meta.agent || 'Agente'}
 							{#if displayModel}
 								· {displayModel}
 							{/if}
 						</p>
+						<ol class="connecting-phases">
+							<li class:done={connecting || starting || sessionReady}>Abriendo sesión ACP</li>
+							<li class:done={sessionReady} class:active={(connecting || starting) && !sessionReady}>
+								Esperando al agente
+							</li>
+							<li>Listo para chatear</li>
+						</ol>
 						<p class="connecting-hint">Puede tardar unos segundos al lanzar o retomar la sesión ACP.</p>
 					{/if}
 				</div>
@@ -1030,6 +1048,9 @@
 		color: var(--text-faint);
 	}
 	.start {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
 		align-self: flex-start;
 		padding: 8px 14px;
 		font-size: 13px;
@@ -1075,9 +1096,33 @@
 		display: flex;
 		flex-direction: column;
 		justify-content: center;
-		gap: 6px;
-		padding: 18px 8px;
+		align-items: center;
+		gap: 8px;
+		padding: 18px 12px;
 		text-align: center;
+	}
+	.connecting-progress {
+		display: flex;
+		justify-content: center;
+		margin-bottom: 4px;
+	}
+	.spinner {
+		width: 28px;
+		height: 28px;
+		border: 2px solid var(--border);
+		border-top-color: var(--accent);
+		border-radius: 50%;
+		animation: chat-spin 0.8s linear infinite;
+	}
+	.spinner.sm {
+		width: 14px;
+		height: 14px;
+		border-width: 2px;
+	}
+	@keyframes chat-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.connecting-title {
 		margin: 0;
@@ -1092,10 +1137,57 @@
 		color: var(--text-dim);
 		word-break: break-all;
 	}
+	.connecting-phases {
+		margin: 8px 0 0;
+		padding: 0;
+		list-style: none;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		align-items: stretch;
+		width: min(100%, 220px);
+		text-align: left;
+	}
+	.connecting-phases li {
+		position: relative;
+		padding: 4px 8px 4px 22px;
+		font-size: 12px;
+		color: var(--text-dim);
+		border: 1px solid transparent;
+	}
+	.connecting-phases li::before {
+		content: '';
+		position: absolute;
+		left: 6px;
+		top: 50%;
+		width: 7px;
+		height: 7px;
+		margin-top: -3.5px;
+		border-radius: 50%;
+		border: 1.5px solid var(--border);
+		background: transparent;
+	}
+	.connecting-phases li.done {
+		color: var(--text);
+	}
+	.connecting-phases li.done::before {
+		border-color: var(--accent);
+		background: var(--accent);
+	}
+	.connecting-phases li.active {
+		color: var(--text);
+		background: var(--bg-card);
+		border-color: var(--border);
+	}
+	.connecting-phases li.active::before {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+	}
 	.connecting-hint {
 		margin: 4px 0 0;
 		font-size: 12px;
-		color: var(--text-faint);
+		color: var(--text-dim);
+		max-width: 28rem;
 	}
 	.composer {
 		display: flex;
@@ -1235,5 +1327,24 @@
 		background: var(--btn-primary-bg);
 		border-color: var(--btn-primary-border);
 		color: var(--btn-primary-text);
+	}
+
+	@media (max-width: 768px) {
+		.chat-shell {
+			position: fixed;
+			inset: 0;
+			z-index: 60;
+			width: 100% !important;
+			max-width: none;
+			background: var(--bg);
+		}
+		.chat-shell :global(.resize-handle),
+		.chat-shell :global([aria-orientation='vertical']) {
+			display: none;
+		}
+		.chat {
+			border-left: 0;
+			width: 100%;
+		}
 	}
 </style>

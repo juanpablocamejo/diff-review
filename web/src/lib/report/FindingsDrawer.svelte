@@ -106,11 +106,17 @@
 									</div>
 								{:else}
 									<div class="decision-group">
-										<button type="button" class:on={f.decided && !f.fixSelected} onclick={() => onignore(f.id)}
-											>Ignorar</button
+										<button
+											type="button"
+											class="ignore"
+											class:on={f.decided && !f.fixSelected}
+											onclick={() => onignore(f.id)}>Ignorar</button
 										>
-										<button type="button" class:on={f.decided && f.fixSelected} onclick={() => onfix(f.id)}
-											>Corregir</button
+										<button
+											type="button"
+											class="fix"
+											class:on={f.decided && f.fixSelected}
+											onclick={() => onfix(f.id)}>Corregir</button
 										>
 										{#if f.decided}
 											<button type="button" class="clear" title="Limpiar decisión" onclick={() => onclear(f.id)}
@@ -305,15 +311,16 @@
 
 	.decision-group {
 		display: flex;
-		border: 1px solid var(--border);
-		overflow: hidden;
+		align-items: stretch;
+		gap: 6px;
 		width: fit-content;
 		flex-shrink: 0;
 	}
 
 	.decision-group.corrected {
-		border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+		border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--border));
 		background: var(--ok-bg);
+		gap: 0;
 	}
 
 	.corrected-label {
@@ -326,30 +333,52 @@
 	.decision-group button {
 		padding: 7px 14px;
 		font-size: 12px;
-		border: 0;
+		border: 1px solid var(--border);
 		background: transparent;
 		color: var(--text-dim);
 		font-weight: 600;
 	}
 
-	.decision-group button:nth-child(1).on {
+	.decision-group button:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	.decision-group button.ignore {
+		background: transparent;
+		border-color: var(--border);
+		color: var(--text-dim);
+	}
+
+	.decision-group button.ignore:hover,
+	.decision-group button.ignore.on {
+		border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
 		background: var(--danger-bg);
 		color: var(--danger);
 	}
 
-	.decision-group button:nth-child(2).on {
+	.decision-group button.fix {
 		background: var(--fix-bg);
-		color: var(--ok);
+		border-color: var(--fix-border);
+		color: var(--fix-text);
 	}
 
-	.decision-group button + button {
-		border-left: 1px solid var(--border);
+	.decision-group button.fix:hover,
+	.decision-group button.fix.on {
+		filter: brightness(1.05);
+		box-shadow: inset 0 0 0 1px var(--fix-border);
 	}
 
 	.decision-group .clear {
 		padding: 7px 10px;
-		color: var(--text-faint);
-		border-left: 1px solid var(--border);
+		color: var(--text-dim);
+		border-color: var(--border);
+		background: transparent;
+	}
+
+	.decision-group.corrected .clear {
+		border: 0;
+		border-left: 1px solid color-mix(in srgb, var(--ok) 35%, var(--border));
 	}
 
 	.fix-detail {

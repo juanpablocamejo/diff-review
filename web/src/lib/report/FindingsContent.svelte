@@ -152,11 +152,13 @@
 						<div class="decision-group">
 							<button
 								type="button"
+								class="ignore"
 								class:on={activeFinding.decided && !activeFinding.fixSelected}
 								onclick={onignore}>Ignorar</button
 							>
 							<button
 								type="button"
+								class="fix"
 								class:on={activeFinding.decided && activeFinding.fixSelected}
 								onclick={onfix}>Corregir</button
 							>
@@ -176,7 +178,9 @@
 	<div
 		class="detail-grid"
 		class:no-explanations={!showExplanations}
-		style:grid-template-columns={showExplanations ? `minmax(0,1fr) 6px ${explanationWidth}px` : 'minmax(0,1fr)'}
+		style:grid-template-columns={showExplanations
+			? `minmax(min(100%, 200px), 1fr) 6px minmax(0, ${explanationWidth}px)`
+			: 'minmax(0,1fr)'}
 	>
 		<div class="diff-col">
 			{#if activeFile}
@@ -403,14 +407,15 @@
 
 	.decision-group {
 		display: flex;
-		border: 1px solid var(--border);
-		overflow: hidden;
+		align-items: stretch;
+		gap: 6px;
 		flex-shrink: 0;
 	}
 
 	.decision-group.corrected {
-		border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+		border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--border));
 		background: var(--ok-bg);
+		gap: 0;
 	}
 
 	.corrected-label {
@@ -423,30 +428,54 @@
 	.decision-group button {
 		padding: 6px 14px;
 		font-size: 12px;
-		border: 0;
+		border: 1px solid var(--border);
 		background: transparent;
 		color: var(--text-dim);
 		font-weight: 600;
 	}
 
-	.decision-group button:nth-child(1).on {
+	.decision-group button:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	/* Ignorar: ghost / danger-subtle */
+	.decision-group button.ignore {
+		background: transparent;
+		border-color: var(--border);
+		color: var(--text-dim);
+	}
+
+	.decision-group button.ignore:hover,
+	.decision-group button.ignore.on {
+		border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
 		background: var(--danger-bg);
 		color: var(--danger);
 	}
 
-	.decision-group button:nth-child(2).on {
+	/* Corregir: filled con tokens --fix-* */
+	.decision-group button.fix {
 		background: var(--fix-bg);
-		color: var(--ok);
+		border-color: var(--fix-border);
+		color: var(--fix-text);
 	}
 
-	.decision-group button + button {
-		border-left: 1px solid var(--border);
+	.decision-group button.fix:hover,
+	.decision-group button.fix.on {
+		filter: brightness(1.05);
+		box-shadow: inset 0 0 0 1px var(--fix-border);
 	}
 
 	.decision-group .clear {
 		padding: 6px 10px;
-		color: var(--text-faint);
-		border-left: 1px solid var(--border);
+		color: var(--text-dim);
+		border-color: var(--border);
+		background: transparent;
+	}
+
+	.decision-group.corrected .clear {
+		border: 0;
+		border-left: 1px solid color-mix(in srgb, var(--ok) 35%, var(--border));
 	}
 
 	.fix-detail {

@@ -1,4 +1,5 @@
 import type { SeqEvent } from './agent-events';
+import { triageForSavedDocument } from './triage';
 import type { ReportMeta, ReviewDocument, SavedReport, SavedReportSummary, StoredReport } from './types';
 
 const LAST_META_KEY = 'diff-review:last-meta';
@@ -288,18 +289,7 @@ export function replaceReportDocument(id: string, document: ReviewDocument, meta
 	);
 	saveReportsIndex(index);
 
-	const ids = new Set(document.findings.map((f) => f.id));
-	const keepBool = (record: Record<string, boolean>) =>
-		Object.fromEntries(Object.entries(record).filter(([fid]) => ids.has(fid)));
-	const keepStr = (record: Record<string, string>) =>
-		Object.fromEntries(Object.entries(record).filter(([fid]) => ids.has(fid)));
-	const triage = loadTriage(id);
-	saveTriage(id, {
-		decided: keepBool(triage.decided),
-		fixSelected: keepBool(triage.fixSelected),
-		corrected: keepBool(triage.corrected),
-		fixedDetail: keepStr(triage.fixedDetail)
-	});
+	saveTriage(id, triageForSavedDocument(document.findings, loadTriage(id)));
 
 	return full;
 }

@@ -27,6 +27,7 @@
 	let showExplanations = $state(true);
 	let downloadOpen = $state(false);
 	let kebabOpen = $state(false);
+	let viewMenuOpen = $state(false);
 	let chatOpen = $state(false);
 	/** Agentes ACP instalados: para no mostrar Cursor/Claude en el header si no están. */
 	let installedAgents = $state<AcpAgentOption[]>([]);
@@ -80,16 +81,25 @@
 	function closeMenus() {
 		downloadOpen = false;
 		kebabOpen = false;
+		viewMenuOpen = false;
 	}
 
 	function toggleDownload() {
 		downloadOpen = !downloadOpen;
 		kebabOpen = false;
+		viewMenuOpen = false;
 	}
 
 	function toggleKebab() {
 		kebabOpen = !kebabOpen;
 		downloadOpen = false;
+		viewMenuOpen = false;
+	}
+
+	function toggleViewMenu() {
+		viewMenuOpen = !viewMenuOpen;
+		downloadOpen = false;
+		kebabOpen = false;
 	}
 
 	function exportAs(format: ExportFormat) {
@@ -148,7 +158,7 @@
 
 <svelte:window
 	onclick={() => {
-		if (downloadOpen || kebabOpen) closeMenus();
+		if (downloadOpen || kebabOpen || viewMenuOpen) closeMenus();
 	}}
 	onkeydown={(e) => {
 		if (e.key === 'Escape') closeMenus();
@@ -164,13 +174,16 @@
 			</a>
 			{#if report}
 				<span class="chrome-divider"></span>
-				<span class="breadcrumb">
+				<span
+					class="breadcrumb"
+					title={`${report.meta.branch || '—'} › ${report.meta.base || 'develop'}`}
+				>
 					<span class="crumb-branch">{report.meta.branch || '—'}</span>
 					<span class="crumb-sep">›</span>
 					<span class="crumb-base">{report.meta.base || 'develop'}</span>
 				</span>
 				{#if report.meta.agent || report.meta.model}
-					<span class="chrome-divider"></span>
+					<span class="chrome-divider chrome-divider-prov"></span>
 					<span
 						class="provenance"
 						title={[report.meta.agent, report.meta.model].filter(Boolean).join(' · ')}
@@ -211,7 +224,7 @@
 		</div>
 
 		{#if report}
-			<div class="chrome-center">
+			<div class="chrome-center chrome-center-inline">
 				<div class="mode-toggle">
 					<button type="button" class:on={diffMode === 'unified'} onclick={() => (diffMode = 'unified')}
 						>Unificado</button
@@ -225,6 +238,7 @@
 						type="button"
 						class="icon-btn"
 						title="Achicar letra del diff"
+						aria-label="Achicar letra del diff"
 						onclick={() => (diffFontSize = clamp(diffFontSize - 1, 9, 20))}>－</button
 					>
 					<span class="zoom-label">{Math.round(diffFontSize)}px</span>
@@ -232,6 +246,7 @@
 						type="button"
 						class="icon-btn"
 						title="Agrandar letra del diff"
+						aria-label="Agrandar letra del diff"
 						onclick={() => (diffFontSize = clamp(diffFontSize + 1, 9, 20))}>＋</button
 					>
 				</div>
@@ -245,6 +260,11 @@
 						: wrapLines
 							? 'Desactivar ajuste de línea (volver a scroll horizontal)'
 							: 'Ajustar líneas largas en vez de scrollear horizontalmente'}
+					aria-label={diffMode === 'split'
+						? 'En lado a lado el código siempre ajusta'
+						: wrapLines
+							? 'Desactivar ajuste de línea'
+							: 'Ajustar líneas largas'}
 					onclick={() => (wrapLines = !wrapLines)}
 				>
 					↵
@@ -255,6 +275,7 @@
 					class="icon-btn panel"
 					class:on={!sidebarCollapsed}
 					title={sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
+					aria-label={sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
 					onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
 				>
 					◧
@@ -264,6 +285,7 @@
 					class="icon-btn panel"
 					class:on={showExplanations}
 					title={showExplanations ? 'Ocultar detalle' : 'Mostrar detalle'}
+					aria-label={showExplanations ? 'Ocultar detalle' : 'Mostrar detalle'}
 					onclick={() => (showExplanations = !showExplanations)}
 				>
 					◨
@@ -273,6 +295,101 @@
 
 		<div class="chrome-right">
 			{#if report}
+				<div class="menu-wrap chrome-view-menu">
+					<button
+						type="button"
+						class="ghost view-menu-btn"
+						title="Controles de vista"
+						aria-label="Controles de vista"
+						aria-expanded={viewMenuOpen}
+						aria-haspopup="menu"
+						onclick={(e) => {
+							e.stopPropagation();
+							toggleViewMenu();
+						}}
+					>
+						Vista
+						<svg class="caret" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+							<path
+								d="M2.5 4.5 6 8l3.5-3.5"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.5"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							/>
+						</svg>
+					</button>
+					{#if viewMenuOpen}
+						<div class="menu view-menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+							<button
+								type="button"
+								class="menu-item"
+								class:on={diffMode === 'unified'}
+								role="menuitem"
+								onclick={() => (diffMode = 'unified')}
+							>
+								Unificado
+							</button>
+							<button
+								type="button"
+								class="menu-item"
+								class:on={diffMode === 'split'}
+								role="menuitem"
+								onclick={() => (diffMode = 'split')}
+							>
+								Lado a lado
+							</button>
+							<div class="view-menu-sep" role="separator"></div>
+							<div class="view-menu-row" role="group" aria-label="Tamaño de letra">
+								<button
+									type="button"
+									class="icon-btn"
+									title="Achicar letra del diff"
+									aria-label="Achicar letra del diff"
+									onclick={() => (diffFontSize = clamp(diffFontSize - 1, 9, 20))}>－</button
+								>
+								<span class="zoom-label">{Math.round(diffFontSize)}px</span>
+								<button
+									type="button"
+									class="icon-btn"
+									title="Agrandar letra del diff"
+									aria-label="Agrandar letra del diff"
+									onclick={() => (diffFontSize = clamp(diffFontSize + 1, 9, 20))}>＋</button
+								>
+							</div>
+							<button
+								type="button"
+								class="menu-item"
+								class:on={wrapLines}
+								role="menuitem"
+								disabled={diffMode === 'split'}
+								onclick={() => (wrapLines = !wrapLines)}
+							>
+								{wrapLines ? 'Sin ajuste de línea' : 'Ajustar líneas'}
+							</button>
+							<div class="view-menu-sep" role="separator"></div>
+							<button
+								type="button"
+								class="menu-item"
+								class:on={!sidebarCollapsed}
+								role="menuitem"
+								onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
+							>
+								{sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
+							</button>
+							<button
+								type="button"
+								class="menu-item"
+								class:on={showExplanations}
+								role="menuitem"
+								onclick={() => (showExplanations = !showExplanations)}
+							>
+								{showExplanations ? 'Ocultar detalle' : 'Mostrar detalle'}
+							</button>
+						</div>
+					{/if}
+				</div>
 				<button
 					type="button"
 					class="ghost agent-btn"
@@ -343,15 +460,19 @@
 	</header>
 
 	{#if report === undefined}
-		<p class="hint">Cargando reporte…</p>
+		<div class="empty-state">
+			<p class="hint">Cargando reporte…</p>
+		</div>
 	{:else if report === null}
-		<p class="hint">
-			{loadError ||
-				'No se encontró este reporte. Los locales se leen desde .diff-review/; sin ese archivo no hay viewer.'}
-		</p>
-		<p class="hint"><a href={resolve('/')}>Volver al inicio</a>.</p>
+		<div class="empty-state">
+			<p class="hint">
+				{loadError ||
+					'No se encontró este reporte. Los locales se leen desde .diff-review/; sin ese archivo no hay viewer.'}
+			</p>
+			<p class="hint"><a href={resolve('/')}>Volver al inicio</a>.</p>
+		</div>
 	{:else}
-		<div class="body">
+		<div class="body" class:chat-open={chatOpen}>
 			<ReportView
 				{report}
 				{diffMode}
@@ -407,36 +528,43 @@
 	}
 
 	.chrome {
-		display: grid;
-		grid-template-columns: 1fr auto 1fr;
+		display: flex;
+		flex-wrap: nowrap;
 		align-items: center;
-		gap: 16px;
+		gap: 12px 16px;
 		padding: 12px 28px;
 		border-bottom: 1px solid var(--border);
 		background: var(--header-bg);
 		flex-shrink: 0;
+		min-width: 0;
 	}
 
 	.chrome-left {
 		display: flex;
 		align-items: center;
-		gap: 12px;
+		gap: 10px;
 		min-width: 0;
-		justify-self: start;
+		flex: 1 1 0;
+		overflow: hidden;
 	}
 
 	.chrome-center {
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		justify-self: center;
+		flex: 0 0 auto;
 	}
 
 	.chrome-right {
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		justify-self: end;
+		flex: 0 0 auto;
+		margin-left: auto;
+	}
+
+	.chrome-view-menu {
+		display: none;
 	}
 
 	.brand {
@@ -473,6 +601,8 @@
 		font-family: var(--mono);
 		font-size: 12.5px;
 		min-width: 0;
+		max-width: min(220px, 28vw);
+		overflow: hidden;
 	}
 
 	.crumb-branch {
@@ -481,15 +611,21 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		min-width: 0;
 	}
 
 	.crumb-sep {
-		color: var(--text-faint);
+		color: var(--text-dim);
+		flex-shrink: 0;
 	}
 
 	.crumb-base {
-		color: var(--text-faint);
+		color: var(--text-dim);
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		flex-shrink: 1;
+		min-width: 0;
 	}
 
 	.provenance {
@@ -497,16 +633,23 @@
 		align-items: center;
 		gap: 6px;
 		min-width: 0;
+		max-width: min(160px, 18vw);
+		overflow: hidden;
 		font-size: 12px;
 		color: var(--text-dim);
+		flex-shrink: 1;
 	}
 
 	.prov-agent {
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
+		min-width: 0;
 	}
 
 	.prov-sep {
-		color: var(--text-faint);
+		color: var(--text-dim);
+		flex-shrink: 0;
 	}
 
 	.prov-model {
@@ -515,6 +658,7 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		min-width: 0;
 	}
 
 	.menu-wrap {
@@ -686,8 +830,10 @@
 	}
 
 	.icon-btn.kebab {
-		width: 24px;
-		height: 24px;
+		width: 40px;
+		height: 40px;
+		min-width: 40px;
+		min-height: 40px;
 		border-color: transparent;
 		background: transparent;
 	}
@@ -710,9 +856,44 @@
 	.zoom-label {
 		font-family: var(--mono);
 		font-size: 10.5px;
-		color: var(--text-faint);
+		color: var(--text-dim);
 		width: 30px;
 		text-align: center;
+	}
+
+	.view-menu-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.view-menu {
+		left: auto;
+		right: 0;
+		min-width: 200px;
+		padding: 6px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.view-menu .menu-item.on {
+		background: var(--accent-soft);
+		color: var(--text);
+	}
+
+	.view-menu-sep {
+		height: 1px;
+		margin: 4px 0;
+		background: var(--border-soft);
+	}
+
+	.view-menu-row {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		padding: 6px 4px;
 	}
 
 	.ghost {
@@ -740,8 +921,80 @@
 	}
 
 	.hint {
-		padding: 40px 28px;
-		color: var(--text-faint);
+		padding: 0;
+		margin: 0;
+		color: var(--text-dim);
 		font-size: 13px;
+		line-height: 1.5;
+		max-width: 36rem;
+	}
+
+	.empty-state {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 10px;
+		padding: 40px 28px;
+		text-align: center;
+	}
+
+	.empty-state a {
+		color: var(--accent);
+	}
+
+	@media (max-width: 1100px) {
+		.chrome-center-inline {
+			display: none;
+		}
+
+		.chrome-view-menu {
+			display: block;
+		}
+
+		.provenance {
+			max-width: min(120px, 22vw);
+		}
+
+		.breadcrumb {
+			max-width: min(160px, 30vw);
+		}
+	}
+
+	@media (max-width: 768px) {
+		.chrome {
+			flex-wrap: wrap;
+			padding: 10px 14px;
+			gap: 8px 10px;
+		}
+
+		.chrome-left {
+			flex: 1 1 calc(100% - 80px);
+			order: 1;
+		}
+
+		.chrome-right {
+			flex: 1 1 100%;
+			order: 2;
+			margin-left: 0;
+			justify-content: flex-end;
+			flex-wrap: wrap;
+		}
+
+		.chrome-divider-prov,
+		.provenance {
+			display: none;
+		}
+
+		.breadcrumb {
+			max-width: min(200px, 45vw);
+		}
+
+		.body.chat-open > :global(.report-shell) {
+			/* El chat pasa a overlay a pantalla completa (ver ChatPanel). */
+			visibility: hidden;
+			pointer-events: none;
+		}
 	}
 </style>

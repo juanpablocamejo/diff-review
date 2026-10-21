@@ -91,3 +91,24 @@ export function applyTriageToFindings(findings: ReviewFinding[], triage: TriageS
 		return { ...f, resolution };
 	});
 }
+
+/**
+ * Tras guardar un documento (p. ej. al purgar ignorados), alinea el triage con
+ * `findings[].resolution` y descarta ids que ya no existen.
+ * El JSON gana donde hay resolution; LS completa el resto — evita que un LS
+ * incompleto borre marcas "corregir" al podar solo desde localStorage.
+ */
+export function triageForSavedDocument(findings: ReviewFinding[], ls: TriageState): TriageState {
+	const ids = new Set(findings.map((f) => f.id).filter(Boolean));
+	const merged = mergeTriage(triageFromFindings(findings), ls);
+	const keepBool = (record: Record<string, boolean>) =>
+		Object.fromEntries(Object.entries(record).filter(([fid]) => ids.has(fid)));
+	const keepStr = (record: Record<string, string>) =>
+		Object.fromEntries(Object.entries(record).filter(([fid]) => ids.has(fid)));
+	return {
+		decided: keepBool(merged.decided),
+		fixSelected: keepBool(merged.fixSelected),
+		corrected: keepBool(merged.corrected),
+		fixedDetail: keepStr(merged.fixedDetail)
+	};
+}

@@ -7,7 +7,8 @@
 	--border-soft: #1c2230;
 	--text: #e6e9ef;
 	--text-dim: #9aa4b8;
-	--text-faint: #5f6b82;
+	/* Cerca de --text-dim: meta secundaria legible sin competir con el cuerpo. */
+	--text-faint: #7a8499;
 	--accent: #6ea8fe;
 	--accent-soft: #1c2b45;
 	--ok: #7ee2a8;
@@ -76,7 +77,8 @@
 	--border-soft: #e4e7ec;
 	--text: #16181d;
 	--text-dim: #4b5563;
-	--text-faint: #6b7280;
+	/* Más cerca de --text-dim para meta secundaria en light. */
+	--text-faint: #5b6472;
 	--accent: #2f6fe0;
 	--accent-soft: #dce8ff;
 	--ok: #1f9d55;

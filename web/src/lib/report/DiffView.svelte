@@ -452,11 +452,20 @@
 		text-overflow: ellipsis;
 	}
 
+	/* Horizontal siempre: si la columna se achica, no apilar letra a letra. */
 	.empty {
 		margin: 0;
-		padding: 12px;
-		font-size: 11.5px;
-		color: var(--text-faint);
+		padding: 20px 16px;
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--text-dim);
+		text-align: center;
+		writing-mode: horizontal-tb;
+		white-space: normal;
+		word-break: normal;
+		overflow-wrap: break-word;
+		min-width: min(100%, 14rem);
+		box-sizing: border-box;
 	}
 
 	.diff,

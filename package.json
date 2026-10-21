@@ -15,7 +15,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test lib/*.test.mjs",
+    "test": "node --test lib/*.test.mjs && node --experimental-strip-types --test web/src/lib/report/triage.test.ts",
     "web:install": "npm --prefix web install",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",

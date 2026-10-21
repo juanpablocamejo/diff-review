@@ -27,6 +27,7 @@
 	import {
 		applyTriageToFindings,
 		mergeTriage,
+		triageForSavedDocument,
 		triageFromFindings,
 		triageNeedsDocumentWrite
 	} from './triage';
@@ -394,6 +395,7 @@
 			return;
 		}
 		const triage = currentTriage();
+		saveTriage(report.id, triage);
 		const document = {
 			...report.document,
 			findings: applyTriageToFindings(
@@ -407,11 +409,12 @@
 			alert('Error: No se pudo guardar los cambios. Intenta de nuevo.');
 			return;
 		}
-		const next = loadTriage(report.id);
+		const next = triageForSavedDocument(updated.document.findings, loadTriage(report.id));
 		decided = next.decided;
 		fixSelected = next.fixSelected;
 		corrected = next.corrected;
 		fixedDetail = next.fixedDetail;
+		saveTriage(report.id, next);
 		if (activeFindingId && ids.has(activeFindingId)) activeFindingId = null;
 		onreportupdated?.(updated);
 		if (canLoadFromDisk(updated.meta)) {
