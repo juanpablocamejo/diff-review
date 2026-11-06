@@ -58,8 +58,10 @@ export class AgentStream {
 			this.events = applyEvent(this.events, data);
 			if (data.type === 'status') {
 				this.status = data.status;
-				if (data.status === 'error') {
+				if (data.status === 'error' || data.status === 'needs_auth') {
 					this.errorMessage = data.message || this.errorMessage || 'Error del agente.';
+				} else if (data.status === 'starting' || data.status === 'working' || data.status === 'idle') {
+					this.errorMessage = '';
 				}
 			}
 			if (!this.#seen.has(data.seq)) {

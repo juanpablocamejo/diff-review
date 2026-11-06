@@ -10,7 +10,13 @@
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import type { SessionUpdate, ToolCallUpdate } from '@agentclientprotocol/sdk';
 import { detectAgents, modelChoices, type DetectedAgent } from '$review/lib/agents.mjs';
-import { listAcpModelsCached, startAcpSession, supportsAcp, type AcpSession } from '$review/lib/acp.mjs';
+import {
+	AcpAuthRequiredError,
+	listAcpModelsCached,
+	startAcpSession,
+	supportsAcp,
+	type AcpSession
+} from '$review/lib/acp.mjs';
 import {
 	decidePermission,
 	humanizePolicyReason,
@@ -19,10 +25,18 @@ import {
 	type PolicyMode
 } from '$review/lib/acp-policy.mjs';
 import {
+	agentAccountStatus,
 	authFailureMessage as formatAuthFailure,
 	loginCommand,
+	loginIncompleteMessage,
+	loginWaitingMessage,
 	looksLikeAuthFailure,
-	openLoginTerminal
+	openLoginTerminal,
+	pickLoginAuthMethod,
+	resolveLoginCommand,
+	runAgentLogout,
+	runLoginTerminal,
+	withCopilotLoginHost
 } from '$review/lib/agent-login.mjs';
 import { checkReportFile, formatCheckReport } from '$review/lib/check-report.mjs';
 import { stampReviewProvenance } from '$review/lib/review-meta.mjs';
@@ -97,6 +111,10 @@ type Entry = AgentSessionInfo & {
 	sessionAllowDenied: boolean;
 	/** Cancelaron desde la UI antes de que arranque / termine el turno. */
 	cancelled: boolean;
+	/** authMethods de ACP cuando hace falta login interactivo (terminal / terminal-meta). */
+	pendingAuthMethods: unknown[] | null;
+	/** Tras login exitoso: retomar review o dejar el chat listo. */
+	authResume: 'review' | 'chat' | null;
 };
 
 /** Para que el agente no gaste turnos en comandos que la política va a rechazar. */
@@ -163,7 +181,7 @@ export function agentModels(
 function findAgent(agentId: string): DetectedAgent {
 	const agent = detectAgents().find((a) => a.def.id === agentId);
 	if (!agent) throw new Error(`No encontré el agente "${agentId}" instalado.`);
-	if (!supportsAcp(agent)) throw new Error(`${agent.def.label} no tiene modo ACP.`);
+	if (!supportsAcp(agent)) throw new Error(`${agent.def.label} no se puede usar desde la web.`);
 	return agent;
 }
 
@@ -204,12 +222,169 @@ function authFailureMessage(agentId: string, agentLabel: string, detail: string)
 	return formatAuthFailure(agentId, agentLabel, detail);
 }
 
-/** Abre una terminal con el login del agente (Claude `/login`, `gh auth login`, …). */
-export function openAgentLogin(agentId: string): { display: string } {
-	return openLoginTerminal(String(agentId || ''));
+/**
+ * Abre el login del agente.
+ * - Con `sessionId`: comando según authMethods ACP (proceso oculto sin TTY), espera exit 0, reconecta y retoma.
+ * - Solo `agentId`: lanza el comando fallback en background (p. ej. fallo al listar modelos).
+ */
+export async function openAgentLogin(input: {
+	agentId?: string;
+	sessionId?: string;
+	/** Copilot: hostname Enterprise; vacío = github.com (elección del usuario, no env). */
+	host?: string | null;
+}): Promise<{ display: string; resumed?: boolean; code?: number | null }> {
+	const sessionId = String(input?.sessionId || '').trim();
+	const agentId = String(input?.agentId || '').trim();
+	const host = input?.host != null ? String(input.host) : undefined;
+
+	if (sessionId) {
+		const entry = sessions.get(sessionId);
+		if (!entry) throw new Error('La sesión del agente ya no existe. Recargá la página.');
+
+		const method = pickLoginAuthMethod(entry.pendingAuthMethods || []);
+		let cmd;
+		try {
+			cmd = resolveLoginCommand(entry.agent, method);
+		} catch {
+			cmd = loginCommand(entry.agentId, { host });
+			if (!cmd) throw new Error('Este agente no tiene un inicio de sesión conocido.');
+		}
+		if (entry.agentId === 'copilot' || agentId === 'copilot') {
+			cmd = withCopilotLoginHost(cmd, host);
+		}
+
+		setStatus(entry, 'starting', loginWaitingMessage());
+		entry.busy = true;
+		try {
+			const result = await runLoginTerminal(cmd, { wait: true, cwd: entry.repo });
+			if (result.code !== 0) {
+				entry.busy = false;
+				const msg = loginIncompleteMessage();
+				setStatus(entry, 'needs_auth', msg);
+				throw new Error(msg);
+			}
+
+			try {
+				entry.acp?.close();
+			} catch {
+				/* ignore */
+			}
+			entry.acp = null;
+			entry.pendingAuthMethods = null;
+			const resume = entry.authResume || 'chat';
+			entry.authResume = null;
+			entry.busy = false;
+
+			if (resume === 'review') {
+				setStatus(entry, 'starting', 'Login ok. Reintentando la review…');
+				void continueReviewAfterDiff(entry, {
+					repo: entry.repo,
+					branch: entry.branch,
+					base: entry.base,
+					outputFilename: entry.outputFilename,
+					model: entry.model || undefined
+				});
+			} else {
+				setStatus(entry, 'starting', 'Login ok. Reconectando con el agente…');
+				try {
+					await ensureAcp(entry, entry.model || undefined);
+					setStatus(entry, 'idle');
+				} catch (err) {
+					entry.busy = false;
+					if (isAuthError(err)) {
+						markNeedsAuth(entry, err, 'chat');
+					} else {
+						const raw = err instanceof Error ? err.message : String(err);
+						setStatus(entry, 'error', authFailureMessage(entry.agentId, entry.agentLabel, raw) || raw);
+					}
+					throw err;
+				}
+			}
+			return { display: result.display, resumed: true, code: result.code };
+		} catch (err) {
+			entry.busy = false;
+			if (entry.status !== 'needs_auth' && entry.status !== 'error' && entry.status !== 'starting') {
+				const raw = err instanceof Error ? err.message : String(err);
+				setStatus(entry, 'needs_auth', raw);
+			}
+			throw err;
+		}
+	}
+
+	if (!agentId) throw new Error('Falta agentId o sessionId.');
+	const cmd = loginCommand(agentId, { host });
+	if (!cmd) throw new Error('Este agente no tiene un inicio de sesión conocido.');
+	return openLoginTerminal(cmd);
 }
 
-export { looksLikeAuthFailure, loginCommand };
+/**
+ * Cierra la sesión del agente (y cuentas `gh` si es Copilot) para poder elegir otra cuenta.
+ * Deja la entry en `needs_auth` lista para un nuevo login.
+ */
+export async function openAgentLogout(input: {
+	agentId?: string;
+	sessionId?: string;
+	host?: string | null;
+}): Promise<{ ok: boolean; steps: string[]; warnings: string[] }> {
+	const sessionId = String(input?.sessionId || '').trim();
+	const host = input?.host != null ? String(input.host) : undefined;
+	let agentId = String(input?.agentId || '').trim();
+	/** @type {Entry | undefined} */
+	let entry: Entry | undefined;
+
+	if (sessionId) {
+		entry = sessions.get(sessionId);
+		if (!entry) throw new Error('La sesión del agente ya no existe. Recargá la página.');
+		agentId = entry.agentId || agentId;
+	}
+	if (!agentId) throw new Error('Falta agentId o sessionId.');
+
+	/** @type {string[]} */
+	const steps: string[] = [];
+	/** @type {string[]} */
+	const warnings: string[] = [];
+
+	if (entry?.acp?.supportsLogout) {
+		try {
+			await entry.acp.logout();
+			steps.push('Cerré la sesión del agente.');
+		} catch (err) {
+			warnings.push(err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	try {
+		entry?.acp?.close();
+	} catch {
+		/* ignore */
+	}
+	if (entry) {
+		entry.acp = null;
+		entry.starting = null;
+		entry.busy = false;
+		entry.pendingAuthMethods = null;
+		entry.authResume = entry.authResume || (entry.seed || entry.diffText ? 'review' : 'chat');
+	}
+
+	const cli = await runAgentLogout(agentId, {
+		host,
+		cwd: entry?.repo
+	});
+	steps.push(...cli.steps);
+	warnings.push(...cli.warnings);
+
+	const msg =
+		warnings.length && !cli.ok
+			? warnings[0]
+			: 'Sesión cerrada. Elegí con qué cuenta iniciar de nuevo.';
+	if (entry) {
+		setStatus(entry, 'needs_auth', msg);
+	}
+
+	return { ok: cli.ok || steps.length > 0, steps, warnings };
+}
+
+export { agentAccountStatus, looksLikeAuthFailure, loginCommand };
 
 /** Escribe seed (JSON + .diff) en `.diff-review/` para que el agente los lea. */
 function materializeSeed(entry: Entry) {
@@ -375,9 +550,9 @@ function emit(entry: Entry, event: AgentEvent) {
 
 function setStatus(entry: Entry, status: SessionStatus, message?: string) {
 	entry.status = status;
-	// Solo persistimos mensaje en errores (la UI lo usa como fallback si el SSE llega tarde).
+	// Solo persistimos mensaje en errores / needs_auth (la UI lo usa como fallback si el SSE llega tarde).
 	// En starting/working el texto va en el evento, pero no debe quedar como "error" fantasma.
-	if (status === 'error') {
+	if (status === 'error' || status === 'needs_auth') {
 		entry.statusMessage = message || entry.statusMessage || 'Error del agente.';
 	} else if (message !== undefined) {
 		delete entry.statusMessage;
@@ -385,8 +560,39 @@ function setStatus(entry: Entry, status: SessionStatus, message?: string) {
 	emit(entry, {
 		type: 'status',
 		status,
-		...(message || status === 'error' ? { message: message || entry.statusMessage } : {})
+		...(message || status === 'error' || status === 'needs_auth'
+			? { message: message || entry.statusMessage }
+			: {})
 	});
+}
+
+function markNeedsAuth(entry: Entry, err: unknown, resume: 'review' | 'chat') {
+	const authErr = err instanceof AcpAuthRequiredError ? err : null;
+	const raw = err instanceof Error ? err.message : String(err);
+	const msg =
+		authErr?.message ||
+		authFailureMessage(entry.agentId, entry.agentLabel, raw) ||
+		raw;
+	entry.pendingAuthMethods = authErr?.methods?.length ? authErr.methods : entry.pendingAuthMethods;
+	entry.authResume = resume;
+	entry.acp = null;
+	setStatus(entry, 'needs_auth', msg);
+}
+
+function isAuthError(err: unknown): boolean {
+	if (err instanceof AcpAuthRequiredError) return true;
+	const raw = err instanceof Error ? err.message : String(err);
+	return looksLikeAuthFailure(raw);
+}
+
+/** Sin sesión CLI y con login desde la app (Claude / Copilot / Cursor). */
+function needsInteractiveLogin(agentId: string): boolean {
+	if (!loginCommand(agentId)) return false;
+	try {
+		return !agentAccountStatus(agentId).loggedIn;
+	} catch {
+		return false;
+	}
 }
 
 /** SessionUpdate de ACP → evento de la web (lo que no se muestra se descarta). */
@@ -474,13 +680,13 @@ async function ensureAcp(entry: Entry, model?: string): Promise<AcpSession> {
 				entry.busy = false;
 				const auth = authFailureMessage(entry.agentId, entry.agentLabel, stderr);
 				if (auth) {
-					setStatus(entry, 'error', auth);
+					markNeedsAuth(entry, new Error(auth), entry.mode === 'review' ? 'review' : 'chat');
 					return;
 				}
 				const raw = stderr.trim() || `código ${code ?? '?'}`;
 				const authFromCode = authFailureMessage(entry.agentId, entry.agentLabel, raw);
 				if (authFromCode) {
-					setStatus(entry, 'error', authFromCode);
+					markNeedsAuth(entry, new Error(authFromCode), entry.mode === 'review' ? 'review' : 'chat');
 					return;
 				}
 				const tail = stderr.trim().split(/\r?\n/).slice(-3).join(' · ');
@@ -676,6 +882,11 @@ async function runTurn(entry: Entry, text: string, mode: PolicyMode, opts: { mod
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 	emit(entry, { type: 'user', text: opts.shown, mode: mode === 'review' ? 'review' : mode });
 	try {
+		if (!entry.acp && needsInteractiveLogin(entry.agentId)) {
+			entry.busy = false;
+			markNeedsAuth(entry, new Error('not logged in'), mode === 'review' ? 'review' : 'chat');
+			return;
+		}
 		if (!entry.acp) setStatus(entry, 'starting', `Lanzando ${entry.agentLabel}…`);
 		const acp = await ensureAcp(entry, opts.model);
 		if (entry.cancelled) {
@@ -703,6 +914,10 @@ async function runTurn(entry: Entry, text: string, mode: PolicyMode, opts: { mod
 		entry.busy = false;
 		if (entry.cancelled) {
 			setStatus(entry, 'idle', 'Cancelado.');
+			return;
+		}
+		if (isAuthError(err)) {
+			markNeedsAuth(entry, err, mode === 'review' ? 'review' : 'chat');
 			return;
 		}
 		const raw = err instanceof Error ? err.message : String(err);
@@ -753,7 +968,9 @@ function newEntry(agent: DetectedAgent, fields: {
 		diffPaths: null,
 		pendingPermissions: new Map(),
 		sessionAllowDenied: false,
-		cancelled: false
+		cancelled: false,
+		pendingAuthMethods: null,
+		authResume: null
 	};
 	sessions.set(entry.id, entry);
 	return entry;
@@ -888,15 +1105,24 @@ export async function openChat(input: {
 	if (handoffNote) entry.handoffNote = handoffNote;
 	if (handoffChat != null) entry.handoffChatMarkdown = handoffChat;
 	if (!sessionId) entry.needsContext = true;
+	// Sin sesión no lanzar el proceso: la web abre el login y retoma esta entry.
+	if (needsInteractiveLogin(entry.agentId)) {
+		markNeedsAuth(entry, new Error('not logged in'), 'chat');
+		return info(entry);
+	}
 	// Lanzar el proceso ya: la UI puede persistir acpSessionId y encolar el primer mensaje.
 	try {
 		if (!entry.acp) setStatus(entry, 'starting', `Lanzando ${entry.agentLabel}…`);
 		await ensureAcp(entry, input.model);
 		if (entry.status === 'starting') setStatus(entry, 'idle');
 	} catch (err) {
-		const raw = err instanceof Error ? err.message : String(err);
-		const auth = authFailureMessage(entry.agentId, entry.agentLabel, raw);
-		setStatus(entry, 'error', auth || raw);
+		if (isAuthError(err)) {
+			markNeedsAuth(entry, err, 'chat');
+		} else {
+			const raw = err instanceof Error ? err.message : String(err);
+			const auth = authFailureMessage(entry.agentId, entry.agentLabel, raw);
+			setStatus(entry, 'error', auth || raw);
+		}
 	}
 	return info(entry);
 }
@@ -942,6 +1168,31 @@ export function retryReview(id: string): AgentSessionInfo {
 	const entry = sessions.get(String(id || ''));
 	if (!entry) throw new Error('La sesión del agente ya no existe. Recargá la página.');
 	if (entry.busy) throw new Error('El agente todavía está trabajando en el pedido anterior.');
+
+	// Tras login (needs_auth) o error de auth: volver a lanzar la review desde el diff.
+	if (
+		entry.status === 'needs_auth' ||
+		(entry.status === 'error' && looksLikeAuthFailure(entry.statusMessage || ''))
+	) {
+		entry.pendingAuthMethods = null;
+		entry.authResume = null;
+		try {
+			entry.acp?.close();
+		} catch {
+			/* ignore */
+		}
+		entry.acp = null;
+		setStatus(entry, 'starting', 'Reintentando la review…');
+		void continueReviewAfterDiff(entry, {
+			repo: entry.repo,
+			branch: entry.branch,
+			base: entry.base,
+			outputFilename: entry.outputFilename,
+			model: entry.model || undefined
+		});
+		return info(entry);
+	}
+
 	if (entry.status === 'error') {
 		throw new Error(entry.statusMessage || 'La sesión está en error; iniciá una nueva review.');
 	}

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import * as p from '@clack/prompts';
 import { AGENTS, detectAgents, modelChoices, resolvedRunModel, runAgent } from '../lib/agents.mjs';
 import { listAcpModelsCached, supportsAcp } from '../lib/acp.mjs';
+import { isAuthRequiredError, withAgentLoginRetry } from '../lib/agent-login.mjs';
 import { buildAcpModelSelectOptions, sortModelSelectOptions } from '../lib/model-label.mjs';
 import { autocompleteEs } from '../lib/autocomplete-es.mjs';
 import { copyTextToClipboard } from '../lib/clipboard.mjs';
@@ -31,6 +32,46 @@ import { ensureReviewDir, writeDiffCache } from '../lib/review-dir.mjs';
 import { existingReviewOutput, waitForReviewOutput } from '../lib/wait-output.mjs';
 import { stampReviewProvenance } from '../lib/review-meta.mjs';
 import { runValidateCli } from '../lib/check-report.mjs';
+
+/**
+ * Copilot: elegir github.com vs Enterprise (el usuario elige; no se fuerza por env).
+ * @returns {Promise<string | false>} host vacío = github.com; false = canceló
+ */
+async function pickCopilotLoginHost() {
+	const where = await p.select({
+		message: '¿Con qué cuenta de GitHub querés iniciar sesión?',
+		options: [
+			{
+				value: 'github.com',
+				label: 'GitHub.com',
+				hint: 'Personal u organización en github.com — elegí la cuenta en el browser'
+			},
+			{
+				value: 'enterprise',
+				label: 'GitHub Enterprise',
+				hint: 'Host tipo empresa.ghe.com'
+			}
+		],
+		initialValue: 'github.com'
+	});
+	if (p.isCancel(where)) {
+		p.cancel('Cancelado.');
+		return false;
+	}
+	if (where === 'enterprise') {
+		const host = await p.text({
+			message: 'Hostname de Enterprise',
+			placeholder: 'empresa.ghe.com',
+			validate: (v) => (String(v || '').trim() ? undefined : 'Ingresá el hostname')
+		});
+		if (p.isCancel(host)) {
+			p.cancel('Cancelado.');
+			return false;
+		}
+		return String(host).trim();
+	}
+	return '';
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(here, '..');
@@ -75,9 +116,10 @@ un solo select lista el portapapeles y cada agente detectado.
 Si pasás --branch y --base juntos, saltea los selects.
 Con --agent: saltea esa lista; elegís un agente instalado y el modelo,
 y diff-review lo lanza con el prompt.
-Si el agente habla ACP (Claude Code), corre desde la UI web: ves el
-proceso en vivo y después podés preguntarle o pedirle cambios al reporte.
-Con --headless corre en la terminal como antes.
+Los agentes integrados (Claude Code, Cursor CLI, Copilot) corren por ACP
+desde la UI web: ves el proceso en vivo y después podés preguntarle o
+pedirle cambios al reporte. Si falta login, la CLI ofrece abrirlo en una
+terminal y reintentar. Con --headless corren en la terminal.
 Con --ui: abre la UI de inmediato (web-first).
 
 Options:
@@ -405,6 +447,7 @@ function copyPromptOrWarn(prompt) {
 
 /**
  * Opciones de modelo: las que ofrece el agente por ACP (si va a correr así) o, si no, la lista fija.
+ * Si ACP falla por auth, ofrece el login (misma TTY o proceso oculto), espera exit 0 y reintenta (misma lógica que la web).
  * @param {import('../lib/agents.mjs').DetectedAgent} agent
  * @param {{ acpCwd?: string }} opts
  */
@@ -415,26 +458,85 @@ async function modelOptions(agent, { acpCwd }) {
 		options: sortModelSelectOptions(fixed.options)
 	};
 	if (!acpCwd) return sortedFixed;
+
+	/** @param {boolean} [force] */
+	const fetchModels = (force = false) => listAcpModelsCached(agent, { cwd: acpCwd, force });
+
 	const spin = p.spinner();
 	spin.start(`Consultando los modelos de ${agent.def.label}`);
-	try {
-		const { models, currentModel, fromCache } = await listAcpModelsCached(agent, { cwd: acpCwd });
+
+	/**
+	 * @param {{ models: { value: string, name: string }[], currentModel: string, fromCache: boolean }} result
+	 */
+	const finishOk = (result) => {
 		spin.stop(
-			fromCache
+			result.fromCache
 				? `Modelos de ${agent.def.label} (caché)`
 				: `Modelos de ${agent.def.label}`
 		);
-		if (!models.length) return sortedFixed;
-		// Misma fusión/labels/orden que la UI.
-		return buildAcpModelSelectOptions({ models, currentModel }, fixed);
+		if (!result.models.length) return sortedFixed;
+		return buildAcpModelSelectOptions(
+			{ models: result.models, currentModel: result.currentModel },
+			fixed
+		);
+	};
+
+	try {
+		return finishOk(await fetchModels(false));
 	} catch (err) {
-		spin.stop(`No pude consultar los modelos (${err instanceof Error ? err.message.split('\n')[0] : err}).`);
+		const detail = err instanceof Error ? err.message.split('\n')[0] : String(err);
+		spin.stop(`No pude consultar los modelos (${detail}).`);
+
+		// Sin TTY o no es auth: misma degradación de antes.
+		if (!isInteractive() || !isAuthRequiredError(err)) return sortedFixed;
+
+		const outcome = await withAgentLoginRetry(() => fetchModels(true), {
+			agent,
+			cwd: acpCwd,
+			priorError: err,
+			askToLogin: async ({ message, agentLabel, displayCmd }) => {
+				p.log.warn(message);
+				const answer = await p.confirm({
+					message: `¿Querés iniciar sesión en ${agentLabel} ahora?`,
+					initialValue: true
+				});
+				if (p.isCancel(answer)) {
+					p.cancel('Cancelado.');
+					return false;
+				}
+				if (displayCmd) p.log.step(displayCmd);
+				return Boolean(answer);
+			},
+			pickCopilotHost: pickCopilotLoginHost,
+			onStatus: (msg) => p.log.info(msg)
+		});
+
+		if (outcome.ok) {
+			const result = outcome.value;
+			p.log.success(
+				result.fromCache
+					? `Modelos de ${agent.def.label} (caché)`
+					: `Modelos de ${agent.def.label}`
+			);
+			if (!result.models.length) return sortedFixed;
+			return buildAcpModelSelectOptions(
+				{ models: result.models, currentModel: result.currentModel },
+				fixed
+			);
+		}
+		if (outcome.cancelled) {
+			p.log.warn('Siguiendo con la lista fija de modelos. Podés autenticarte después desde la web.');
+			return sortedFixed;
+		}
+		const after = outcome.error instanceof Error ? outcome.error.message.split('\n')[0] : String(outcome.error);
+		p.log.warn(`No pude consultar los modelos tras el login (${after}). Sigo con la lista fija.`);
 		return sortedFixed;
 	}
 }
 
 /**
  * Modelo del agente: autocomplete con búsqueda; sin TTY, el default (string vacío).
+ * `""` es válido (= "Por defecto del agente", no se pasa --model); no usar ensureValue.
  * @param {import('../lib/agents.mjs').DetectedAgent} agent
  * @param {{ acpCwd?: string }} [opts] con `acpCwd`, la lista sale del agente por ACP
  */
@@ -442,17 +544,17 @@ async function pickModel(agent, opts = {}) {
 	if (!isInteractive()) return '';
 
 	const { options, initialValue } = await modelOptions(agent, opts);
-	return /** @type {string} */ (
-		ensureValue(
-			await autocompleteEs({
-				message: 'Modelo',
-				options,
-				initialValue,
-				placeholder: 'opus, sonnet, gpt…'
-			}),
-			'modelo'
-		)
-	);
+	const value = await autocompleteEs({
+		message: 'Modelo',
+		options,
+		initialValue,
+		placeholder: 'opus, sonnet, gpt…'
+	});
+	if (p.isCancel(value)) {
+		p.cancel('Cancelado.');
+		process.exit(0);
+	}
+	return /** @type {string} */ (value ?? '');
 }
 
 /**
@@ -573,6 +675,74 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
 }
 
 /**
+ * Antes de abrir la web: forzar un probe ACP (sin caché) y, si hace falta auth, login in-flow en esta terminal.
+ * Así no llegamos a LiveReviewView sin sesión cuando el usuario ya eligió el agente en la CLI.
+ * @param {import('../lib/agents.mjs').DetectedAgent} agent
+ * @param {string} repo
+ * @param {boolean} useClack
+ * @returns {Promise<boolean>} true si el probe quedó ok (logueado o ya lo estaba)
+ */
+async function ensureAgentAuthBeforeUi(agent, repo, useClack) {
+	const probe = () => listAcpModelsCached(agent, { cwd: repo, force: true });
+	try {
+		await probe();
+		return true;
+	} catch (err) {
+		if (!isInteractive() || !isAuthRequiredError(err)) {
+			const detail = err instanceof Error ? err.message.split('\n')[0] : String(err);
+			if (useClack) p.log.warn(detail);
+			else console.warn(detail);
+			return false;
+		}
+
+		const outcome = await withAgentLoginRetry(() => probe(), {
+			agent,
+			cwd: repo,
+			priorError: err,
+			askToLogin: async ({ message, agentLabel }) => {
+				if (useClack) {
+					p.log.warn(message);
+					const answer = await p.confirm({
+						message: `¿Querés iniciar sesión en ${agentLabel} ahora?`,
+						initialValue: true
+					});
+					if (p.isCancel(answer)) {
+						p.cancel('Cancelado.');
+						return false;
+					}
+					return Boolean(answer);
+				}
+				console.warn(message);
+				return true;
+			},
+			pickCopilotHost: useClack ? pickCopilotLoginHost : async () => '',
+			onStatus: (msg) => {
+				if (useClack) p.log.info(msg);
+				else console.log(msg);
+			}
+		});
+
+		if (outcome.ok) {
+			if (useClack) p.log.success(`Sesión de ${agent.def.label} lista.`);
+			else console.log(`Sesión de ${agent.def.label} lista.`);
+			return true;
+		}
+		if (outcome.cancelled) {
+			const warn =
+				'Sin iniciar sesión: la web va a pedir autenticación al lanzar el agente.';
+			if (useClack) p.log.warn(warn);
+			else console.warn(warn);
+			return false;
+		}
+		const after =
+			outcome.error instanceof Error ? outcome.error.message.split('\n')[0] : String(outcome.error);
+		if (useClack) p.log.warn(after);
+		else console.warn(after);
+		return false;
+	}
+}
+
+/**
  * El agente corre dentro del server de la UI (ACP): la web muestra el proceso y abre el reporte; la terminal ve un
  * resumen. La sesión queda viva para preguntas y cambios desde el reporte.
  * @param {import('../lib/agents.mjs').DetectedAgent} agent
@@ -580,6 +750,7 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
  * @param {{ host: string, port: number, open: boolean }} opts
  */
 async function runAgentInUi(agent, { repo, branch, base, model, outputFilename, useClack }, opts) {
+	await ensureAgentAuthBeforeUi(agent, repo, useClack);
 	const id = randomUUID();
 	const msg = `Lanzando ${agent.def.label} (${model || 'modelo por defecto'}). El progreso se ve en la web; Ctrl+C corta.`;
 	if (useClack) p.outro(msg);

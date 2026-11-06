@@ -285,7 +285,9 @@
 			return;
 		}
 		// Si ya frenó (p. ej. auth) antes de conectar el SSE, mostrar el mismo mensaje que la CLI.
-		if (info.status === 'error' && info.statusMessage) agentError = info.statusMessage;
+		if ((info.status === 'error' || info.status === 'needs_auth') && info.statusMessage) {
+			agentError = info.statusMessage;
+		}
 		agentInfo = info;
 		cliAgentPending = '';
 		agentStream?.close();
@@ -295,23 +297,27 @@
 	}
 
 	async function onAgentEvent(event: SeqEvent) {
-		if (event.type === 'status' && event.status === 'error') {
+		if (event.type === 'status' && (event.status === 'error' || event.status === 'needs_auth')) {
 			agentError = event.message || agentError || 'Error del agente.';
-			if (agentInfo) agentInfo = { ...agentInfo, status: 'error', statusMessage: agentError };
+			if (agentInfo) {
+				agentInfo = { ...agentInfo, status: event.status, statusMessage: agentError };
+			}
 			return;
 		}
 		if (
 			event.type === 'status' &&
-			event.status === 'idle' &&
-			/Cancelado/i.test(event.message || '')
+			(event.status === 'starting' || event.status === 'working' || event.status === 'idle')
 		) {
+			agentError = '';
 			if (agentInfo) {
-				agentInfo = {
+				const next: AgentSessionInfo = {
 					...agentInfo,
-					status: 'idle',
-					statusMessage: event.message || 'Cancelado.',
-					busy: false
+					status: event.status,
+					busy: event.status === 'starting' || event.status === 'working'
 				};
+				if (event.message) next.statusMessage = event.message;
+				else delete next.statusMessage;
+				agentInfo = next;
 			}
 			return;
 		}
@@ -1258,7 +1264,7 @@
 					</p>
 				{:else if modelsEmpty}
 					<p class="hint-text models-error">
-						El agente no listó modelos por ACP; usá el default o la lista fija.
+						El agente no devolvió modelos; usá el default o la lista fija.
 						<button type="button" class="linkish" onclick={retryAgentModels}>Reintentar</button>
 					</p>
 				{/if}

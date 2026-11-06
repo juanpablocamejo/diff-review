@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
+	import AgentAccountMenu from './AgentAccountMenu.svelte';
 	import AgentIcon from './AgentIcon.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import type { PermissionResponse } from './AgentLog.svelte';
@@ -7,7 +8,7 @@
 	import TrustSessionToggle from './TrustSessionToggle.svelte';
 	import { agentShortName } from './agent-icons';
 	import type { AgentSessionInfo, SeqEvent } from './agent-events';
-	import { openAgentLogin } from './agent.remote';
+	import { openAgentLogin, openAgentLogout } from './agent.remote';
 
 	let {
 		info,
@@ -36,6 +37,12 @@
 	let loginBusy = $state(false);
 	let loginNote = $state('');
 	let loginErr = $state('');
+	/** Sesión real del agente (no alcanza con needs_auth para ofrecer "Cambiar cuenta"). */
+	let accountLoggedIn = $state(false);
+	let accountRefresh = $state(0);
+	/** Copilot: elegir github.com vs Enterprise antes de lanzar OAuth. */
+	let copilotPickHost = $state(false);
+	let copilotEnterpriseHost = $state('');
 	/** Optimistic: true as soon as the user clicks Cancelar (before the SSE idle event). */
 	let userCancelled = $state(false);
 
@@ -97,11 +104,14 @@
 	const displayError = $derived.by(() => {
 		for (let i = events.length - 1; i >= 0; i--) {
 			const e = events[i];
-			if (e.type === 'status' && e.status === 'error') {
+			if (e.type !== 'status') continue;
+			if (e.status === 'error' || e.status === 'needs_auth') {
 				return e.message || error || 'Error del agente.';
 			}
+			// starting/working/idle posteriores limpian el pantallazo de error.
+			if (e.status === 'starting' || e.status === 'working' || e.status === 'idle') break;
 		}
-		if (info.status === 'error') {
+		if (info.status === 'error' || info.status === 'needs_auth') {
 			return error || info.statusMessage || 'Error del agente.';
 		}
 		// Prop de error del padre solo si no hay status conflictivo de "en curso".
@@ -109,12 +119,26 @@
 		return '';
 	});
 
+	const needsAuth = $derived.by(() => {
+		if (info.status === 'needs_auth') return true;
+		for (let i = events.length - 1; i >= 0; i--) {
+			const e = events[i];
+			if (e.type !== 'status') continue;
+			if (e.status === 'needs_auth') return true;
+			if (e.status === 'starting' || e.status === 'working' || e.status === 'idle' || e.status === 'error') {
+				return false;
+			}
+		}
+		return false;
+	});
+
 	const isAuthError = $derived(
-		/autenticad|authentication|login|no está autenticado/i.test(displayError)
+		needsAuth ||
+			/autenticad|authentication|login|iniciar sesi[oó]n|inicio de sesi[oó]n/i.test(displayError)
 	);
 
 	const canOpenLogin = $derived(
-		isAuthError && ['claude', 'copilot', 'codex', 'gemini'].includes(info.agentId)
+		isAuthError && ['claude', 'copilot', 'cursor'].includes(info.agentId)
 	);
 
 	const stage = $derived.by((): Stage => {
@@ -149,17 +173,89 @@
 		displayError ? 'error' : busy ? 'busy' : gone ? 'gone' : 'idle'
 	);
 
-	async function onOpenLogin() {
+	/** Mensaje legible de errores remote/HttpError (evita dump `{"message":…}`). */
+	function remoteErrorMessage(err: unknown): string {
+		if (err && typeof err === 'object') {
+			const body = (err as { body?: { message?: unknown } }).body;
+			if (body && typeof body.message === 'string' && body.message.trim()) return body.message.trim();
+		}
+		const raw = err instanceof Error ? err.message : String(err ?? '');
+		const trimmed = raw.trim();
+		if (trimmed.startsWith('{')) {
+			try {
+				const parsed = JSON.parse(trimmed) as { message?: unknown };
+				if (typeof parsed?.message === 'string' && parsed.message.trim()) return parsed.message.trim();
+			} catch {
+				/* ignore */
+			}
+		}
+		return trimmed;
+	}
+
+	const canSwitchAccount = $derived(
+		accountLoggedIn && (info.agentId === 'copilot' || info.agentId === 'claude')
+	);
+
+	function onLoginClick() {
+		loginErr = '';
+		loginNote = '';
+		if (info.agentId === 'copilot') {
+			copilotPickHost = true;
+			return;
+		}
+		void onOpenLogin();
+	}
+
+	async function onSwitchAccount() {
 		loginBusy = true;
 		loginErr = '';
 		loginNote = '';
 		try {
-			const result = await openAgentLogin({ agentId: info.agentId });
-			loginNote = `Se abrió una terminal con ${result.display}. Cuando termines, cortá diff-review (Ctrl+C) y volvé a lanzar.`;
+			const result = await openAgentLogout({
+				agentId: info.agentId,
+				...(info.id ? { id: info.id } : {})
+			});
+			loginNote = result.hint;
+			if (result.warnings?.length) loginErr = result.warnings.join(' ');
+			if (result.ok) accountLoggedIn = false;
+			accountRefresh += 1;
+			if (info.agentId === 'copilot') {
+				copilotPickHost = true;
+			} else {
+				void onOpenLogin();
+			}
 		} catch (err) {
-			loginErr = err instanceof Error ? err.message : String(err);
+			const msg = remoteErrorMessage(err);
+			if (msg) loginErr = msg;
 		} finally {
 			loginBusy = false;
+		}
+	}
+
+	async function onOpenLogin(host?: string | null) {
+		copilotPickHost = false;
+		loginBusy = true;
+		loginErr = '';
+		loginNote = '';
+		try {
+			const result = await openAgentLogin({
+				agentId: info.agentId,
+				...(info.id ? { id: info.id } : {}),
+				...(info.agentId === 'copilot' ? { host: host ?? '' } : {})
+			});
+			if (result.resumed) {
+				loginNote = 'Inicio de sesión ok. Reintentando…';
+			} else {
+				loginNote = result.hint || 'Esperando que completes el inicio de sesión…';
+				onretry?.();
+			}
+		} catch (err) {
+			const msg = remoteErrorMessage(err);
+			// El SSE ya pinta needs_auth / displayError; no duplicar el mismo texto (ni en JSON).
+			if (msg && msg !== displayError) loginErr = msg;
+		} finally {
+			loginBusy = false;
+			accountRefresh += 1;
 		}
 	}
 
@@ -283,6 +379,22 @@
 					<dt>Agente</dt>
 					<dd>{info.agentLabel}</dd>
 				</div>
+				{#if info.agentId}
+					<div>
+						<dt>Cuenta</dt>
+						<dd class="account-dd">
+							<AgentAccountMenu
+								agentId={info.agentId}
+								agentLabel={info.agentLabel}
+								sessionId={info.id}
+								showActions={!canOpenLogin}
+								refreshToken={accountRefresh}
+								onaccount={(loggedIn) => (accountLoggedIn = loggedIn)}
+								onafterauth={() => onretry?.()}
+							/>
+						</dd>
+					</div>
+				{/if}
 				<div>
 					<dt>Modelo</dt>
 					<dd>{info.model || 'por defecto'}</dd>
@@ -322,27 +434,99 @@
 				<div class="center fail">
 					<p class="title">{stage === 'gone' && !displayError ? 'Sesión cerrada' : isAuthError ? 'Autenticación requerida' : 'Error'}</p>
 					<p class="detail">
-						{#if displayError}
+						{#if isAuthError && !displayError}
+							Necesitás iniciar sesión en {info.agentLabel}.
+						{:else if displayError}
 							{displayError}
 						{:else}
 							La sesión del agente se cerró. Podés empezar una nueva review.
 						{/if}
 					</p>
 					{#if canOpenLogin}
-						<div class="auth-actions">
-							<button type="button" class="primary" onclick={() => void onOpenLogin()} disabled={loginBusy}>
-								{loginBusy ? 'Abriendo…' : `Abrir login de ${info.agentLabel}`}
-							</button>
-							<button type="button" class="ghost" onclick={onreset}>Nueva review</button>
-						</div>
+						{#if copilotPickHost && !loginBusy}
+							<div class="copilot-host-pick">
+								<p class="auth-note">¿Con qué cuenta de GitHub?</p>
+								<div class="auth-actions">
+									<button type="button" class="primary" onclick={() => void onOpenLogin('')}>
+										GitHub.com
+									</button>
+									<button type="button" class="ghost" onclick={() => (copilotPickHost = false)}>
+										Volver
+									</button>
+								</div>
+								<label class="copilot-host-field">
+									<span>Enterprise (hostname)</span>
+									<input
+										type="text"
+										bind:value={copilotEnterpriseHost}
+										placeholder="empresa.ghe.com"
+										autocomplete="off"
+									/>
+								</label>
+								<div class="auth-actions">
+									<button
+										type="button"
+										class="primary"
+										disabled={!copilotEnterpriseHost.trim()}
+										onclick={() => void onOpenLogin(copilotEnterpriseHost.trim())}
+									>
+										Continuar con Enterprise
+									</button>
+								</div>
+								<p class="auth-note">
+									En github.com, si tenés varias cuentas, elegí la corporativa en el browser del OAuth.
+								</p>
+							</div>
+						{:else}
+							<div class="auth-actions">
+								<button
+									type="button"
+									class="primary"
+									onclick={() => onLoginClick()}
+									disabled={loginBusy || busy}
+									title={info.agentLabel ? `Iniciar sesión en ${info.agentLabel}` : undefined}
+								>
+									{loginBusy
+										? 'Esperando que completes el inicio de sesión…'
+										: `Iniciar sesión en ${info.agentLabel || 'el agente'}`}
+								</button>
+								{#if canSwitchAccount}
+									<button
+										type="button"
+										class="ghost"
+										onclick={() => void onSwitchAccount()}
+										disabled={loginBusy || busy}
+										title="Cierra la sesión actual (incluye GitHub CLI si es Copilot) y permite elegir otra cuenta"
+									>
+										Cambiar cuenta
+									</button>
+								{/if}
+								{#if info.id && onretry}
+									<button
+										type="button"
+										class="ghost"
+										onclick={() => onretry?.()}
+										disabled={busy || loginBusy}
+									>
+										Reintentar
+									</button>
+								{/if}
+								<button type="button" class="ghost" onclick={onreset}>Nueva review</button>
+							</div>
+						{/if}
 						{#if loginNote}
 							<p class="auth-note">{loginNote}</p>
 						{/if}
-						{#if loginErr}
+						{#if loginErr && loginErr !== displayError}
 							<p class="auth-err">{loginErr}</p>
 						{/if}
 					{:else if stage === 'error'}
 						<div class="auth-actions">
+							{#if info.id && onretry && isAuthError}
+								<button type="button" class="primary" onclick={() => onretry?.()} disabled={busy}>
+									Reintentar
+								</button>
+							{/if}
 							<button type="button" class="ghost" onclick={onreset}>Nueva review</button>
 						</div>
 					{/if}
@@ -535,6 +719,13 @@
 		color: var(--text);
 	}
 
+	.fields dd.account-dd {
+		font-family: inherit;
+		white-space: normal;
+		overflow: visible;
+		text-overflow: unset;
+	}
+
 	/* Long branch tips: wrap (keep base visible) + full string on hover via title. */
 	.fields dd.branch-base {
 		white-space: normal;
@@ -627,6 +818,35 @@
 		max-width: 28rem;
 		font-size: 13px;
 		color: var(--text-dim);
+	}
+
+	.copilot-host-pick {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 4px;
+		width: min(100%, 28rem);
+	}
+
+	.copilot-host-field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		width: 100%;
+		margin-top: 8px;
+		font-size: 12px;
+		color: var(--text-dim);
+		text-align: left;
+	}
+
+	.copilot-host-field input {
+		padding: 7px 10px;
+		border: 1px solid var(--border);
+		border-radius: 0;
+		background: var(--bg);
+		color: var(--text);
+		font: inherit;
+		font-size: 13px;
 	}
 
 	.auth-err {
@@ -726,9 +946,8 @@
 		min-width: 0;
 	}
 
-	/* TrustSessionToggle trae width:100%; en el footer no puede comerse Permitir/Rechazar. */
+	/* TrustSessionToggle es inline; no debe empujar Permitir/Rechazar. */
 	.stage-footer :global(.trust) {
-		width: auto;
 		flex: 0 1 auto;
 		min-width: 0;
 		max-width: 100%;

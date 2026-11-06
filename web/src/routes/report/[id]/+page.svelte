@@ -2,7 +2,6 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { downloadReport, type ExportFormat } from '$lib/report/export';
-	import AgentIcon from '$lib/report/AgentIcon.svelte';
 	import { agentShortName, reportAgentId } from '$lib/report/agent-icons';
 	import { acpAgents } from '$lib/report/agent.remote';
 	import type { AcpAgentOption } from '$lib/report/agent-events';
@@ -392,13 +391,22 @@
 				</div>
 				<button
 					type="button"
-					class="ghost agent-btn"
+					class="ghost chat-btn"
 					class:on={chatOpen}
-					title="Preguntarle al agente o pedirle cambios en el reporte"
+					title="Chat con el agente"
+					aria-label="Chat con el agente"
+					aria-pressed={chatOpen}
 					onclick={() => (chatOpen = !chatOpen)}
 				>
-					<AgentIcon id={chatAgentId} size={14} />
-					{chatAgentName}
+					<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+						<path
+							d="M2.5 3.25h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7.2L4 13.75V11.25H2.5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="1.35"
+							stroke-linejoin="round"
+						/>
+					</svg>
 				</button>
 				<div class="menu-wrap">
 					<button
@@ -904,10 +912,19 @@
 		color: var(--text);
 	}
 
-	.agent-btn {
+	.chat-btn {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		padding: 0;
+	}
+
+	.chat-btn.on {
+		border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+		background: var(--accent-soft, color-mix(in srgb, var(--accent) 10%, transparent));
+		color: var(--accent);
 	}
 
 	.download-btn {

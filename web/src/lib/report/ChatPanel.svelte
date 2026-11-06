@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import AgentAccountMenu from './AgentAccountMenu.svelte';
 	import AgentIcon from './AgentIcon.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import AgentSelect from './AgentSelect.svelte';
@@ -10,6 +11,8 @@
 		acpAgents,
 		cancelAgent,
 		closeChat,
+		openAgentLogin,
+		openAgentLogout,
 		openChat,
 		respondPermission,
 		sendMessage,
@@ -89,6 +92,13 @@
 	let chatWidth = $state(CHAT_WIDTH_DEFAULT);
 	/** Bumps AgentLog scroll-to-bottom (Corregir / envío; ignora pin del usuario). */
 	let logScrollSignal = $state(0);
+	let loginBusy = $state(false);
+	let copilotPickHost = $state(false);
+	let copilotEnterpriseHost = $state('');
+	let loginNote = $state('');
+	/** Sesión real del agente (no alcanza con needs_auth para ofrecer "Cambiar cuenta"). */
+	let accountLoggedIn = $state(false);
+	let accountRefresh = $state(0);
 
 	function bumpLogScroll() {
 		logScrollSignal += 1;
@@ -556,10 +566,119 @@
 		}
 	}
 
+	const needsAuth = $derived(
+		info?.status === 'needs_auth' ||
+			stream?.status === 'needs_auth' ||
+			/autenticad|authentication|login|iniciar sesi[oó]n|inicio de sesi[oó]n/i.test(
+				error || stream?.errorMessage || ''
+			)
+	);
+
+	const authAgentId = $derived(info?.agentId || ref?.agentId || agentChoice || '');
+	const authAgentLabel = $derived(
+		info?.agentLabel || report.meta.agent || agentShortName(authAgentId, '') || 'el agente'
+	);
+
+	/** Mensaje legible de errores remote/HttpError (evita dump `{"message":…}`). */
+	function remoteErrorMessage(err: unknown): string {
+		if (err && typeof err === 'object') {
+			const body = (err as { body?: { message?: unknown } }).body;
+			if (body && typeof body.message === 'string' && body.message.trim()) return body.message.trim();
+		}
+		const raw = err instanceof Error ? err.message : String(err ?? '');
+		const trimmed = raw.trim();
+		if (trimmed.startsWith('{')) {
+			try {
+				const parsed = JSON.parse(trimmed) as { message?: unknown };
+				if (typeof parsed?.message === 'string' && parsed.message.trim()) return parsed.message.trim();
+			} catch {
+				/* ignore */
+			}
+		}
+		return trimmed;
+	}
+
+	const canSwitchAccount = $derived(
+		accountLoggedIn && (authAgentId === 'copilot' || authAgentId === 'claude')
+	);
+
+	/** Un login automático por sesión; si falla, el botón queda para reintentar. */
+	let autoLoginFor = '';
+
+	$effect(() => {
+		if (!needsAuth || loginBusy || copilotPickHost) return;
+		const id = authAgentId;
+		const sessionId = info?.id;
+		if (!sessionId || (id !== 'claude' && id !== 'copilot' && id !== 'cursor')) return;
+		const key = `${id}:${sessionId}`;
+		if (autoLoginFor === key) return;
+		autoLoginFor = key;
+		untrack(() => onLoginClick());
+	});
+
+	function onLoginClick() {
+		loginNote = '';
+		error = '';
+		if (authAgentId === 'copilot') {
+			copilotPickHost = true;
+			return;
+		}
+		void onOpenLogin();
+	}
+
+	async function onSwitchAccount() {
+		loginBusy = true;
+		loginNote = '';
+		error = '';
+		try {
+			const result = await openAgentLogout({
+				agentId: authAgentId,
+				...(info?.id ? { id: info.id } : {})
+			});
+			loginNote = result.hint;
+			if (result.warnings?.length) error = result.warnings.join(' ');
+			if (result.ok) accountLoggedIn = false;
+			accountRefresh += 1;
+			if (authAgentId === 'copilot') copilotPickHost = true;
+			else void onOpenLogin();
+		} catch (err) {
+			error = remoteErrorMessage(err);
+		} finally {
+			loginBusy = false;
+		}
+	}
+
+	async function onOpenLogin(host?: string | null) {
+		copilotPickHost = false;
+		loginBusy = true;
+		loginNote = '';
+		error = '';
+		try {
+			const result = await openAgentLogin({
+				agentId: authAgentId,
+				...(info?.id ? { id: info.id } : {}),
+				...(authAgentId === 'copilot' ? { host: host ?? '' } : {})
+			});
+			loginNote = result.resumed
+				? 'Inicio de sesión ok. Reconectando…'
+				: result.hint || 'Esperando que completes el inicio de sesión…';
+			if (result.resumed) autoLoginFor = '';
+			if (!result.resumed && ref) {
+				await connect(report.id, ref);
+			}
+		} catch (err) {
+			error = remoteErrorMessage(err);
+		} finally {
+			loginBusy = false;
+			accountRefresh += 1;
+		}
+	}
+
 	async function onEvent(event: SeqEvent) {
-		if (event.type === 'status' && event.status === 'error') {
+		if (event.type === 'status' && (event.status === 'error' || event.status === 'needs_auth')) {
 			pendingEdit = false;
 			awaitingFixIds = null;
+			if (event.status === 'needs_auth' && event.message) error = event.message;
 		}
 		if (event.type === 'turn' && awaitingFixIds?.length) {
 			const ids = awaitingFixIds;
@@ -646,7 +765,7 @@
 
 	async function send() {
 		const body = text.trim();
-		if (!body || !info || busy) return;
+		if (!body || !info || busy || needsAuth || loginBusy) return;
 		const sendMode = mode;
 		text = '';
 		bumpLogScroll();
@@ -715,8 +834,19 @@
 				<AgentIcon id={headerAgentId} size={16} />
 				<strong>{headerAgentName}</strong>
 			{/if}
-			{#if displayModel}
-				<small title={displayModel}>{displayModel}</small>
+			{#if headerAgentId}
+				<div class="header-account">
+					<AgentAccountMenu
+						agentId={headerAgentId}
+						agentLabel={headerAgentName}
+						sessionId={info?.id ?? ''}
+						refreshToken={accountRefresh}
+						onaccount={(loggedIn) => (accountLoggedIn = loggedIn)}
+						onafterauth={() => {
+							if (ref) void connect(report.id, ref);
+						}}
+					/>
+				</div>
 			{/if}
 		</div>
 		<button type="button" class="close" title="Cerrar" aria-label="Cerrar chat" onclick={onclose}>✕</button>
@@ -755,7 +885,7 @@
 					</p>
 				{:else if modelsEmpty}
 					<p class="hint models-error">
-						El agente no listó modelos por ACP; usá el default o la lista fija.
+						El agente no devolvió modelos; usá el default o la lista fija.
 						<button type="button" class="linkish" onclick={retryAgentModels}>Reintentar</button>
 					</p>
 				{/if}
@@ -774,7 +904,7 @@
 					{/if}
 				</button>
 			{:else}
-				<p class="hint">No hay agentes ACP instalados en este equipo.</p>
+				<p class="hint">No hay agentes instalados en este equipo.</p>
 			{/if}
 			{#if error}
 				<p class="err">{error}</p>
@@ -784,18 +914,89 @@
 		<div class="log-area">
 			{#if !sessionReady}
 				<div class="connecting" role="status" aria-live="polite">
-					{#if error && !connecting}
-						<p class="connecting-title">No se pudo abrir la sesión</p>
-						<p class="err" style="padding: 0; text-align: left">{error}</p>
-						{#if ref}
-							<button
-								type="button"
-								class="primary start"
-								style="align-self: center; margin-top: 8px"
-								onclick={() => void connect(report.id, ref)}
-							>
-								Reintentar
-							</button>
+					{#if (error || needsAuth) && !connecting}
+						<p class="connecting-title">
+							{needsAuth ? 'Autenticación requerida' : 'No se pudo abrir la sesión'}
+						</p>
+						<p class="err" style="padding: 0; text-align: left">
+							{error ||
+								stream?.errorMessage ||
+								(needsAuth
+									? `Necesitás iniciar sesión en ${report.meta.agent || 'el agente'}.`
+									: '')}
+						</p>
+						{#if needsAuth && authAgentId && copilotPickHost && !loginBusy}
+							<div class="copilot-host-pick">
+								<p class="hint">¿Con qué cuenta de GitHub?</p>
+								<div class="auth-actions">
+									<button type="button" class="primary start" onclick={() => void onOpenLogin('')}>
+										GitHub.com
+									</button>
+									<button type="button" class="ghost" onclick={() => (copilotPickHost = false)}>
+										Volver
+									</button>
+								</div>
+								<label class="copilot-host-field">
+									<span>Enterprise (hostname)</span>
+									<input
+										type="text"
+										bind:value={copilotEnterpriseHost}
+										placeholder="empresa.ghe.com"
+										autocomplete="off"
+									/>
+								</label>
+								<div class="auth-actions">
+									<button
+										type="button"
+										class="primary start"
+										disabled={!copilotEnterpriseHost.trim()}
+										onclick={() => void onOpenLogin(copilotEnterpriseHost.trim())}
+									>
+										Continuar con Enterprise
+									</button>
+								</div>
+								<p class="hint">
+									En github.com, si tenés varias cuentas, elegí la corporativa en el browser del OAuth.
+								</p>
+							</div>
+						{:else}
+							<div class="auth-actions">
+								{#if needsAuth && authAgentId}
+									<button
+										type="button"
+										class="primary start"
+										onclick={() => onLoginClick()}
+										disabled={loginBusy}
+									>
+										{loginBusy
+											? 'Esperando que completes el inicio de sesión…'
+											: `Iniciar sesión en ${authAgentLabel}`}
+									</button>
+									{#if canSwitchAccount}
+										<button
+											type="button"
+											class="ghost"
+											onclick={() => void onSwitchAccount()}
+											disabled={loginBusy}
+										>
+											Cambiar cuenta
+										</button>
+									{/if}
+								{/if}
+								{#if ref}
+									<button
+										type="button"
+										class="primary start"
+										onclick={() => void connect(report.id, ref)}
+										disabled={loginBusy}
+									>
+										Reintentar
+									</button>
+								{/if}
+							</div>
+						{/if}
+						{#if loginNote}
+							<p class="hint" style="margin-top: 8px">{loginNote}</p>
 						{/if}
 					{:else}
 						<div class="connecting-progress" aria-hidden="true">
@@ -811,13 +1012,13 @@
 							{/if}
 						</p>
 						<ol class="connecting-phases">
-							<li class:done={connecting || starting || sessionReady}>Abriendo sesión ACP</li>
+							<li class:done={connecting || starting || sessionReady}>Abriendo sesión</li>
 							<li class:done={sessionReady} class:active={(connecting || starting) && !sessionReady}>
 								Esperando al agente
 							</li>
 							<li>Listo para chatear</li>
 						</ol>
-						<p class="connecting-hint">Puede tardar unos segundos al lanzar o retomar la sesión ACP.</p>
+						<p class="connecting-hint">Puede tardar unos segundos al lanzar o retomar la sesión del agente.</p>
 					{/if}
 				</div>
 			{:else}
@@ -838,8 +1039,59 @@
 		{#if stream?.gone}
 			<p class="err">La sesión del agente se cerró. Recargá la página para retomarla.</p>
 		{/if}
-		{#if error && sessionReady}
-			<p class="err">{error}</p>
+		{#if (error || needsAuth) && sessionReady}
+			<p class="err">{error || stream?.errorMessage}</p>
+			{#if needsAuth && authAgentId}
+				{#if copilotPickHost && !loginBusy}
+					<div class="copilot-host-pick" style="padding: 0 12px 8px">
+						<p class="hint">¿Con qué cuenta de GitHub?</p>
+						<div class="auth-actions">
+							<button type="button" class="primary start" onclick={() => void onOpenLogin('')}>
+								GitHub.com
+							</button>
+							<button type="button" class="ghost" onclick={() => (copilotPickHost = false)}>Volver</button>
+						</div>
+						<label class="copilot-host-field">
+							<span>Enterprise (hostname)</span>
+							<input
+								type="text"
+								bind:value={copilotEnterpriseHost}
+								placeholder="empresa.ghe.com"
+								autocomplete="off"
+							/>
+						</label>
+						<button
+							type="button"
+							class="primary start"
+							disabled={!copilotEnterpriseHost.trim()}
+							onclick={() => void onOpenLogin(copilotEnterpriseHost.trim())}
+						>
+							Continuar con Enterprise
+						</button>
+					</div>
+				{:else}
+					<div class="auth-actions" style="padding: 0 12px 8px">
+						<button type="button" class="primary start" onclick={() => onLoginClick()} disabled={loginBusy}>
+							{loginBusy
+								? 'Esperando que completes el inicio de sesión…'
+								: `Iniciar sesión en ${authAgentLabel}`}
+						</button>
+						{#if canSwitchAccount}
+							<button
+								type="button"
+								class="ghost"
+								onclick={() => void onSwitchAccount()}
+								disabled={loginBusy}
+							>
+								Cambiar cuenta
+							</button>
+						{/if}
+					</div>
+				{/if}
+				{#if loginNote}
+					<p class="hint" style="padding: 0 12px 8px">{loginNote}</p>
+				{/if}
+			{/if}
 		{/if}
 		<div class="composer">
 			<div class="composer-top">
@@ -896,7 +1148,7 @@
 					class="primary"
 					title="Ctrl+Enter"
 					onclick={() => void send()}
-					disabled={!text.trim() || busy || !sessionReady}
+					disabled={!text.trim() || busy || !sessionReady || needsAuth || loginBusy}
 				>
 					{#if connecting || !sessionReady}
 						Conectando…
@@ -966,26 +1218,26 @@
 	.title {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 8px 12px;
 		min-width: 0;
+		flex: 1;
+		flex-wrap: wrap;
 	}
 	.title strong {
 		font-size: 13.5px;
 		font-weight: 650;
 	}
-	.title small {
-		font-family: var(--mono);
-		font-size: 11.5px;
-		color: var(--text-faint);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		min-width: 0;
-	}
 	.header-agent {
 		flex: 0 1 auto;
 		min-width: 0;
 		max-width: min(200px, 55%);
+	}
+	.header-account {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+	.header-account :global(.account-label) {
+		max-width: min(140px, 40vw);
 	}
 	.header-agent :global(.agent-select .trigger) {
 		min-height: 28px;
@@ -1081,6 +1333,36 @@
 		align-items: baseline;
 		gap: 8px;
 		padding-inline: 0;
+	}
+	.auth-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		justify-content: center;
+		margin-top: 8px;
+	}
+	.copilot-host-pick {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		width: min(100%, 28rem);
+	}
+	.copilot-host-field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		font-size: 12px;
+		color: var(--text-dim);
+		text-align: left;
+	}
+	.copilot-host-field input {
+		padding: 7px 10px;
+		border: 1px solid var(--border);
+		border-radius: 0;
+		background: var(--bg);
+		color: var(--text);
+		font: inherit;
+		font-size: 13px;
 	}
 	button.linkish {
 		background: none;

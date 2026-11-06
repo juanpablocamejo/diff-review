@@ -5,8 +5,9 @@ import {
 	cancelTurn,
 	closeChat as closeChatSession,
 	listAcpAgents,
-	loginCommand,
+	agentAccountStatus as readAgentAccountStatus,
 	openAgentLogin as openAgentLoginSession,
+	openAgentLogout as openAgentLogoutSession,
 	openChat as openChatSession,
 	respondPermission as respondSessionPermission,
 	retryReview as retryReviewSession,
@@ -218,17 +219,74 @@ export const retryReview = command(
 	}
 );
 
-/** Abre una terminal con el login del agente (p. ej. `claude /login`). */
+/** Cuenta activa del agente (gh / claude auth status) para el header. */
+export const agentAccount = query(
+	'unchecked',
+	async (input: {
+		agentId: string;
+	}): Promise<{
+		agentId: string;
+		loggedIn: boolean;
+		accountLabel: string | null;
+		detail: string | null;
+		source: string | null;
+		warnings: string[];
+	}> => {
+		try {
+			return readAgentAccountStatus(String(input?.agentId || '').trim());
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
+/** Lanza el login del agente (proceso oculto / OAuth); con `id` de sesión espera exit 0 y retoma. */
 export const openAgentLogin = command(
 	'unchecked',
-	async (input: { agentId: string }): Promise<{ display: string; hint?: string }> => {
+	async (input: {
+		agentId?: string;
+		id?: string;
+		/** Copilot: host Enterprise; vacío/omitido = github.com. */
+		host?: string | null;
+	}): Promise<{ display: string; hint?: string; resumed?: boolean }> => {
 		try {
-			const agentId = String(input?.agentId || '');
-			const result = openAgentLoginSession(agentId);
-			const cmd = loginCommand(agentId);
+			const sessionId = String(input?.id || '').trim();
+			const agentId = String(input?.agentId || '').trim();
+			const host = input?.host != null ? String(input.host) : undefined;
+			const result = await openAgentLoginSession({
+				sessionId: sessionId || undefined,
+				agentId: agentId || undefined,
+				host
+			});
 			return {
 				display: result.display,
-				...(cmd ? { hint: `Completá el login y después reintentá la review.` } : {})
+				...(result.resumed
+					? { resumed: true, hint: 'Inicio de sesión ok. Reintentando…' }
+					: { hint: 'Esperando que completes el inicio de sesión…' })
+			};
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
+/** Cierra sesión del agente (Copilot también desloguea `gh`) para poder elegir otra cuenta. */
+export const openAgentLogout = command(
+	'unchecked',
+	async (input: {
+		agentId?: string;
+		id?: string;
+		host?: string | null;
+	}): Promise<{ ok: boolean; steps: string[]; warnings: string[]; hint: string }> => {
+		try {
+			const result = await openAgentLogoutSession({
+				sessionId: String(input?.id || '').trim() || undefined,
+				agentId: String(input?.agentId || '').trim() || undefined,
+				host: input?.host != null ? String(input.host) : undefined
+			});
+			return {
+				...result,
+				hint: result.warnings[0] || 'Sesión cerrada. Elegí con qué cuenta iniciar de nuevo.'
 			};
 		} catch (err) {
 			fail(err);

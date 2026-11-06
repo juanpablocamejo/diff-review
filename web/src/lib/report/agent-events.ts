@@ -2,7 +2,7 @@
 
 export type ChatMode = 'ask' | 'edit' | 'fix';
 
-export type SessionStatus = 'starting' | 'working' | 'idle' | 'error' | 'closed';
+export type SessionStatus = 'starting' | 'working' | 'idle' | 'error' | 'needs_auth' | 'closed';
 
 export type AgentEvent =
 	| { type: 'status'; status: SessionStatus; message?: string }

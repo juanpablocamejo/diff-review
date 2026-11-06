@@ -47,30 +47,38 @@ diff-review --agent
 
 Al enviarlo a un agente, en vez de copiar el prompt pregunta el modelo (con `--agent`, primero el agente):
 
-1. **Agente**: los instalados que encuentra (Claude Code, Codex, Cursor CLI, GitHub Copilot CLI, Gemini CLI). Si ya lo elegiste en la lista anterior, este paso no se repite. Se buscan por nombre en el `PATH` y en algunas rutas fijas: en Windows, el Claude Code que trae la app de
+1. **Agente**: los instalados que encuentra (Claude Code, Cursor CLI, GitHub Copilot CLI). Si ya lo elegiste en la lista anterior, este paso no se repite. Se buscan por nombre en el `PATH` y en algunas rutas fijas: en Windows, el Claude Code que trae la app de
    escritorio (`%APPDATA%\Claude\claude-code\<versión>\…\claude.exe`) y `%LOCALAPPDATA%\cursor-agent\cursor-agent.cmd`;
    en Linux/macOS, `~/.local/bin/claude`, `~/.claude/local/claude` y `~/.local/bin/cursor-agent`.
 2. **Modelo**: arranca en el default del agente (el configurado en `~/.claude/settings.json` /
-   `ANTHROPIC_MODEL`, `~/.codex/config.toml`, `~/.cursor/cli-config.json`, `~/.copilot/settings.json` o
-   `~/.gemini/settings.json`; si no hay, no se pasa `--model`). También lista los conocidos (para Claude, los
-   alias `opus` / `sonnet` / `haiku`; para Copilot, `auto`) y "Otro…" para escribir un id.
+   `ANTHROPIC_MODEL`, `~/.cursor/cli-config.json` o `~/.copilot/settings.json`; si no hay, no se pasa `--model`).
+   También lista los conocidos (para Claude, los alias `opus` / `sonnet` / `haiku`; para Copilot, `auto`) y "Otro…"
+   para escribir un id. Por ACP, la lista sale de lo que ofrece el agente.
 
-El prompt viaja por stdin y la salida del agente se ve en la terminal. Claude Code y Copilot corren con permisos
-acotados: leer, `git`, el `validate` y escribir solo el JSON del review (Copilot no puede acotar por argumentos,
-así que permite `npx` en general). Cursor corre con `--force` (no tiene
-flag para pasar una allowlist y sin él bloquearía el `validate`) y Gemini con `--yolo`. Si no hay agentes
-instalados, sigue con el portapapeles. Sin terminal interactiva usa el primer agente con su modelo por defecto.
+Por defecto el agente corre por ACP en la web. Con `--headless`, el prompt va por stdin y la salida se ve en la
+terminal (Claude/Copilot con permisos acotados; Cursor con `--force`). Si no hay agentes instalados, sigue con el
+portapapeles. Sin terminal interactiva usa el primer agente con su modelo por defecto.
 
-El agente tiene que estar logueado (p. ej. `claude /login` una vez).
+Si el agente no está autenticado, la CLI pregunta **¿Querés iniciar sesión en {agente} ahora?** (al listar
+modelos y otra vez **antes de abrir la web** si ya elegiste agente), corre el login **en la misma terminal**,
+espera exit 0 y reintenta; si cancelás, sigue (lista fija de modelos / web con CTA). Con **Copilot** podés
+elegir **GitHub.com** o **Enterprise** (hostname); no se fuerza un host por env. En github.com, si tenés
+varias cuentas, elegí la corporativa en el browser del OAuth. En el header (arriba a la derecha) se muestra la **cuenta activa** del agente; el menú tiene
+**Cambiar cuenta** (en Copilot también cierra sesiones de `gh`, porque si no el logout OAuth no alcanza).
+Ojo: si tenés `GH_TOKEN` / `GITHUB_TOKEN` / `COPILOT_GITHUB_TOKEN` en el entorno, hay que sacarlos a mano.
 
 #### Por ACP, con la web (Claude Code, Cursor CLI, GitHub Copilot CLI)
 
-Si el agente elegido habla ACP, la CLI abre la UI enseguida y el agente corre dentro del server local. Claude Code
+Los agentes integrados corren por ACP: la CLI abre la UI enseguida y el agente vive dentro del server local. Claude Code
 va por el adaptador `@agentclientprotocol/claude-agent-acp` (se baja con `npx` la primera vez); Cursor
-(`cursor-agent acp`) y Copilot (`copilot --acp`) lo traen de fábrica. Codex y Gemini siguen por la terminal.
+(`cursor-agent acp`) y Copilot (`copilot --acp`) lo traen de fábrica.
 
 - El select de modelo muestra los que ofrece cada agente (se consultan por ACP la primera vez).
 - La web muestra lo que va haciendo (comandos, archivos que lee, plan). La terminal solo avisa fallos duros o JSON válido.
+- Autenticación ACP: el client anuncia `auth.terminal`; Cursor usa `authenticate`, Claude/Copilot abren login
+  interactivo (métodos `type: terminal` o `_meta.terminal-auth`) en la misma TTY desde la CLI (modelos + justo
+  antes de abrir la web), o como proceso oculto + browser OAuth desde la web vía **Iniciar sesión en {agente}**.
+  Si hace falta más tarde, la web usa **needs_auth**.
 - Al terminar cada turno, el server valida el JSON; si falta algo se lo pide al agente hasta dos veces y, cuando valida,
   la web abre el reporte.
 - Cada pedido de permiso pasa por una política fija: leer dentro del repo, escribir únicamente el JSON del review

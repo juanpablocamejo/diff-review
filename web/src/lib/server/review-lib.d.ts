@@ -266,14 +266,27 @@ declare module '$review/lib/acp.mjs' {
 	import type { SessionUpdate, ToolCallUpdate } from '@agentclientprotocol/sdk';
 	import type { DetectedAgent } from '$review/lib/agents.mjs';
 	import type { Decision } from '$review/lib/acp-policy.mjs';
+	export class AcpAuthRequiredError extends Error {
+		name: 'AcpAuthRequiredError';
+		methods: unknown[];
+		agentId: string;
+		agentLabel: string;
+		constructor(
+			message: string,
+			info?: { methods?: unknown[]; agentId?: string; agentLabel?: string }
+		);
+	}
 	export type AcpSession = {
 		sessionId: string;
 		resumed: boolean;
 		models: { value: string; name: string }[];
 		currentModel: string;
 		modelWarning?: string;
+		supportsLogout: boolean;
+		setModel: (model: string) => Promise<{ currentModel: string; warning?: string }>;
 		prompt: (text: string) => Promise<{ stopReason: string }>;
 		cancel: () => Promise<void>;
+		logout: () => Promise<void>;
 		close: () => void;
 		closed: Promise<void>;
 		stderrTail: () => string;
@@ -296,10 +309,117 @@ declare module '$review/lib/acp.mjs' {
 			decide: (toolCall: ToolCallUpdate) => Decision;
 			onUpdate?: (update: SessionUpdate) => void;
 			onPermission?: (toolCall: ToolCallUpdate, decision: Decision) => void;
-			onDeniedPermission?: (toolCall: ToolCallUpdate, decision: Decision) => Promise<boolean>;
+			onDeniedPermission?: (
+				toolCall: ToolCallUpdate,
+				decision: Decision
+			) => Promise<boolean | { allow: boolean; always?: boolean }>;
 			onExit?: (info: { code: number | null; stderr: string }) => void;
 		}
 	): Promise<AcpSession>;
+}
+
+declare module '$review/lib/agent-login.mjs' {
+	export type LoginCommand = {
+		bin: string;
+		args: string[];
+		display: string;
+		env?: Record<string, string>;
+	};
+	export type AuthMethodKind = 'agent' | 'terminal' | 'terminal-meta' | 'unknown';
+	export function normalizeCopilotLoginHost(host?: string | null): string;
+	export function withCopilotLoginHost(
+		cmd: LoginCommand,
+		host?: string | null
+	): LoginCommand;
+	export function loginCommand(
+		agentId: string,
+		opts?: { host?: string | null }
+	): LoginCommand | null;
+	export function logoutCommand(agentId: string): LoginCommand | null;
+	export function agentAccountStatus(agentId: string): {
+		agentId: string;
+		loggedIn: boolean;
+		accountLabel: string | null;
+		detail: string | null;
+		source: 'gh' | 'claude' | 'env' | 'unknown' | null;
+		warnings: string[];
+	};
+	export function copilotTokenEnvOverrides(env?: NodeJS.ProcessEnv): string[];
+	export function listGhAuthAccounts(opts?: {
+		env?: NodeJS.ProcessEnv;
+		run?: typeof import('node:child_process').spawnSync;
+	}): { host: string; user: string; active: boolean }[];
+	export function logoutGhAuthAccounts(opts?: {
+		env?: NodeJS.ProcessEnv;
+		run?: typeof import('node:child_process').spawnSync;
+		host?: string | null;
+	}): {
+		ok: boolean;
+		loggedOut: { host: string; user: string }[];
+		warnings: string[];
+	};
+	export function runAgentLogout(
+		agentId: string,
+		opts?: {
+			host?: string | null;
+			env?: NodeJS.ProcessEnv;
+			cwd?: string;
+		}
+	): Promise<{ ok: boolean; steps: string[]; warnings: string[] }>;
+	export function claudeCliLoginArgs(method?: unknown): string[];
+	export function classifyAuthMethod(method: unknown): AuthMethodKind;
+	export function groupAuthMethods(authMethods: unknown[]): {
+		agent: unknown[];
+		terminal: unknown[];
+		terminalMeta: unknown[];
+		unknown: unknown[];
+	};
+	export function looksLikeAuthFailure(text: string): boolean;
+	export function authFailureMessage(
+		agentId: string,
+		agentLabel: string,
+		detail: string
+	): string | null;
+	export function loginIncompleteMessage(): string;
+	export function loginWaitingMessage(): string;
+	export function isAuthRequiredError(err: unknown): boolean;
+	export function authMethodsFromError(err: unknown): unknown[];
+	export function pickLoginAuthMethod(methods?: unknown[]): unknown | null;
+	export function resolveLoginCommand(
+		agent: { def: { id: string; acp?: (ctx: { path: string }) => unknown }; path: string },
+		method?: unknown
+	): LoginCommand;
+	export type LoginLaunchMode = 'inherit' | 'hidden' | 'external';
+	export function canInheritLoginTty(opts?: { external?: boolean }): boolean;
+	export function resolveLoginLaunchMode(opts?: {
+		wait?: boolean;
+		external?: boolean;
+	}): LoginLaunchMode;
+	export function openLoginTerminal(agentIdOrCmd: string | LoginCommand): { display: string };
+	export function runLoginTerminal(
+		cmd: LoginCommand,
+		opts?: { wait?: boolean; cwd?: string; external?: boolean }
+	): Promise<{ display: string; code: number | null; mode: LoginLaunchMode }>;
+	export function withAgentLoginRetry<T>(
+		op: () => Promise<T>,
+		opts: {
+			agent: { def: { id: string; label: string; acp?: Function }; path: string };
+			cwd?: string;
+			priorError?: unknown;
+			askToLogin: (info: {
+				message: string;
+				agentLabel: string;
+				displayCmd: string;
+			}) => Promise<boolean>;
+			pickCopilotHost?: () => Promise<string | null | undefined | false>;
+			onStatus?: (msg: string) => void;
+			runTerminal?: typeof runLoginTerminal;
+		}
+	): Promise<
+		| { ok: true; value: T }
+		| { ok: false; cancelled: true; error: unknown }
+		| { ok: false; cancelled: false; error: unknown }
+	>;
 }
 
 declare module '$review/lib/review-meta.mjs' {
