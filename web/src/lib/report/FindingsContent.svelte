@@ -359,16 +359,21 @@
 		color: var(--danger);
 	}
 
-	/* Corregir: filled con tokens --fix-* */
+	/* Corregir: neutro como Ignorar; se llena (tokens --fix-*) solo al pasar o si está marcado. */
 	.decision-group button.fix {
+		background: transparent;
+		border-color: var(--border);
+		color: var(--text-dim);
+	}
+
+	.decision-group button.fix:hover,
+	.decision-group button.fix.on {
 		background: var(--fix-bg);
 		border-color: var(--fix-border);
 		color: var(--fix-text);
 	}
 
-	.decision-group button.fix:hover,
 	.decision-group button.fix.on {
-		filter: brightness(1.05);
 		box-shadow: inset 0 0 0 1px var(--fix-border);
 	}
 

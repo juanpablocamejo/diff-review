@@ -836,6 +836,8 @@ async function checkOutput(entry: Entry, since: number, retriesLeft: number): Pr
 			model: entry.model,
 			// Nombre que el agente le da a la opción elegida: lleva la versión que el alias no dice.
 			modelLabel: entry.acp?.models.find((o) => o.value === entry.model)?.name,
+			// La fecha de la review la ponemos nosotros (la del agente no es confiable); un edit desde el chat no la cambia.
+			...(entry.mode === 'review' ? { generatedAt: new Date().toISOString() } : {}),
 			agentSession: { agentId: entry.agentId, sessionId: entry.acpSessionId, outputFilename: entry.outputFilename }
 		});
 		emit(entry, { type: 'review', ok: true, filename: entry.outputFilename, errors: [], final: true });

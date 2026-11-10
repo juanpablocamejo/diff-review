@@ -13,7 +13,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -683,7 +683,8 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
 	if (code !== 0) console.warn(`${agent.def.label} terminó con código ${code}, pero el JSON es válido.`);
 	stampReviewProvenance(result.path, {
 		agent: agent.def.label,
-		model: resolvedRunModel(agent.def, model)
+		model: resolvedRunModel(agent.def, model),
+		generatedAt: new Date().toISOString()
 	});
 	return /** @type {{ path: string }} */ (result);
 }
@@ -1077,6 +1078,8 @@ async function main() {
 				for (const e of errors.slice(0, 5)) console.log(`  · ${e}`);
 			}
 		});
+		// Por el portapapeles no sabemos qué agente fue, pero sí cuándo escribió el JSON.
+		stampReviewProvenance(result.path, { generatedAt: statSync(result.path).mtime.toISOString() });
 	}
 
 	console.log('JSON OK. Abriendo la UI web…');

@@ -430,6 +430,7 @@ declare module '$review/lib/review-meta.mjs' {
 			agent?: string;
 			model?: string;
 			modelLabel?: string;
+			generatedAt?: string;
 			agentSession?: { agentId: string; sessionId: string; outputFilename: string };
 		}
 	): boolean;
