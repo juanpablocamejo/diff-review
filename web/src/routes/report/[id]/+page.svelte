@@ -189,6 +189,7 @@
 			<a href={resolve('/')} class="app-brand chrome-brand" title="Inicio">
 				<BrandMark size={16} />
 				<span class="brand-text">diff-review</span>
+				<span class="brand-text app-version">v{__APP_VERSION__}</span>
 			</a>
 			{#if report}
 				<span class="chrome-divider" aria-hidden="true"></span>

@@ -1230,6 +1230,7 @@
 		<a href={resolve('/')} class="app-brand">
 			<BrandMark size={16} />
 			<span>diff-review</span>
+			<span class="app-version">v{__APP_VERSION__}</span>
 		</a>
 		<ThemeToggle />
 	</header>

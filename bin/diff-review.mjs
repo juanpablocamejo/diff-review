@@ -13,13 +13,14 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as p from '@clack/prompts';
 import { AGENTS, detectAgents, modelChoices, resolvedRunModel, runAgent } from '../lib/agents.mjs';
 import { listAcpModelsCached, supportsAcp } from '../lib/acp.mjs';
+import { readModelsCache } from '../lib/models-cache.mjs';
 import { isAuthRequiredError, withAgentLoginRetry } from '../lib/agent-login.mjs';
 import { buildAcpModelSelectOptions, sortModelSelectOptions } from '../lib/model-label.mjs';
 import { autocompleteEs } from '../lib/autocomplete-es.mjs';
@@ -84,6 +85,19 @@ const buildDir = (() => {
 })();
 const entry = join(buildDir, 'index.js');
 
+/** Versión del paquete instalado (la del package.json que viaja con el CLI). */
+const VERSION = (() => {
+	try {
+		return String(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version || '');
+	} catch {
+		return '';
+	}
+})();
+const TITLE = VERSION ? `diff-review v${VERSION}` : 'diff-review';
+
+/** Agentes cuyos modelos ya se consultaron en vivo en esta corrida: la sesión ACP anda y no hace falta otro probe. */
+const liveModelsOk = new Set();
+
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 5190;
 
@@ -103,7 +117,7 @@ function resolveNodeBin() {
 }
 
 function printHelp() {
-	console.log(`diff-review — review de branch con tu agente + UI local.
+	console.log(`${TITLE} — review de branch con tu agente + UI local.
 
 Usage:
   diff-review [options]
@@ -131,6 +145,7 @@ Options:
       --agent      Lanzar un agente instalado (${AGENTS.map((a) => a.bins[0]).join(', ')}) con el prompt
       --headless   Con agente: correrlo en la terminal (sin ACP ni chat en la web)
       --no-open    No abrir el navegador
+  -v, --version    Mostrar la versión
   -h, --help       Esta ayuda
 
 Requiere git en PATH. Los reportes viven en localStorage del navegador.
@@ -143,6 +158,7 @@ function parseArgs(argv) {
 		host: DEFAULT_HOST,
 		open: true,
 		help: false,
+		version: false,
 		ui: false,
 		agent: false,
 		headless: false,
@@ -152,6 +168,7 @@ function parseArgs(argv) {
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		if (a === '-h' || a === '--help') opts.help = true;
+		else if (a === '-v' || a === '--version') opts.version = true;
 		else if (a === '--no-open') opts.open = false;
 		else if (a === '--ui') opts.ui = true;
 		else if (a === '--agent') opts.agent = true;
@@ -299,7 +316,7 @@ async function resolveBranchBase(launch, opts, pickOpts = {}) {
 
 	const options = branchOptions(launch.listed);
 	if (!pickOpts.skipIntro) {
-		p.intro('diff-review');
+		p.intro(TITLE);
 		p.log.info(launch.repo);
 	}
 
@@ -459,21 +476,24 @@ async function modelOptions(agent, { acpCwd }) {
 	};
 	if (!acpCwd) return sortedFixed;
 
-	/** @param {boolean} [force] */
-	const fetchModels = (force = false) => listAcpModelsCached(agent, { cwd: acpCwd, force });
+	// Siempre se le pregunta al agente (tarda unos segundos, pero la lista es la real); la caché solo
+	// sirve de respaldo si la consulta falla.
+	const fetchModels = () => listAcpModelsCached(agent, { cwd: acpCwd, force: true });
 
-	const spin = p.spinner();
-	spin.start(`Consultando los modelos de ${agent.def.label}`);
+	/** Última lista conocida, aunque tenga más de 24 h; si no hay, la fija. */
+	const fallback = () => {
+		const hit = readModelsCache(agent.def.id, { ttlMs: Infinity });
+		if (!hit?.models.length) {
+			p.log.warn('Uso la lista fija de modelos.');
+			return sortedFixed;
+		}
+		p.log.warn(`Uso la última lista conocida (${hit.fetchedAt.slice(0, 10)}).`);
+		return buildAcpModelSelectOptions({ models: hit.models, currentModel: hit.currentModel }, fixed);
+	};
 
-	/**
-	 * @param {{ models: { value: string, name: string }[], currentModel: string, fromCache: boolean }} result
-	 */
-	const finishOk = (result) => {
-		spin.stop(
-			result.fromCache
-				? `Modelos de ${agent.def.label} (caché)`
-				: `Modelos de ${agent.def.label}`
-		);
+	/** @param {{ models: { value: string, name: string }[], currentModel: string }} result */
+	const fromLive = (result) => {
+		liveModelsOk.add(agent.def.id);
 		if (!result.models.length) return sortedFixed;
 		return buildAcpModelSelectOptions(
 			{ models: result.models, currentModel: result.currentModel },
@@ -481,16 +501,19 @@ async function modelOptions(agent, { acpCwd }) {
 		);
 	};
 
+	const spin = p.spinner();
+	spin.start(`Consultando los modelos de ${agent.def.label}`);
 	try {
-		return finishOk(await fetchModels(false));
+		const result = await fetchModels();
+		spin.stop(`Modelos de ${agent.def.label} (${result.models.length})`);
+		return fromLive(result);
 	} catch (err) {
 		const detail = err instanceof Error ? err.message.split('\n')[0] : String(err);
 		spin.stop(`No pude consultar los modelos (${detail}).`);
 
-		// Sin TTY o no es auth: misma degradación de antes.
-		if (!isInteractive() || !isAuthRequiredError(err)) return sortedFixed;
+		if (!isInteractive() || !isAuthRequiredError(err)) return fallback();
 
-		const outcome = await withAgentLoginRetry(() => fetchModels(true), {
+		const outcome = await withAgentLoginRetry(() => fetchModels(), {
 			agent,
 			cwd: acpCwd,
 			priorError: err,
@@ -512,25 +535,16 @@ async function modelOptions(agent, { acpCwd }) {
 		});
 
 		if (outcome.ok) {
-			const result = outcome.value;
-			p.log.success(
-				result.fromCache
-					? `Modelos de ${agent.def.label} (caché)`
-					: `Modelos de ${agent.def.label}`
-			);
-			if (!result.models.length) return sortedFixed;
-			return buildAcpModelSelectOptions(
-				{ models: result.models, currentModel: result.currentModel },
-				fixed
-			);
+			p.log.success(`Modelos de ${agent.def.label} (${outcome.value.models.length})`);
+			return fromLive(outcome.value);
 		}
 		if (outcome.cancelled) {
-			p.log.warn('Siguiendo con la lista fija de modelos. Podés autenticarte después desde la web.');
-			return sortedFixed;
+			p.log.warn('Podés autenticarte después desde la web.');
+			return fallback();
 		}
 		const after = outcome.error instanceof Error ? outcome.error.message.split('\n')[0] : String(outcome.error);
-		p.log.warn(`No pude consultar los modelos tras el login (${after}). Sigo con la lista fija.`);
-		return sortedFixed;
+		p.log.warn(`No pude consultar los modelos tras el login (${after}).`);
+		return fallback();
 	}
 }
 
@@ -683,6 +697,8 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
  * @returns {Promise<boolean>} true si el probe quedó ok (logueado o ya lo estaba)
  */
 async function ensureAgentAuthBeforeUi(agent, repo, useClack) {
+	// Si recién listamos los modelos en vivo, la sesión ya anduvo: no hace falta arrancar el agente otra vez.
+	if (liveModelsOk.has(agent.def.id)) return true;
 	const probe = () => listAcpModelsCached(agent, { cwd: repo, force: true });
 	try {
 		await probe();
@@ -917,6 +933,10 @@ async function main() {
 	}
 
 	const opts = parseArgs(rawArgv);
+	if (opts.version) {
+		console.log(VERSION || 'desconocida');
+		process.exit(0);
+	}
 	if (opts.help) {
 		printHelp();
 		process.exit(0);
@@ -1015,7 +1035,7 @@ async function main() {
 	const existing = isInteractive() ? existingReviewOutput(launch.repo, outputFilename) : null;
 	const useClack = prompted || (isInteractive() && (detected.length > 0 || existing != null));
 	// Con flags de branch/base no hubo intro, pero estos selects abren sesión de Clack igual.
-	if (useClack && !prompted) p.intro('diff-review');
+	if (useClack && !prompted) p.intro(TITLE);
 
 	let result = existing ? await reuseExistingReview(existing, outputFilename) : null;
 	/** @type {import('../lib/agents.mjs').DetectedAgent | null} */

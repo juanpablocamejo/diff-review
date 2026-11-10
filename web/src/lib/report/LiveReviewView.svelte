@@ -350,6 +350,7 @@
 			<span class="app-brand">
 				<BrandMark size={16} />
 				<span>diff-review</span>
+				<span class="app-version">v{__APP_VERSION__}</span>
 			</span>
 			<span class="pill" class:busy={statusTone === 'busy'} class:error={statusTone === 'error'} class:gone={statusTone === 'gone'}>
 				{statusLabel}
