@@ -181,6 +181,7 @@
 		padding: 9px 12px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		color: var(--text);
 		font: inherit;
 		font-size: inherit;
@@ -189,10 +190,29 @@
 	}
 
 	.model-select.compact .trigger {
-		min-height: 30px;
-		padding: 5px 10px;
+		min-height: 0;
+		padding: 5px 8px;
 		gap: 6px;
 		font-size: 12px;
+		flex-wrap: nowrap;
+	}
+
+	.model-select.compact .title {
+		flex: 0 1 auto;
+	}
+
+	.model-select.compact .badges {
+		flex-wrap: nowrap;
+		max-width: none;
+		flex-shrink: 1;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.model-select.compact .badge {
+		padding: 0 4px;
+		line-height: 1.2;
+		font-size: 9.5px;
 	}
 
 	.trigger:hover:not(:disabled) {
@@ -228,7 +248,7 @@
 	.badge {
 		padding: 0 5px;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg-elev, var(--bg-card));
 		color: var(--text-dim, var(--text-faint));
 		font-size: 10px;
@@ -267,6 +287,7 @@
 		overflow: auto;
 		padding: 4px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
 	}

@@ -52,6 +52,7 @@
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
 	import { validateDocument } from '$lib/report/validate';
 	import { plural } from '$lib/report/labels';
+	import BrandMark from '$lib/BrandMark.svelte';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 
 	function queryFlag(name: string) {
@@ -116,12 +117,14 @@
 	 */
 	let autoWatch = $state(bootCli.watch);
 	/** `openNewReport` ya navegó: el modal sigue hasta que esta página se desmonte. */
-	let openingReport = false;
+	let openingReport = $state(false);
 	/** Ruta local recordada al pasar a URL, para no perderla al volver. */
 	let lastLocalRepo = $state('');
 
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let detectedOutput = $state<DetectedOutput | null>(null);
+	/** Confirmación antes de relanzar la misma review (mismo archivo/agente/modelo). */
+	let relaunchConfirm = $state(false);
 	let autoImporting = $state(false);
 	/** Evita re-importar el mismo archivo (path+mtime). */
 	let consumedDetectionKey = $state('');
@@ -141,7 +144,7 @@
 		Boolean((agentStream && agentInfo) || (launchingAgent && chosenAgent) || cliAgentPending)
 	);
 	const showCliWait = $derived(cliShell && !showLiveShell);
-	/** Modelos por ACP; mientras cargan o si fallan, se usa la lista fija de `lib/agents.mjs`. */
+	/** Modelos por ACP; mientras cargan: placeholder. Si fallan/vacío: lista fija de `lib/agents.mjs`. */
 	let agentModels = $state<Record<string, AcpModels | 'loading'>>({});
 	/** Reintento: forzar probe sin caché del server. */
 	let modelsForce = $state<Record<string, boolean>>({});
@@ -151,16 +154,16 @@
 			options: chosenAgent?.models ?? [],
 			initialValue: ''
 		};
-		const fallback = fixed.options.filter((m) => m.value !== '');
-		if (live && live !== 'loading' && live.models.length) {
+		if (live === 'loading' || live === undefined) {
+			return [{ value: '', label: 'Cargando modelos…', title: 'Cargando modelos…', badges: [] }];
+		}
+		if (live.models.length) {
 			return buildAcpModelSelectOptions(
 				{ models: live.models, currentModel: live.currentModel },
 				fixed
 			).options;
 		}
-		if (live === 'loading' && !fallback.length) {
-			return [{ value: '', label: 'Cargando modelos…', title: 'Cargando modelos…', badges: [] }];
-		}
+		// Sin catálogo ACP (error / vacío): aliases fijos como último recurso.
 		return sortModelSelectOptions(
 			fixed.options.map((m) => ({
 				value: m.value,
@@ -332,7 +335,56 @@
 		}
 	}
 
-	async function launchAgent() {
+	function normalizeToken(s: string) {
+		return String(s || '')
+			.toLowerCase()
+			.trim()
+			.replace(/\s+/g, ' ');
+	}
+
+	function agentsMatch(hit: DetectedOutput, agent: AcpAgentOption) {
+		if (hit.agentId && hit.agentId === agent.id) return true;
+		const hitLabel = normalizeToken(hit.agent || '');
+		const agentLabel = normalizeToken(agent.label);
+		if (!hitLabel || !agentLabel) return false;
+		const stripCli = (label: string) => label.replace(/\s+cli$/, '');
+		const a = stripCli(hitLabel);
+		const b = stripCli(agentLabel);
+		if (a === b) return true;
+		return a.includes(b) || b.includes(a);
+	}
+
+	/**
+	 * Modelo vacío (`AGENT_DEFAULT_MODEL` / `''`) cuenta como match aunque el reporte
+	 * tenga modelo (relanzar el default del mismo agente igual avisa).
+	 */
+	function modelsMatch(chosenModel: string, detectedModel?: string) {
+		const chosen = normalizeToken(chosenModel);
+		const detected = normalizeToken(detectedModel || '');
+		if (!chosen) return true;
+		if (!detected) return false;
+		if (chosen === detected) return true;
+		return chosen.includes(detected) || detected.includes(chosen);
+	}
+
+	function isDuplicateDetectedReview(hit: DetectedOutput, agent: AcpAgentOption, model: string) {
+		return hit.filename === outputFilename && agentsMatch(hit, agent) && modelsMatch(model, hit.model);
+	}
+
+	async function launchAgent(opts?: { force?: boolean }) {
+		if (!chosenAgent || !canLaunchAgent || launchingAgent) return;
+		if (
+			!opts?.force &&
+			detectedOutput &&
+			isDuplicateDetectedReview(detectedOutput, chosenAgent, modelChoice)
+		) {
+			relaunchConfirm = true;
+			return;
+		}
+		await launchAgentNow();
+	}
+
+	async function launchAgentNow() {
 		if (!chosenAgent || !canLaunchAgent || launchingAgent) return;
 		const model = modelChoice;
 		launchingAgent = true;
@@ -352,6 +404,15 @@
 		} finally {
 			launchingAgent = false;
 		}
+	}
+
+	function cancelRelaunchConfirm() {
+		relaunchConfirm = false;
+	}
+
+	function confirmRelaunch() {
+		relaunchConfirm = false;
+		void launchAgent({ force: true });
 	}
 
 	function resetAgentSession() {
@@ -955,6 +1016,16 @@
 		return d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 	}
 
+	function fmtDetectedWhen(hit: DetectedOutput) {
+		if (hit.generatedAt) return fmtWhen(hit.generatedAt);
+		if (hit.mtimeMs) return fmtWhen(new Date(hit.mtimeMs).toISOString());
+		return '';
+	}
+
+	function detectedMetaLine(hit: DetectedOutput) {
+		return [hit.agent, hit.model, fmtDetectedWhen(hit)].filter(Boolean).join(' · ');
+	}
+
 	function closeReportMenu() {
 		reportMenuId = null;
 		reportMenuPos = null;
@@ -998,7 +1069,12 @@
 		if (reportMenuId) closeReportMenu();
 	}}
 	onkeydown={(e) => {
-		if (e.key === 'Escape') closeReportMenu();
+		if (e.key !== 'Escape') return;
+		if (relaunchConfirm) {
+			cancelRelaunchConfirm();
+			return;
+		}
+		closeReportMenu();
 	}}
 />
 
@@ -1008,6 +1084,49 @@
 >
 	{#if promptNotify}
 		<div class="toast" role="status">Prompt copiado al portapapeles.</div>
+	{/if}
+
+	{#if relaunchConfirm && detectedOutput}
+		{@const relaunchMeta = detectedMetaLine(detectedOutput)}
+		<div
+			class="diff-backdrop"
+			role="presentation"
+			onclick={cancelRelaunchConfirm}
+			onkeydown={(e) => {
+				if (e.key === 'Escape') cancelRelaunchConfirm();
+			}}
+		></div>
+		<div
+			class="confirm-dialog"
+			role="alertdialog"
+			aria-modal="true"
+			tabindex="-1"
+			aria-labelledby="relaunch-title"
+			aria-describedby="relaunch-desc"
+		>
+			<h2 id="relaunch-title">¿Relanzar la misma review?</h2>
+			<p id="relaunch-desc">
+				Ya hay un reporte para estos commits con ese agente y modelo
+				(<code>{detectedOutput.filename}</code>{#if relaunchMeta} · {relaunchMeta}{/if}). Relanzar va a
+				volver a ejecutarlo y puede sobrescribir el resultado.
+			</p>
+			<div class="confirm-actions">
+				<button type="button" onclick={cancelRelaunchConfirm}>Cancelar</button>
+				<button type="button" class="primary" onclick={confirmRelaunch}>Relanzar</button>
+			</div>
+		</div>
+	{/if}
+
+	{#if diffBusy && !showCliWait}
+		<div class="diff-backdrop" role="presentation">
+			<div class="diff-modal" role="alertdialog" aria-modal="true" aria-busy="true" aria-labelledby="diff-modal-title">
+				<div class="diff-spinner" aria-hidden="true"></div>
+				<p id="diff-modal-title">Abriendo el reporte…</p>
+				{#if outputFilename}
+					<code class="diff-modal-file">{outputFilename}</code>
+				{/if}
+			</div>
+		</div>
 	{/if}
 
 	{#if agentStream && agentInfo}
@@ -1107,13 +1226,10 @@
 			<button type="button" class="ghost" onclick={resetAgentSession}>Volver al inicio</button>
 		</div>
 	{:else}
-	<header class="topbar">
-		<a href={resolve('/')} class="brand">
-			<span class="brand-dot"></span>
-			<span class="title-block">
-				<span>diff-review</span>
-				<small>lanzá el agente, abrí el reporte, triager hallazgos</small>
-			</span>
+	<header class="app-header topbar">
+		<a href={resolve('/')} class="app-brand">
+			<BrandMark size={16} />
+			<span>diff-review</span>
 		</a>
 		<ThemeToggle />
 	</header>
@@ -1253,7 +1369,7 @@
 						<ModelSelect
 							bind:value={modelChoice}
 							options={modelOptions}
-							disabled={modelsStatus === 'loading' && !chosenAgent?.models.length}
+							disabled={modelsStatus === 'loading' || modelsStatus === undefined}
 						/>
 					</label>
 				</div>
@@ -1313,26 +1429,37 @@
 					acá.
 				{/if}
 			</p>
-			{#if canWatchRepo && detectedOutput && detectedOutput.filename === outputFilename && !hydrating && !autoImporting}
-				<p class="detect-banner">
-					Listo: <button type="button" class="file-link" onclick={() => void openDetectedOutput(detectedOutput!)}
-						>{detectedOutput.filename}</button
-					>
-					{#if autoImporting}
-						<span>abriendo…</span>
-					{:else if autoWatch}
-						<span>(se abre solo; podés hacer click si no)</span>
-					{:else}
-						<span>(hacé click para abrirlo)</span>
-					{/if}
-				</p>
-			{:else if canWatchRepo && detectedOutput && detectedOutput.filename !== outputFilename && !hydrating}
-				<p class="detect-banner">
-					Encontré otro reporte:
-					<button type="button" class="file-link" onclick={() => void openDetectedOutput(detectedOutput!)}
-						>{detectedOutput.filename}</button
-					>
-				</p>
+			{#if canWatchRepo && detectedOutput && !hydrating && !autoImporting}
+				{@const ready = detectedOutput.filename === outputFilename}
+				{@const openMeta = detectedMetaLine(detectedOutput)}
+				<button
+					type="button"
+					class="detect-open"
+					class:ready
+					onclick={() => void openDetectedOutput(detectedOutput!)}
+				>
+					<span class="detect-open-text">
+						<span class="detect-open-label">
+							{ready ? 'Reporte listo' : 'Encontré otro reporte'}
+							{#if ready && autoWatch}<small>· se abre solo</small>{/if}
+						</span>
+						<code>{detectedOutput.filename}</code>
+						{#if openMeta}
+							<span class="detect-open-meta" title={openMeta}>{openMeta}</span>
+						{/if}
+					</span>
+					<span class="detect-open-cta">Abrir</span>
+					<svg class="detect-open-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+						<path
+							d="M6 3.5 10.5 8 6 12.5"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="1.6"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+					</svg>
+				</button>
 			{:else if canWatchRepo && !detectedOutput && !hydrating && !autoImporting}
 				<p class="detect-wait">Esperando <code>{outputFilename}</code> en <code>.diff-review/</code>…</p>
 			{/if}
@@ -1524,9 +1651,16 @@
 		display: grid;
 		place-items: center;
 		padding: 24px;
-		background: color-mix(in srgb, var(--bg) 88%, transparent);
-		backdrop-filter: blur(28px);
-		-webkit-backdrop-filter: blur(28px);
+		background: color-mix(in srgb, var(--bg) 55%, transparent);
+		backdrop-filter: blur(10px);
+		-webkit-backdrop-filter: blur(10px);
+		animation: diff-fade 0.12s ease-out;
+	}
+
+	@keyframes diff-fade {
+		from {
+			opacity: 0;
+		}
 	}
 
 	.diff-modal {
@@ -1534,14 +1668,83 @@
 		padding: 28px 24px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		box-shadow: 0 16px 48px color-mix(in srgb, #000 28%, transparent);
 		text-align: center;
+	}
+
+	.confirm-dialog {
+		position: fixed;
+		z-index: 81;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		width: min(420px, calc(100vw - 32px));
+		padding: 18px 20px;
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 16px 48px color-mix(in srgb, #000 28%, transparent);
+		text-align: left;
+		outline: none;
+	}
+
+	.confirm-dialog h2 {
+		margin: 0 0 10px;
+		font-size: 15px;
+		font-weight: 650;
+		color: var(--text);
+	}
+
+	.confirm-dialog p {
+		margin: 0;
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--text-dim);
+	}
+
+	.confirm-dialog code {
+		font-size: 12px;
+		color: var(--text);
+	}
+
+	.confirm-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		margin-top: 16px;
+	}
+
+	.confirm-actions button {
+		padding: 7px 12px;
+		font-size: 13px;
+		background: var(--bg-elev);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text);
+		cursor: pointer;
+	}
+
+	.confirm-actions button.primary {
+		background: var(--btn-primary-bg);
+		border-color: var(--btn-primary-border);
+		color: var(--btn-primary-text);
 	}
 
 	.diff-modal p {
 		margin: 14px 0 0;
 		font-size: 15px;
 		color: var(--text);
+	}
+
+	.diff-modal-file {
+		display: block;
+		margin-top: 6px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 12px;
+		color: var(--text-faint);
 	}
 
 	.diff-spinner {
@@ -1581,6 +1784,7 @@
 		padding: 6px 12px;
 		font-size: 13px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: transparent;
 		color: var(--text-dim);
 		cursor: pointer;
@@ -1600,6 +1804,7 @@
 		z-index: 50;
 		padding: 10px 16px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		color: var(--text);
 		font-size: 13px;
@@ -1607,51 +1812,9 @@
 	}
 
 	.topbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		padding: 16px 28px;
-		border-bottom: 1px solid var(--border);
-		background: var(--header-bg);
 		position: sticky;
 		top: 0;
 		z-index: 5;
-	}
-
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		text-decoration: none;
-		color: var(--text);
-	}
-
-	.brand-dot {
-		width: 9px;
-		height: 9px;
-		border-radius: 50%;
-		background: linear-gradient(135deg, #6ea8fe, #c9a5ff);
-		box-shadow: 0 0 12px #6ea8fe88;
-		flex-shrink: 0;
-	}
-
-	.title-block {
-		display: flex;
-		flex-direction: column;
-		line-height: 1.25;
-		text-align: left;
-	}
-
-	.title-block span:first-child {
-		font-weight: 700;
-		font-size: 15px;
-	}
-
-	.title-block small {
-		color: var(--text-faint);
-		font-weight: 400;
-		font-size: 11.5px;
 	}
 
 	.workspace {
@@ -1704,21 +1867,82 @@
 		color: var(--text);
 	}
 
-	.detect-banner,
 	.detect-wait {
 		margin: 0 0 10px;
 		font-size: 13px;
 		color: var(--text-dim);
 	}
 
-	button.file-link {
-		border: 0;
-		padding: 0;
-		background: transparent;
-		color: var(--accent);
+	button.detect-open {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		width: 100%;
+		margin: 0 0 12px;
+		padding: 12px 14px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-card);
+		color: var(--text);
 		font: inherit;
-		text-decoration: underline;
+		text-align: left;
 		cursor: pointer;
+		transition:
+			border-color 0.12s ease,
+			background 0.12s ease;
+	}
+	button.detect-open.ready {
+		border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+		background: var(--accent-soft);
+	}
+	button.detect-open:hover {
+		border-color: var(--accent);
+	}
+	button.detect-open:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+	.detect-open-text {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+	.detect-open-label {
+		font-size: 13px;
+		font-weight: 600;
+	}
+	.detect-open-label small {
+		font-weight: 400;
+		color: var(--text-dim);
+	}
+	.detect-open-text code {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+	.detect-open-meta {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+	.detect-open-cta {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--accent);
+	}
+	.detect-open-chevron {
+		flex-shrink: 0;
+		color: var(--accent);
+		transition: transform 0.12s ease;
+	}
+	button.detect-open:hover .detect-open-chevron {
+		transform: translateX(2px);
 	}
 
 	.error-line {
@@ -1794,12 +2018,14 @@
 		min-width: 0;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		padding: 9px 12px;
 	}
 
 	button {
 		background: var(--bg-card);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		padding: 9px 12px;
 		font-size: 12.5px;
 		color: var(--text);
@@ -1817,6 +2043,7 @@
 	.mode-toggle {
 		display: flex;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		overflow: hidden;
 		width: fit-content;
 		margin-bottom: 10px;
@@ -1826,6 +2053,7 @@
 		padding: 6px 12px;
 		font-size: 12px;
 		border: 0;
+		border-radius: 0;
 		background: transparent;
 	}
 
@@ -1845,6 +2073,7 @@
 		resize: vertical;
 		background: var(--bg);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		padding: 12px;
 		font-family: var(--mono);
 		font-size: 12px;
@@ -1908,6 +2137,7 @@
 	.coverage-box {
 		margin-top: 12px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		border-left: 3px solid var(--sev-med);
 		background: var(--bg-card);
 		padding: 12px 14px;
@@ -1954,6 +2184,7 @@
 		resize: vertical;
 		background: var(--bg);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		padding: 10px;
 		font-family: var(--mono);
 		font-size: 11.5px;
@@ -2041,6 +2272,7 @@
 		display: flex;
 		align-items: stretch;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		overflow: visible;
 	}
@@ -2074,6 +2306,7 @@
 		align-items: center;
 		justify-content: center;
 		border: 1px solid transparent;
+		border-radius: var(--radius);
 		background: transparent;
 		color: var(--text-dim);
 		padding: 0;
@@ -2092,6 +2325,7 @@
 		width: 148px;
 		padding: 4px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
 	}

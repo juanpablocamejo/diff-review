@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BrandMark from '$lib/BrandMark.svelte';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
 	import AgentAccountMenu from './AgentAccountMenu.svelte';
 	import AgentIcon from './AgentIcon.svelte';
@@ -344,10 +345,12 @@
 </script>
 
 <section class="live" aria-label="Review en vivo">
-	<header class="bar">
+	<header class="app-header bar">
 		<div class="brand">
-			<span class="dot" aria-hidden="true"></span>
-			<strong>diff-review</strong>
+			<span class="app-brand">
+				<BrandMark size={16} />
+				<span>diff-review</span>
+			</span>
 			<span class="pill" class:busy={statusTone === 'busy'} class:error={statusTone === 'error'} class:gone={statusTone === 'gone'}>
 				{statusLabel}
 			</span>
@@ -601,31 +604,11 @@
 			var(--bg);
 	}
 
-	.bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		padding: 12px 20px;
-		border-bottom: 1px solid var(--border);
-		background: color-mix(in srgb, var(--bg-elev) 90%, transparent);
-	}
-
 	.brand {
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		font-size: 14px;
+		gap: 8px;
 		min-width: 0;
-	}
-
-	.dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		flex: none;
-		background: var(--accent);
-		box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 	}
 
 	.pill {
@@ -633,7 +616,7 @@
 		font-weight: 500;
 		letter-spacing: 0.02em;
 		padding: 3px 9px;
-		border-radius: 0;
+		border-radius: var(--radius);
 		border: 1px solid var(--border);
 		color: var(--text-dim);
 		background: var(--bg-card);
@@ -666,6 +649,7 @@
 	.ghost {
 		padding: 6px 11px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: transparent;
 		color: var(--text);
 		font: inherit;
@@ -690,7 +674,7 @@
 		align-self: start;
 		padding: 16px 16px 14px;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg-elev);
 	}
 
@@ -764,7 +748,7 @@
 		display: flex;
 		flex-direction: column;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg-elev);
 		overflow: hidden;
 	}
@@ -795,7 +779,7 @@
 	.primary {
 		padding: 7px 14px;
 		border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--accent-soft);
 		color: var(--accent);
 		font: inherit;
@@ -842,7 +826,7 @@
 	.copilot-host-field input {
 		padding: 7px 10px;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg);
 		color: var(--text);
 		font: inherit;
@@ -968,7 +952,7 @@
 		gap: 12px;
 		padding: 10px 12px;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: color-mix(in srgb, var(--accent-soft) 70%, var(--bg-card));
 	}
 
@@ -1007,7 +991,7 @@
 
 	@media (max-width: 480px) {
 		.bar {
-			padding: 10px 14px;
+			padding-block: 8px;
 			flex-wrap: wrap;
 		}
 

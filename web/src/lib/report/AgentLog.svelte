@@ -352,7 +352,7 @@
 		max-width: 90%;
 		background: var(--accent-soft);
 		border: 1px solid var(--btn-primary-border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		padding: 6px 10px;
 	}
 	.tag {
@@ -409,7 +409,7 @@
 	}
 	.permission.pending {
 		border: 1px solid var(--warn);
-		border-radius: 0;
+		border-radius: var(--radius);
 		padding: 8px 10px;
 		background: var(--bg-card);
 		color: var(--text);
@@ -447,7 +447,7 @@
 		font-size: 11px;
 		line-height: 1.2;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg-elev);
 		color: var(--text-dim);
 	}
@@ -472,7 +472,7 @@
 		word-break: break-word;
 		background: var(--bg-elev);
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		max-width: 100%;
 	}
 	.perm-command.collapsed {
@@ -528,7 +528,7 @@
 		padding: 5px 12px;
 		font-size: 12px;
 		border: 1px solid var(--danger-border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg-elev);
 		color: var(--text);
 		cursor: pointer;
@@ -545,7 +545,7 @@
 		background: var(--danger-bg);
 		border: 1px solid var(--danger-border);
 		color: var(--danger);
-		border-radius: 0;
+		border-radius: var(--radius);
 		padding: 6px 10px;
 		font-size: 12px;
 	}

@@ -5,8 +5,8 @@
 	import FileIcon from './FileIcon.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
 	import AskAgentButton from './AskAgentButton.svelte';
-	import type { PublishPlatform } from './prompts';
-	import { findingRef, plural } from './labels';
+	import CopyPathButton from './CopyPathButton.svelte';
+	import { findingRef } from './labels';
 
 	let {
 		activeFinding,
@@ -26,20 +26,9 @@
 		onresizeexplanation,
 		onresizesplit,
 		onrequestlines,
-		fixSelectionCount,
-		showFixPrompt,
-		fixPromptText,
-		fixCopyLabel,
-		onclosefixprompt,
-		oncopyfix,
-		showPublishPrompt,
-		publishPlatform,
-		publishText,
-		publishTargetLabel,
-		publishCopyLabel,
-		onclosepublishprompt,
-		onsetpublishplatform,
-		oncopypublish
+		onmarkallfix,
+		onmarkallignore,
+		onmarkallclear
 	}: {
 		activeFinding: DecoratedFinding | null;
 		activeFile: FileSection | null;
@@ -58,20 +47,9 @@
 		onresizeexplanation: (dx: number) => void;
 		onresizesplit: (ratio: number) => void;
 		onrequestlines?: (path: string) => Promise<string[] | null>;
-		fixSelectionCount: number;
-		showFixPrompt: boolean;
-		fixPromptText: string;
-		fixCopyLabel: string;
-		onclosefixprompt: () => void;
-		oncopyfix: () => void;
-		showPublishPrompt: boolean;
-		publishPlatform: PublishPlatform;
-		publishText: string;
-		publishTargetLabel: string;
-		publishCopyLabel: string;
-		onclosepublishprompt: () => void;
-		onsetpublishplatform: (platform: PublishPlatform) => void;
-		oncopypublish: () => void;
+		onmarkallfix?: () => void;
+		onmarkallignore?: () => void;
+		onmarkallclear?: () => void;
 	} = $props();
 
 	function fileName(path: string) {
@@ -92,45 +70,21 @@
 	);
 </script>
 
-{#if showFixPrompt}
-	<section class="prompt-box fix">
-		<div class="prompt-head">
-			<h2 class="fix-title">Prompt de corrección · {plural(fixSelectionCount, 'hallazgo', 'hallazgos')}</h2>
-			<button type="button" class="close" onclick={onclosefixprompt}>Cerrar ✕</button>
-		</div>
-		<p class="hint">
-			Copiá esto en tu agente (o usá el botón del agente en cada hallazgo). Cada uno se ubica por archivo:línea.
-		</p>
-		<textarea readonly value={fixPromptText}></textarea>
-		<div>
-			<button type="button" class="copy" onclick={oncopyfix}>{fixCopyLabel}</button>
-		</div>
-	</section>
-{/if}
-
-{#if showPublishPrompt}
-	<section class="prompt-box publish">
-		<div class="prompt-head">
-			<h2 class="publish-title">Publicar · {plural(fixSelectionCount, 'hallazgo', 'hallazgos')}</h2>
-			<button type="button" class="close" onclick={onclosepublishprompt}>Cerrar ✕</button>
-		</div>
-		<div class="mode-toggle">
-			<button type="button" class:on={publishPlatform === 'github'} onclick={() => onsetpublishplatform('github')}
-				>GitHub</button
-			>
-			<button type="button" class:on={publishPlatform === 'gitlab'} onclick={() => onsetpublishplatform('gitlab')}
-				>GitLab</button
-			>
-		</div>
-		<textarea readonly value={publishText}></textarea>
-		<p class="hint">Copiá y pegá como comentario en el {publishTargetLabel}. Markdown listo, un bloque por hallazgo marcado.</p>
-		<div>
-			<button type="button" class="copy" onclick={oncopypublish}>{publishCopyLabel}</button>
-		</div>
-	</section>
-{/if}
-
 <div class="detail-panel">
+	{#if onmarkallfix || onmarkallignore || onmarkallclear}
+		<div class="bulk-bar">
+			<span class="bulk-label">Marcar todos</span>
+			{#if onmarkallfix}
+				<button type="button" class="bulk fix" onclick={onmarkallfix}>A corregir</button>
+			{/if}
+			{#if onmarkallignore}
+				<button type="button" class="bulk ignore" onclick={onmarkallignore}>A ignorar</button>
+			{/if}
+			{#if onmarkallclear}
+				<button type="button" class="bulk clear" onclick={onmarkallclear}>Limpiar</button>
+			{/if}
+		</div>
+	{/if}
 	{#if activeFinding}
 		<div class="detail-head">
 			<div class="detail-head-row">
@@ -138,6 +92,7 @@
 					<span class="number">{findingRef(activeFinding.id, activeFinding.number)}</span>
 					<span class="badge" style:color={activeFinding.badgeColor}>{activeFinding.badge}</span>
 					<span class="file-name" title={activeFinding.fileLine}>{findingBase}</span>
+					<CopyPathButton path={activeFinding.file} />
 				</div>
 				<div class="head-actions">
 					{#if onaskfinding}
@@ -152,15 +107,13 @@
 						<div class="decision-group">
 							<button
 								type="button"
-								class="ignore"
-								class:on={activeFinding.decided && !activeFinding.fixSelected}
-								onclick={onignore}>Ignorar</button
+								class={['ignore', { on: activeFinding.decided && !activeFinding.fixSelected }]}
+								onclick={onignore}>A ignorar</button
 							>
 							<button
 								type="button"
-								class="fix"
-								class:on={activeFinding.decided && activeFinding.fixSelected}
-								onclick={onfix}>Corregir</button
+								class={['fix', { on: activeFinding.decided && activeFinding.fixSelected }]}
+								onclick={onfix}>A corregir</button
 							>
 							{#if activeFinding.decided}
 								<button type="button" class="clear" title="Limpiar decisión" onclick={onclear}>✕</button>
@@ -176,8 +129,7 @@
 	{/if}
 
 	<div
-		class="detail-grid"
-		class:no-explanations={!showExplanations}
+		class={['detail-grid', { 'no-explanations': !showExplanations }]}
 		style:grid-template-columns={showExplanations
 			? `minmax(min(100%, 200px), 1fr) 6px minmax(0, ${explanationWidth}px)`
 			: 'minmax(0,1fr)'}
@@ -187,6 +139,7 @@
 				<div class="file-path-bar">
 					<FileIcon path={activeFile.path} />
 					<span class="file-path-text">{activeFile.path}</span>
+					<CopyPathButton path={activeFile.path} />
 				</div>
 				<DiffView
 					path={activeFile.path}
@@ -229,105 +182,9 @@
 </div>
 
 <style>
-	.prompt-box {
-		border: 1px solid var(--fix-border);
-		background: var(--fix-bg);
-		padding: 14px 16px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
-	.prompt-box.publish {
-		border-color: var(--publish-border);
-		background: var(--publish-bg);
-	}
-
-	.prompt-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.fix-title {
-		margin: 0;
-		font-size: 12px;
-		letter-spacing: 0.07em;
-		text-transform: uppercase;
-		color: var(--fix-text);
-		font-weight: 650;
-	}
-
-	.publish-title {
-		margin: 0;
-		font-size: 12px;
-		letter-spacing: 0.07em;
-		text-transform: uppercase;
-		color: var(--publish-text);
-		font-weight: 650;
-	}
-
-	.close {
-		background: transparent;
-		border: 0;
-		color: var(--text-faint);
-		font-size: 12px;
-		padding: 0;
-	}
-
-	.mode-toggle {
-		display: flex;
-		border: 1px solid var(--border);
-		overflow: hidden;
-		width: fit-content;
-	}
-
-	.mode-toggle button {
-		padding: 6px 12px;
-		font-size: 12px;
-		border: 0;
-		background: transparent;
-		color: var(--text);
-	}
-
-	.mode-toggle button + button {
-		border-left: 1px solid var(--border);
-	}
-
-	.mode-toggle button.on {
-		background: var(--accent-soft);
-	}
-
-	textarea {
-		width: 100%;
-		height: 220px;
-		resize: vertical;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 12px;
-		font-family: var(--mono);
-		font-size: 12px;
-		line-height: 1.5;
-		color: var(--text);
-	}
-
-	.hint {
-		margin: 0;
-		font-size: 11.5px;
-		color: var(--text-faint);
-	}
-
-	.copy {
-		background: var(--btn-primary-bg);
-		border: 1px solid var(--btn-primary-border);
-		padding: 9px 14px;
-		color: var(--btn-primary-text);
-		font-weight: 600;
-		font-size: 13px;
-	}
-
 	.detail-panel {
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		overflow: hidden;
 		min-width: 0;
@@ -377,6 +234,53 @@
 		flex-shrink: 0;
 	}
 
+	.bulk-bar {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 6px 8px;
+		padding: 0 0 10px;
+		margin-bottom: 4px;
+		border-bottom: 1px solid var(--border-soft, var(--border));
+	}
+
+	.bulk-label {
+		font-size: 11px;
+		font-weight: 650;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--text-faint);
+		margin-right: 4px;
+	}
+
+	.bulk {
+		padding: 4px 10px;
+		font-size: 11.5px;
+		font-weight: 600;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: transparent;
+		color: var(--text-dim);
+		cursor: pointer;
+	}
+
+	.bulk.fix:hover {
+		border-color: var(--fix-border);
+		background: var(--fix-bg);
+		color: var(--fix-text, var(--ok));
+	}
+
+	.bulk.ignore:hover {
+		border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+		background: var(--danger-bg);
+		color: var(--danger);
+	}
+
+	.bulk.clear:hover {
+		border-color: var(--accent);
+		color: var(--text);
+	}
+
 	.file-name {
 		font-size: 12px;
 		color: var(--text);
@@ -414,6 +318,7 @@
 
 	.decision-group.corrected {
 		border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--border));
+		border-radius: var(--radius);
 		background: var(--ok-bg);
 		gap: 0;
 	}
@@ -429,6 +334,7 @@
 		padding: 6px 14px;
 		font-size: 12px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: transparent;
 		color: var(--text-dim);
 		font-weight: 600;
@@ -481,6 +387,7 @@
 	.fix-detail {
 		margin-top: 4px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--ok-bg);
 		padding: 8px 10px;
 	}
@@ -559,6 +466,7 @@
 		font-weight: 650;
 		color: var(--text-dim);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		padding: 3px 8px;
 	}

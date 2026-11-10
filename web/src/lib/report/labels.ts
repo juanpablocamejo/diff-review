@@ -118,12 +118,12 @@ export function themeRef(id: string, number = 0): string {
 	return raw || 't?';
 }
 
-/** Ref visible de un hallazgo: `f1` (no `#1`). */
+/** Ref visible de un hallazgo: `f1` (no `#1`). Prioriza `number` (orden de lista). */
 export function findingRef(id: string, number = 0): string {
+	if (number > 0) return `f${number}`;
 	const raw = String(id || '').trim();
 	const m = /^f(\d+)$/i.exec(raw);
 	if (m) return `f${m[1]}`;
-	if (number > 0) return `f${number}`;
 	return raw || 'f?';
 }
 

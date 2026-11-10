@@ -230,6 +230,7 @@ declare module '$review/lib/model-label.mjs' {
 	export function sortModelSelectOptions<T extends { value: string; label?: string; title?: string }>(
 		options: T[]
 	): T[];
+	export function liveModelsHaveCatalog(models: { value: string; name?: string }[] | undefined): boolean;
 	export function buildAcpModelSelectOptions(
 		live: { models: { value: string; name: string }[]; currentModel: string },
 		fixed: { options: { value: string; label: string; hint?: string }[]; initialValue?: string }
@@ -428,6 +429,7 @@ declare module '$review/lib/review-meta.mjs' {
 		provenance: {
 			agent?: string;
 			model?: string;
+			modelLabel?: string;
 			agentSession?: { agentId: string; sessionId: string; outputFilename: string };
 		}
 	): boolean;

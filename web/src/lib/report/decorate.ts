@@ -9,7 +9,7 @@ export type DecoratedFinding = FindingCard & {
 	strike: 'line-through' | 'none';
 	statusMark: '✓' | '';
 	statusColor: string;
-	decisionLabel: '' | 'Ignorar' | 'Corregir' | 'Corregido';
+	decisionLabel: '' | 'A ignorar' | 'A corregir' | 'Corregido';
 	decisionColor: string;
 	ignoreBg: string;
 	fixBg: string;
@@ -60,7 +60,7 @@ export function decorateFinding(
 		strike: isDecided ? 'line-through' : 'none',
 		statusMark: isDecided ? '✓' : '',
 		statusColor: isDecided ? (isFix ? 'var(--ok)' : 'var(--danger)') : 'transparent',
-		decisionLabel: isDecided ? (isFix ? 'Corregir' : 'Ignorar') : '',
+		decisionLabel: isDecided ? (isFix ? 'A corregir' : 'A ignorar') : '',
 		decisionColor: isDecided ? (isFix ? 'var(--ok)' : 'var(--danger)') : 'var(--text-faint)',
 		ignoreBg: isDecided && !isFix ? 'var(--danger-bg)' : 'transparent',
 		fixBg: isDecided && isFix ? 'var(--fix-bg)' : 'transparent',

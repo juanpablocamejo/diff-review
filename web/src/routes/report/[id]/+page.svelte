@@ -1,16 +1,36 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { downloadReport, type ExportFormat } from '$lib/report/export';
-	import { agentShortName, reportAgentId } from '$lib/report/agent-icons';
 	import { acpAgents } from '$lib/report/agent.remote';
-	import type { AcpAgentOption } from '$lib/report/agent-events';
+	import AgentIcon from '$lib/report/AgentIcon.svelte';
+	import { agentShortName, reportAgentId } from '$lib/report/agent-icons';
 	import ChatPanel from '$lib/report/ChatPanel.svelte';
+	import ExportDialog from '$lib/report/ExportDialog.svelte';
 	import ReportView from '$lib/report/ReportView.svelte';
 	import { resolveSavedReport } from '$lib/report/resolve-report';
 	import { deleteReport } from '$lib/report/storage';
 	import type { SavedReport } from '$lib/report/types';
+	import BrandMark from '$lib/BrandMark.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import ThemeToggle from '$lib/ThemeToggle.svelte';
+	import { untrack } from 'svelte';
+
+	/** Short repo label: basename of a local path or last URL segment, without `.git`. */
+	function repoDisplayName(repo: string): string {
+		const raw = String(repo || '').trim();
+		if (!raw) return '—';
+		const cleaned = raw.replace(/[\\/]+$/, '').replace(/\.git$/i, '');
+		const parts = cleaned.split(/[\\/]/).filter(Boolean);
+		return parts.at(-1) || cleaned || '—';
+	}
+
+	/** Branches largos: conservar prefijo (`feat/`) y final, que es lo que los distingue. */
+	function middleEllipsis(text: string, max: number): string {
+		if (text.length <= max) return text;
+		const keep = max - 1;
+		const head = Math.ceil(keep * 0.4);
+		return `${text.slice(0, head)}…${text.slice(-(keep - head))}`;
+	}
 
 	let { params }: { params: { id: string } } = $props();
 
@@ -28,8 +48,6 @@
 	let kebabOpen = $state(false);
 	let viewMenuOpen = $state(false);
 	let chatOpen = $state(false);
-	/** Agentes ACP instalados: para no mostrar Cursor/Claude en el header si no están. */
-	let installedAgents = $state<AcpAgentOption[]>([]);
 	/** Borrador para el compositor del ChatPanel (referencia a tema/bloque/hallazgo); no se envía solo. */
 	let pendingAsk = $state<string | null>(null);
 	/** Prompt de corrección para auto-enviar en modo fix. */
@@ -39,39 +57,32 @@
 
 	$effect(() => {
 		const id = params.id;
+		// Solo trackea `params.id`. Si ya mostramos ese reporte (p. ej. tras onreportupdated), no reiniciar.
+		if (untrack(() => report)?.id === id) return;
 		let cancelled = false;
 		report = undefined;
 		loadError = '';
 		downloadOpen = false;
 		kebabOpen = false;
-		void resolveSavedReport(id)
-			.then((resolved) => {
-				if (cancelled) return;
-				report = resolved;
-				if (!resolved) {
-					loadError =
-						'No se encontró el reporte en disco ni en este navegador. Revisá que el JSON siga en .diff-review/.';
-				}
-			})
-			.catch((err) => {
-				if (cancelled) return;
-				report = null;
-				loadError = err instanceof Error ? err.message : String(err);
-			});
-		return () => {
-			cancelled = true;
-		};
-	});
-
-	$effect(() => {
-		let cancelled = false;
-		void acpAgents()
-			.then((agents) => {
-				if (!cancelled) installedAgents = agents;
-			})
-			.catch(() => {
-				if (!cancelled) installedAgents = [];
-			});
+		// CRITICAL: resolveSavedReport → loadDetectedOutput/hydrateFromGit are SvelteKit
+		// `command()`s. Invoking a command sync does `pending_count++` ($state read+write).
+		// Without untrack, this effect subscribes to that counter → effect_update_depth_exceeded.
+		untrack(() => {
+			void resolveSavedReport(id)
+				.then((resolved) => {
+					if (cancelled) return;
+					report = resolved;
+					if (!resolved) {
+						loadError =
+							'No se encontró el reporte en disco ni en este navegador. Revisá que el JSON siga en .diff-review/.';
+					}
+				})
+				.catch((err) => {
+					if (cancelled) return;
+					report = null;
+					loadError = err instanceof Error ? err.message : String(err);
+				});
+		});
 		return () => {
 			cancelled = true;
 		};
@@ -79,12 +90,6 @@
 
 	function closeMenus() {
 		downloadOpen = false;
-		kebabOpen = false;
-		viewMenuOpen = false;
-	}
-
-	function toggleDownload() {
-		downloadOpen = !downloadOpen;
 		kebabOpen = false;
 		viewMenuOpen = false;
 	}
@@ -101,10 +106,11 @@
 		kebabOpen = false;
 	}
 
-	function exportAs(format: ExportFormat) {
+	function openExportDialog() {
 		if (!report) return;
-		downloadOpen = false;
-		downloadReport(report, format);
+		downloadOpen = true;
+		kebabOpen = false;
+		viewMenuOpen = false;
 	}
 
 	function remove() {
@@ -115,19 +121,30 @@
 		void goto(resolve('/'));
 	}
 
-	function askAbout(draft: string) {
-		pendingFix = null;
-		pendingAsk = draft;
+	function openAgentDrawer() {
 		chatOpen = true;
 	}
 
-	/** Abre el chat en Corregir código. `false` si no hay agente ACP → el footer muestra Copiar prompt. */
+	function closeAgentDrawer() {
+		chatOpen = false;
+	}
+
+	function askAbout(draft: string) {
+		pendingFix = null;
+		pendingAsk = draft;
+		openAgentDrawer();
+	}
+
+	/**
+	 * Abre el chat en Corregir código sin auto-enviar: el usuario puede cambiar de agente
+	 * en el panel y después enviar. Se llama desde el PromptDrawer («Corregir con agente»).
+	 */
 	async function fixWithAgent(text: string, findingIds: string[] = []): Promise<boolean> {
 		if (!report || !text.trim()) return false;
 		try {
 			const agents = await acpAgents();
 			if (!agents.length && !report.meta.agentSession?.agentId) {
-				console.warn('No hay agente ACP disponible; fallback a copiar prompt');
+				console.warn('No hay agente ACP disponible; usá Copiar en el panel de corrección');
 				return false;
 			}
 		} catch (err) {
@@ -135,24 +152,11 @@
 			if (!report.meta.agentSession?.agentId) return false;
 		}
 		pendingAsk = null;
-		pendingFix = { text, autoSend: true, findingIds };
-		chatOpen = true;
+		pendingFix = { text, autoSend: false, findingIds };
+		openAgentDrawer();
 		return true;
 	}
 
-	/**
-	 * Agente del botón del header: sesión ACP, o provenance de meta si ese agente
-	 * sigue instalado. Si hay que elegir → id vacío y label "Agente".
-	 */
-	const chatAgentId = $derived.by(() => {
-		if (!report) return '';
-		const preferred = reportAgentId(report.meta);
-		if (!preferred) return '';
-		if (report.meta.agentSession?.agentId) return preferred;
-		if (!installedAgents.length) return preferred;
-		return installedAgents.some((a) => a.id === preferred) ? preferred : '';
-	});
-	const chatAgentName = $derived(agentShortName(chatAgentId, report?.meta.agent || ''));
 </script>
 
 <svelte:window
@@ -160,144 +164,171 @@
 		if (downloadOpen || kebabOpen || viewMenuOpen) closeMenus();
 	}}
 	onkeydown={(e) => {
-		if (e.key === 'Escape') closeMenus();
+		// ExportDialog maneja Escape propio; no cerrar el diálogo desde acá al mismo tiempo.
+		if (e.key === 'Escape' && !downloadOpen) closeMenus();
+		else if (e.key === 'Escape' && downloadOpen) downloadOpen = false;
 	}}
 />
 
 <div class="page">
-	<header class="chrome">
+	<header class="app-header chrome">
 		<div class="chrome-left">
-			<a href={resolve('/')} class="brand">
-				<span class="brand-dot"></span>
-				<span>diff-review</span>
+			{#if report}
+				<button
+					type="button"
+					class="icon-btn"
+					class:on={!sidebarCollapsed}
+					title={sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
+					aria-label={sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
+					aria-pressed={!sidebarCollapsed}
+					onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
+				>
+					<Icon name="sidebar-left" />
+				</button>
+			{/if}
+			<a href={resolve('/')} class="app-brand chrome-brand" title="Inicio">
+				<BrandMark size={16} />
+				<span class="brand-text">diff-review</span>
 			</a>
 			{#if report}
-				<span class="chrome-divider"></span>
-				<span
-					class="breadcrumb"
-					title={`${report.meta.branch || '—'} › ${report.meta.base || 'develop'}`}
-				>
-					<span class="crumb-branch">{report.meta.branch || '—'}</span>
-					<span class="crumb-sep">›</span>
-					<span class="crumb-base">{report.meta.base || 'develop'}</span>
-				</span>
-				{#if report.meta.agent || report.meta.model}
-					<span class="chrome-divider chrome-divider-prov"></span>
-					<span
-						class="provenance"
-						title={[report.meta.agent, report.meta.model].filter(Boolean).join(' · ')}
-					>
-						{#if report.meta.agent}<span class="prov-agent">{report.meta.agent}</span>{/if}
-						{#if report.meta.agent && report.meta.model}<span class="prov-sep">·</span>{/if}
-						{#if report.meta.model}<span class="prov-model">{report.meta.model}</span>{/if}
-					</span>
-				{/if}
-				<div class="menu-wrap">
-					<button
-						type="button"
-						class="icon-btn kebab"
-						title="Más acciones"
-						aria-label="Más acciones"
-						aria-expanded={kebabOpen}
-						aria-haspopup="menu"
-						onclick={(e) => {
-							e.stopPropagation();
-							toggleKebab();
-						}}
-					>
-						<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-							<circle cx="8" cy="3.5" r="1.25" fill="currentColor" />
-							<circle cx="8" cy="8" r="1.25" fill="currentColor" />
-							<circle cx="8" cy="12.5" r="1.25" fill="currentColor" />
-						</svg>
-					</button>
-					{#if kebabOpen}
-						<div class="menu" role="menu" tabindex="-1">
-							<button type="button" class="menu-item danger" role="menuitem" onclick={remove}>
-								Eliminar reporte…
-							</button>
+				<span class="chrome-divider" aria-hidden="true"></span>
+				{@const branch = report.meta.branch || '—'}
+				{@const base = report.meta.base || 'develop'}
+				{@const agentId = reportAgentId(report.meta)}
+				{@const agentLabel = agentShortName(agentId, report.meta.agent || '')}
+				{@const modelShown = report.meta.modelLabel || report.meta.model || ''}
+				{@const modelRaw =
+					report.meta.modelLabel && report.meta.model ? `${report.meta.modelLabel} (${report.meta.model})` : modelShown}
+				{@const agentTitle = [report.meta.agent, modelRaw].filter(Boolean).join(' · ')}
+				<div class="group ctx-group" role="group" aria-label="Contexto del reporte">
+					<div class="chrome-meta">
+						<div class="meta-block meta-repo" title={report.meta.repo || undefined}>
+							<span class="meta-primary meta-line">
+								<span class="meta-icon"><Icon name="repo" size={12} /></span>
+								<span class="meta-text">{repoDisplayName(report.meta.repo)}</span>
+							</span>
+							<span class="breadcrumb meta-secondary" title={`${branch} → ${base}`}>
+								<span class="meta-icon"><Icon name="branch" size={11} /></span>
+								<span class="crumb-branch">{middleEllipsis(branch, 26)}</span>
+								<span class="crumb-sep"><Icon name="arrow-right" size={10} /></span>
+								<span class="crumb-base">{base}</span>
+							</span>
 						</div>
-					{/if}
+						{#if report.meta.agent || report.meta.model}
+							<span class="meta-divider" aria-hidden="true"></span>
+							<div class="meta-block meta-agent" title={agentTitle || undefined}>
+								<span class="meta-primary meta-line">
+									<span class="meta-icon"><AgentIcon id={agentId} size={12} /></span>
+									<span class="meta-text">{agentId || report.meta.agent ? agentLabel : '—'}</span>
+								</span>
+								{#if modelShown}
+									<span class="meta-secondary meta-line meta-model">
+										<span class="meta-icon"><Icon name="brain" size={11} /></span>
+										<span class="meta-text">{modelShown}</span>
+									</span>
+								{/if}
+							</div>
+						{/if}
+					</div>
+					<div class="menu-wrap">
+						<button
+							type="button"
+							class="icon-btn inner"
+							class:on={kebabOpen}
+							title="Más acciones"
+							aria-label="Más acciones"
+							aria-expanded={kebabOpen}
+							aria-haspopup="menu"
+							onclick={(e) => {
+								e.stopPropagation();
+								toggleKebab();
+							}}
+						>
+							<Icon name="more" />
+						</button>
+						{#if kebabOpen}
+							<div class="menu" role="menu" tabindex="-1">
+								<button type="button" class="menu-item danger" role="menuitem" onclick={remove}>
+									Eliminar reporte…
+								</button>
+							</div>
+						{/if}
+					</div>
 				</div>
 			{/if}
 		</div>
 
-		{#if report}
-			<div class="chrome-center chrome-center-inline">
-				<div class="mode-toggle">
-					<button type="button" class:on={diffMode === 'unified'} onclick={() => (diffMode = 'unified')}
-						>Unificado</button
-					>
-					<button type="button" class:on={diffMode === 'split'} onclick={() => (diffMode = 'split')}
-						>Lado a lado</button
-					>
-				</div>
-				<div class="zoom">
-					<button
-						type="button"
-						class="icon-btn"
-						title="Achicar letra del diff"
-						aria-label="Achicar letra del diff"
-						onclick={() => (diffFontSize = clamp(diffFontSize - 1, 9, 20))}>－</button
-					>
-					<span class="zoom-label">{Math.round(diffFontSize)}px</span>
-					<button
-						type="button"
-						class="icon-btn"
-						title="Agrandar letra del diff"
-						aria-label="Agrandar letra del diff"
-						onclick={() => (diffFontSize = clamp(diffFontSize + 1, 9, 20))}>＋</button
-					>
-				</div>
-				<button
-					type="button"
-					class="icon-btn"
-					class:on={wrapLines}
-					disabled={diffMode === 'split'}
-					title={diffMode === 'split'
-						? 'En lado a lado el código siempre ajusta'
-						: wrapLines
-							? 'Desactivar ajuste de línea (volver a scroll horizontal)'
-							: 'Ajustar líneas largas en vez de scrollear horizontalmente'}
-					aria-label={diffMode === 'split'
-						? 'En lado a lado el código siempre ajusta'
-						: wrapLines
-							? 'Desactivar ajuste de línea'
-							: 'Ajustar líneas largas'}
-					onclick={() => (wrapLines = !wrapLines)}
-				>
-					↵
-				</button>
-				<span class="chrome-divider"></span>
-				<button
-					type="button"
-					class="icon-btn panel"
-					class:on={!sidebarCollapsed}
-					title={sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
-					aria-label={sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
-					onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
-				>
-					◧
-				</button>
-				<button
-					type="button"
-					class="icon-btn panel"
-					class:on={showExplanations}
-					title={showExplanations ? 'Ocultar detalle' : 'Mostrar detalle'}
-					aria-label={showExplanations ? 'Ocultar detalle' : 'Mostrar detalle'}
-					onclick={() => (showExplanations = !showExplanations)}
-				>
-					◨
-				</button>
-			</div>
-		{/if}
-
 		<div class="chrome-right">
 			{#if report}
+				<div class="group diff-group chrome-center-inline" role="group" aria-label="Vista del diff">
+					<button
+						type="button"
+						class="icon-btn inner"
+						class:on={diffMode === 'unified'}
+						title="Unificado"
+						aria-label="Unificado"
+						aria-pressed={diffMode === 'unified'}
+						onclick={() => (diffMode = 'unified')}
+					>
+						<Icon name="unified" />
+					</button>
+					<button
+						type="button"
+						class="icon-btn inner"
+						class:on={diffMode === 'split'}
+						title="Lado a lado"
+						aria-label="Lado a lado"
+						aria-pressed={diffMode === 'split'}
+						onclick={() => (diffMode = 'split')}
+					>
+						<Icon name="split" />
+					</button>
+					<span class="group-gap" aria-hidden="true"></span>
+					<button
+						type="button"
+						class="icon-btn inner"
+						title="Achicar letra del diff"
+						aria-label="Achicar letra del diff"
+						onclick={() => (diffFontSize = clamp(diffFontSize - 1, 9, 20))}
+					>
+						<Icon name="minus" size={14} />
+					</button>
+					<span class="zoom-label" title="Tamaño de letra del diff">{Math.round(diffFontSize)}</span>
+					<button
+						type="button"
+						class="icon-btn inner"
+						title="Agrandar letra del diff"
+						aria-label="Agrandar letra del diff"
+						onclick={() => (diffFontSize = clamp(diffFontSize + 1, 9, 20))}
+					>
+						<Icon name="plus" size={14} />
+					</button>
+					<span class="group-gap" aria-hidden="true"></span>
+					<button
+						type="button"
+						class="icon-btn inner"
+						class:on={wrapLines && diffMode !== 'split'}
+						disabled={diffMode === 'split'}
+						title={diffMode === 'split'
+							? 'En lado a lado el código siempre ajusta'
+							: wrapLines
+								? 'Desactivar ajuste de línea (volver a scroll horizontal)'
+								: 'Ajustar líneas largas en vez de scrollear horizontalmente'}
+						aria-label={diffMode === 'split'
+							? 'En lado a lado el código siempre ajusta'
+							: wrapLines
+								? 'Desactivar ajuste de línea'
+								: 'Ajustar líneas largas'}
+						onclick={() => (wrapLines = !wrapLines)}
+					>
+						<Icon name="wrap" />
+					</button>
+				</div>
 				<div class="menu-wrap chrome-view-menu">
 					<button
 						type="button"
-						class="ghost view-menu-btn"
+						class="icon-btn"
+						class:on={viewMenuOpen}
 						title="Controles de vista"
 						aria-label="Controles de vista"
 						aria-expanded={viewMenuOpen}
@@ -307,17 +338,7 @@
 							toggleViewMenu();
 						}}
 					>
-						Vista
-						<svg class="caret" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-							<path
-								d="M2.5 4.5 6 8l3.5-3.5"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="1.5"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-							/>
-						</svg>
+						<Icon name="sliders" />
 					</button>
 					{#if viewMenuOpen}
 						<div class="menu view-menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
@@ -343,19 +364,23 @@
 							<div class="view-menu-row" role="group" aria-label="Tamaño de letra">
 								<button
 									type="button"
-									class="icon-btn"
+									class="icon-btn inner"
 									title="Achicar letra del diff"
 									aria-label="Achicar letra del diff"
-									onclick={() => (diffFontSize = clamp(diffFontSize - 1, 9, 20))}>－</button
+									onclick={() => (diffFontSize = clamp(diffFontSize - 1, 9, 20))}
 								>
+									<Icon name="minus" size={14} />
+								</button>
 								<span class="zoom-label">{Math.round(diffFontSize)}px</span>
 								<button
 									type="button"
-									class="icon-btn"
+									class="icon-btn inner"
 									title="Agrandar letra del diff"
 									aria-label="Agrandar letra del diff"
-									onclick={() => (diffFontSize = clamp(diffFontSize + 1, 9, 20))}>＋</button
+									onclick={() => (diffFontSize = clamp(diffFontSize + 1, 9, 20))}
 								>
+									<Icon name="plus" size={14} />
+								</button>
 							</div>
 							<button
 								type="button"
@@ -371,99 +396,57 @@
 							<button
 								type="button"
 								class="menu-item"
-								class:on={!sidebarCollapsed}
-								role="menuitem"
-								onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
-							>
-								{sidebarCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
-							</button>
-							<button
-								type="button"
-								class="menu-item"
 								class:on={showExplanations}
 								role="menuitem"
 								onclick={() => (showExplanations = !showExplanations)}
 							>
-								{showExplanations ? 'Ocultar detalle' : 'Mostrar detalle'}
+								{showExplanations ? 'Ocultar explicaciones' : 'Mostrar explicaciones'}
 							</button>
 						</div>
 					{/if}
 				</div>
 				<button
 					type="button"
-					class="ghost chat-btn"
+					class="icon-btn"
+					title="Exportar reporte"
+					aria-label="Exportar reporte"
+					onclick={(e) => {
+						e.stopPropagation();
+						openExportDialog();
+					}}
+				>
+					<Icon name="download" />
+				</button>
+			{/if}
+			<ThemeToggle />
+			{#if report}
+				<span class="chrome-divider" aria-hidden="true"></span>
+				<button
+					type="button"
+					class="icon-btn chrome-layout-btn"
+					class:on={showExplanations}
+					title={showExplanations ? 'Ocultar explicaciones' : 'Mostrar explicaciones'}
+					aria-label={showExplanations ? 'Ocultar explicaciones' : 'Mostrar explicaciones'}
+					aria-pressed={showExplanations}
+					onclick={() => (showExplanations = !showExplanations)}
+				>
+					<Icon name="sidebar-right" />
+				</button>
+				<button
+					type="button"
+					class="icon-btn"
 					class:on={chatOpen}
 					title="Chat con el agente"
 					aria-label="Chat con el agente"
 					aria-pressed={chatOpen}
-					onclick={() => (chatOpen = !chatOpen)}
+					onclick={() => {
+						if (chatOpen) closeAgentDrawer();
+						else openAgentDrawer();
+					}}
 				>
-					<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
-						<path
-							d="M2.5 3.25h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7.2L4 13.75V11.25H2.5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="1.35"
-							stroke-linejoin="round"
-						/>
-					</svg>
+					<Icon name="chat" />
 				</button>
-				<div class="menu-wrap">
-					<button
-						type="button"
-						class="ghost download-btn"
-						aria-expanded={downloadOpen}
-						aria-haspopup="menu"
-						onclick={(e) => {
-							e.stopPropagation();
-							toggleDownload();
-						}}
-					>
-						<svg class="dl-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-							<path
-								d="M8 2.5v7.2M5.2 7.2 8 10l2.8-2.8M3.5 12.5h9"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="1.5"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-							/>
-						</svg>
-						Descargar
-						<svg class="caret" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-							<path
-								d="M2.5 4.5 6 8l3.5-3.5"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="1.5"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-							/>
-						</svg>
-					</button>
-					{#if downloadOpen}
-						<div class="menu download-menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('json')}>
-								<span class="fmt">JSON</span>
-								<span class="hint">para volver a importar</span>
-							</button>
-							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('md')}>
-								<span class="fmt">Markdown</span>
-								<span class="hint">para leer / pegar</span>
-							</button>
-							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('html')}>
-								<span class="fmt">HTML</span>
-								<span class="hint">página autocontenida</span>
-							</button>
-							<button type="button" class="menu-item" role="menuitem" onclick={() => exportAs('pdf')}>
-								<span class="fmt">PDF</span>
-								<span class="hint">imprimir / guardar</span>
-							</button>
-						</div>
-					{/if}
-				</div>
 			{/if}
-			<ThemeToggle />
 		</div>
 	</header>
 
@@ -492,6 +475,8 @@
 				onpendingfixappliedconsumed={() => (pendingFixApplied = null)}
 				onask={askAbout}
 				onfixwithagent={fixWithAgent}
+				onopendrawer={closeAgentDrawer}
+				agentDrawerOpen={chatOpen}
 				onreportupdated={(updated) => (report = updated)}
 			/>
 			{#if chatOpen}
@@ -502,11 +487,12 @@
 					{pendingFix}
 					onpendingfixconsumed={() => (pendingFix = null)}
 					onfixapplied={(payload) => (pendingFixApplied = payload)}
-					onclose={() => (chatOpen = false)}
+					onclose={closeAgentDrawer}
 					onreportupdated={(updated) => (report = updated)}
 				/>
 			{/if}
 		</div>
+		<ExportDialog {report} open={downloadOpen} onclose={() => (downloadOpen = false)} />
 	{/if}
 </div>
 
@@ -530,170 +516,218 @@
 		min-width: 0;
 	}
 
-	.ghost.on {
-		background: var(--accent-soft);
-		border-color: var(--accent);
-	}
-
 	.chrome {
-		display: flex;
+		/* 32px: altura única de botones y grupos del header. */
+		--ctl: 32px;
+		--ctl-inner: 28px;
+		--hover-bg: color-mix(in srgb, var(--text) 7%, transparent);
+		--on-bg: color-mix(in srgb, var(--text) 11%, transparent);
+		position: relative;
 		flex-wrap: nowrap;
-		align-items: center;
-		gap: 12px 16px;
-		padding: 12px 28px;
-		border-bottom: 1px solid var(--border);
-		background: var(--header-bg);
-		flex-shrink: 0;
-		min-width: 0;
 	}
 
 	.chrome-left {
 		display: flex;
 		align-items: center;
-		gap: 10px;
+		gap: 8px;
 		min-width: 0;
-		flex: 1 1 0;
-		overflow: hidden;
-	}
-
-	.chrome-center {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		flex: 0 0 auto;
+		flex: 1 1 auto;
+		/* visible: el kebab dropdown no puede quedar clippeado por el header */
+		overflow: visible;
+		z-index: 2;
 	}
 
 	.chrome-right {
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		flex: 0 0 auto;
-		margin-left: auto;
+		justify-content: flex-end;
+		gap: 6px;
+		flex: 0 1 auto;
+		min-width: 0;
+		z-index: 2;
 	}
 
 	.chrome-view-menu {
 		display: none;
 	}
 
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		font-weight: 700;
-		font-size: 15px;
-		text-decoration: none;
-		color: var(--text);
-		flex-shrink: 0;
-	}
-
-	.brand-dot {
-		width: 9px;
-		height: 9px;
-		border-radius: 50%;
-		background: linear-gradient(135deg, #6ea8fe, #c9a5ff);
-		box-shadow: 0 0 12px #6ea8fe88;
-		flex-shrink: 0;
-	}
-
 	.chrome-divider {
 		width: 1px;
 		height: 18px;
+		margin-inline: 2px;
 		background: var(--border);
 		flex-shrink: 0;
+	}
+
+	/* Grupos (contexto, diff): una superficie sutil, sin bordes internos. */
+	.group {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		height: var(--ctl);
+		box-sizing: border-box;
+		padding: 1px;
+		border: 1px solid var(--border-soft);
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--text) 3.5%, transparent);
+		flex-shrink: 0;
+	}
+
+	.group-gap {
+		width: 6px;
+		flex-shrink: 0;
+	}
+
+	/* Dos líneas de texto: más alto que los botones (38 vs 32), sin pasar el alto del header. */
+	.ctx-group {
+		flex-shrink: 1;
+		min-width: 0;
+		height: 38px;
+		padding: 0 3px 0 11px;
+		gap: 10px;
+	}
+
+	/* El kebab va separado del texto por una línea, como un segmento aparte. */
+	.ctx-group > .menu-wrap {
+		display: flex;
+		align-items: center;
+		align-self: stretch;
+		padding-left: 4px;
+		border-left: 1px solid var(--border-soft);
+	}
+
+	.chrome-meta {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 14px;
+		min-width: 0;
+		max-width: min(440px, 48vw);
+		overflow: hidden;
+	}
+
+	.meta-block {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 3px;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.meta-repo {
+		flex: 1 1 auto;
+		max-width: min(240px, 28vw);
+	}
+
+	.meta-agent {
+		flex: 0 1 auto;
+		max-width: min(180px, 22vw);
+	}
+
+	.meta-divider {
+		width: 1px;
+		height: 22px;
+		background: var(--border);
+		flex-shrink: 0;
+		align-self: center;
+	}
+
+	.meta-line {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.meta-icon {
+		display: inline-flex;
+		flex-shrink: 0;
+		color: var(--text-faint);
+	}
+
+	.meta-text {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+
+	.meta-primary {
+		max-width: 100%;
+		overflow: hidden;
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 14px;
+		color: var(--text);
+	}
+
+	.meta-secondary {
+		max-width: 100%;
+		overflow: hidden;
+		font-size: 10.5px;
+		line-height: 13px;
+		color: var(--text-faint);
+	}
+
+	.meta-model {
+		font-family: var(--mono);
+		gap: 4px;
 	}
 
 	.breadcrumb {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 		font-family: var(--mono);
-		font-size: 12.5px;
 		min-width: 0;
-		max-width: min(220px, 28vw);
-		overflow: hidden;
 	}
 
 	.crumb-branch {
-		color: var(--text);
-		font-weight: 600;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 0;
+		color: var(--text-dim);
 	}
 
 	.crumb-sep {
-		color: var(--text-dim);
+		display: inline-flex;
 		flex-shrink: 0;
+		opacity: 0.7;
 	}
 
 	.crumb-base {
-		color: var(--text-dim);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		flex-shrink: 1;
-		min-width: 0;
-	}
-
-	.provenance {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		min-width: 0;
-		max-width: min(160px, 18vw);
-		overflow: hidden;
-		font-size: 12px;
-		color: var(--text-dim);
-		flex-shrink: 1;
-	}
-
-	.prov-agent {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		min-width: 0;
-	}
-
-	.prov-sep {
-		color: var(--text-dim);
-		flex-shrink: 0;
-	}
-
-	.prov-model {
-		font-family: var(--mono);
-		font-size: 11.5px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 		min-width: 0;
 	}
 
 	.menu-wrap {
 		position: relative;
 		flex-shrink: 0;
+		z-index: 50;
 	}
 
 	.menu {
 		position: absolute;
-		top: calc(100% + 4px);
+		top: calc(100% + 6px);
 		left: 0;
-		z-index: 40;
+		z-index: 60;
 		min-width: 180px;
 		padding: 4px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
 	}
 
-	.download-menu {
+	.ctx-group .menu {
 		left: auto;
-		right: 0;
-		min-width: 220px;
-		padding: 4px;
-		display: flex;
-		flex-direction: column;
-		gap: 0;
+		right: -2px;
 	}
 
 	.menu-item {
@@ -702,8 +736,9 @@
 		align-items: flex-start;
 		gap: 0;
 		width: 100%;
-		padding: 4px 8px;
+		padding: 6px 8px;
 		border: 0;
+		border-radius: 2px;
 		background: transparent;
 		color: var(--text);
 		font-size: 12px;
@@ -712,167 +747,63 @@
 		cursor: pointer;
 	}
 
-	/*
-	 * Hit-box = caja visible: overflow hidden evita que el texto del ítem anterior
-	 * capture el pointer sobre el siguiente (hover “atrasado”).
-	 */
-	.download-menu button.menu-item {
-		box-sizing: border-box;
-		position: relative;
-		z-index: 0;
-		display: flex;
-		flex-direction: row;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-		margin: 0;
-		padding: 0 10px;
-		min-height: 44px;
-		height: 44px;
-		border: 0;
-		border-radius: 2px;
-		background: transparent;
-		color: var(--text);
-		font: inherit;
-		font-size: 12px;
-		font-weight: 400;
-		line-height: 1.2;
-		letter-spacing: normal;
-		text-align: left;
-		cursor: pointer;
-		appearance: none;
-		-webkit-appearance: none;
-		overflow: hidden;
-	}
-
-	.download-menu button.menu-item:hover {
-		z-index: 1;
-		background: var(--accent-soft);
-	}
-
 	.menu-item:hover {
-		background: var(--accent-soft);
+		background: var(--hover-bg);
 	}
 
 	.menu-item.danger {
 		color: var(--danger);
 	}
 
-	.menu-item .fmt {
-		font-weight: 600;
-		line-height: 1.2;
-		flex-shrink: 0;
-	}
-
-	.menu-item .hint {
-		font-size: 10.5px;
-		line-height: 1.2;
-		color: var(--text-faint);
-	}
-
-	.download-menu .menu-item .fmt,
-	.download-menu .menu-item .hint {
-		pointer-events: none;
-	}
-
-	.download-menu .menu-item .hint {
-		font-size: 10px;
-		text-align: right;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		min-width: 0;
-	}
-
-	.mode-toggle {
-		display: flex;
-		border: 1px solid var(--border);
-		overflow: hidden;
-	}
-
-	.mode-toggle button {
-		padding: 6px 12px;
-		font-size: 12px;
-		border: 0;
-		white-space: nowrap;
-		background: transparent;
-		color: var(--text);
-	}
-
-	.mode-toggle button + button {
-		border-left: 1px solid var(--border);
-	}
-
-	.mode-toggle button.on {
-		background: var(--accent-soft);
-	}
-
-	.zoom {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-	}
-
+	/* Botones de ícono: sin marco; el fondo aparece en hover/activo. */
 	.icon-btn {
-		background: var(--bg-card);
-		border: 1px solid var(--border);
-		width: 26px;
-		height: 26px;
+		width: var(--ctl);
+		height: var(--ctl);
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		flex-shrink: 0;
 		padding: 0;
-		font-size: 13px;
+		border: 0;
+		border-radius: var(--radius);
+		background: transparent;
 		color: var(--text-dim);
+		cursor: pointer;
 	}
 
-	.icon-btn:hover {
-		border-color: var(--accent);
+	.icon-btn.inner {
+		width: var(--ctl-inner);
+		height: var(--ctl-inner);
+		border-radius: 2px;
+	}
+
+	.icon-btn:hover:not(:disabled) {
+		background: var(--hover-bg);
 		color: var(--text);
 	}
 
 	.icon-btn.on {
-		background: var(--accent-soft);
-		border-color: var(--accent);
+		background: var(--on-bg);
 		color: var(--text);
 	}
 
-	.icon-btn.kebab {
-		width: 40px;
-		height: 40px;
-		min-width: 40px;
-		min-height: 40px;
-		border-color: transparent;
-		background: transparent;
-	}
-
-	.icon-btn.kebab:hover {
-		border-color: var(--border);
-		background: var(--bg-card);
-	}
-
-	/* Los glifos de panel dibujan medio cuadrado: a 13px no se distinguen entre sí. */
-	.icon-btn.panel {
-		font-size: 15px;
+	.icon-btn:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
 	}
 
 	.icon-btn:disabled {
-		opacity: 0.4;
+		opacity: 0.35;
 		cursor: not-allowed;
 	}
 
 	.zoom-label {
+		min-width: 22px;
 		font-family: var(--mono);
 		font-size: 10.5px;
-		color: var(--text-dim);
-		width: 30px;
+		color: var(--text-faint);
 		text-align: center;
-	}
-
-	.view-menu-btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.view-menu {
@@ -886,7 +817,7 @@
 	}
 
 	.view-menu .menu-item.on {
-		background: var(--accent-soft);
+		background: var(--on-bg);
 		color: var(--text);
 	}
 
@@ -901,40 +832,7 @@
 		align-items: center;
 		justify-content: center;
 		gap: 6px;
-		padding: 6px 4px;
-	}
-
-	.ghost {
-		background: var(--bg-card);
-		border: 1px solid var(--border);
-		padding: 7px 12px;
-		font-size: 12.5px;
-		color: var(--text);
-	}
-
-	.chat-btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 32px;
-		height: 32px;
-		padding: 0;
-	}
-
-	.chat-btn.on {
-		border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-		background: var(--accent-soft, color-mix(in srgb, var(--accent) 10%, transparent));
-		color: var(--accent);
-	}
-
-	.download-btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.download-btn .caret {
-		opacity: 0.7;
+		padding: 4px;
 	}
 
 	.hint {
@@ -970,42 +868,57 @@
 			display: block;
 		}
 
-		.provenance {
-			max-width: min(120px, 22vw);
+		.chrome-layout-btn {
+			display: none;
 		}
 
-		.breadcrumb {
-			max-width: min(160px, 30vw);
+		.chrome-meta {
+			max-width: min(320px, 40vw);
+		}
+
+		.meta-repo {
+			max-width: min(160px, 24vw);
+		}
+
+		.meta-agent {
+			max-width: min(140px, 18vw);
+		}
+	}
+
+	@media (max-width: 900px) {
+		.brand-text {
+			display: none;
 		}
 	}
 
 	@media (max-width: 768px) {
 		.chrome {
 			flex-wrap: wrap;
-			padding: 10px 14px;
+			padding: 10px 12px 10px 8px;
 			gap: 8px 10px;
 		}
 
 		.chrome-left {
-			flex: 1 1 calc(100% - 80px);
-			order: 1;
+			flex: 1 1 100%;
 		}
 
 		.chrome-right {
 			flex: 1 1 100%;
-			order: 2;
-			margin-left: 0;
 			justify-content: flex-end;
 			flex-wrap: wrap;
 		}
 
-		.chrome-divider-prov,
-		.provenance {
+		.meta-agent,
+		.meta-divider {
 			display: none;
 		}
 
-		.breadcrumb {
+		.chrome-meta {
 			max-width: min(200px, 45vw);
+		}
+
+		.meta-repo {
+			max-width: 100%;
 		}
 
 		.body.chat-open > :global(.report-shell) {

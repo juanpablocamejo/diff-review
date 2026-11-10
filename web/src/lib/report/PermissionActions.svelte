@@ -70,7 +70,7 @@
 		padding: 5px 10px;
 		font-size: 12px;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg-elev);
 		color: var(--text);
 	}

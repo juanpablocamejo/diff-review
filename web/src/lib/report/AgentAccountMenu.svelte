@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { agentAccount, openAgentLogin, openAgentLogout } from './agent.remote';
 
 	let {
@@ -43,7 +44,8 @@
 	let generation = 0;
 
 	function publishAccount() {
-		onaccount?.(Boolean(account?.loggedIn && account.accountLabel));
+		// untrack: el padre suele pasar `onaccount={(v) => ...}` inline.
+		untrack(() => onaccount?.(Boolean(account?.loggedIn && account.accountLabel)));
 	}
 
 	async function refresh() {
@@ -80,7 +82,7 @@
 		fetchKey = key;
 		if (agentChanged) {
 			account = null;
-			onaccount?.(false);
+			untrack(() => onaccount?.(false));
 		}
 		void refresh();
 	});
@@ -292,6 +294,7 @@
 		max-width: 40vw;
 		padding: 3px 6px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg);
 		color: var(--text);
 		font: inherit;

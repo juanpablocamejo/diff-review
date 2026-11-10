@@ -4,9 +4,7 @@
 		hasFixSelection,
 		fixSelectionCount,
 		ignoredCount = 0,
-		agentName = 'Agente',
 		onfixwithagent,
-		oncopyfixprompt,
 		onopenpublishprompt,
 		onpurgeignored
 	}: {
@@ -14,15 +12,12 @@
 		hasFixSelection: boolean;
 		fixSelectionCount: number;
 		ignoredCount?: number;
-		/** Nombre corto del agente (mismo que el header / chat: Claude, Cursor, …). */
-		agentName?: string;
 		onfixwithagent: () => void;
-		oncopyfixprompt: () => void;
 		onopenpublishprompt: () => void;
 		onpurgeignored?: () => void;
 	} = $props();
 
-	const fixLabel = $derived(`Corregir con ${agentName} (${fixSelectionCount})`);
+	const fixLabel = $derived(`Corregir (${fixSelectionCount})`);
 </script>
 
 <footer class="footer">
@@ -34,7 +29,6 @@
 			>
 		{/if}
 		{#if hasFixSelection}
-			<button type="button" class="ghost" onclick={oncopyfixprompt}>Copiar prompt</button>
 			<button type="button" class="publish" onclick={onopenpublishprompt}
 				>Publicar Revisión ({fixSelectionCount})</button
 			>
@@ -74,12 +68,12 @@
 
 	.fix,
 	.publish,
-	.ghost,
 	.purge {
 		padding: 6px 12px;
 		font-weight: 600;
 		font-size: 11.5px;
 		border: 1px solid;
+		border-radius: var(--radius);
 		cursor: pointer;
 	}
 
@@ -93,17 +87,6 @@
 		background: var(--publish-bg);
 		border-color: var(--publish-border);
 		color: var(--publish-text);
-	}
-
-	.ghost {
-		background: transparent;
-		border-color: var(--border);
-		color: var(--text);
-		font-weight: 500;
-	}
-
-	.ghost:hover {
-		border-color: var(--accent);
 	}
 
 	.purge {

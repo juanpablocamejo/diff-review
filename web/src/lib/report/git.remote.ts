@@ -7,6 +7,7 @@ import {
 	describeGitError,
 	detectReviewOutput,
 	hydrateReviewPayload,
+	isExpectedGitUserError,
 	loadFileLines,
 	loadLaunchRepoInfo,
 	loadRepoInfo,
@@ -37,7 +38,10 @@ export type PickedReviewFile = { filename: string; payload: unknown };
 
 function fail(err: unknown): never {
 	const message = describeGitError(err) || 'No se pudo hablar con git.';
-	console.error('[diff-review git]', message, err);
+	// Repo inválido / sin commits: la UI ya muestra el mensaje; no spamear stacks.
+	if (!isExpectedGitUserError(err)) {
+		console.error('[diff-review git]', message, err);
+	}
 	error(400, message);
 }
 
@@ -57,7 +61,9 @@ export const launchContext = query(async (): Promise<RepoInfo | null> => {
 	try {
 		return loadLaunchRepoInfo();
 	} catch (err) {
-		console.error('[diff-review git] launch context', describeGitError(err), err);
+		if (!isExpectedGitUserError(err)) {
+			console.error('[diff-review git] launch context', describeGitError(err), err);
+		}
 		return null;
 	}
 });

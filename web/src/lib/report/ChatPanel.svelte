@@ -111,6 +111,8 @@
 	let modelsForce = $state<Record<string, boolean>>({});
 	/** Cambio de agente en curso (cierra sesión + abre otra). */
 	let switching = $state(false);
+	/** Label del agente al que estamos cambiando (evita copy stale de meta.agent). */
+	let switchingToLabel = $state('');
 	/** Confirmación ES antes de perder el chat del agente actual. */
 	let pendingSwitch = $state<{ nextId: string; nextLabel: string; currentLabel: string } | null>(
 		null
@@ -127,13 +129,36 @@
 	const sessionReady = $derived(Boolean(info));
 	const showPicker = $derived(!ref && !info && !connecting && !switching);
 	const displayModel = $derived(modelChoice || info?.model || report.meta.model || '');
-	const headerAgentId = $derived(info?.agentId || ref?.agentId || agentChoice || '');
+	const headerAgentId = $derived(
+		info?.agentId || (switching ? agentChoice : ref?.agentId) || agentChoice || ''
+	);
 	/** En el picker vacío no fingir un agente distinto al elegido (ni al de meta si aún no hay choice). */
 	const headerAgentName = $derived(
 		showPicker && !agentChoice
 			? 'Agente'
-			: agentShortName(headerAgentId, info?.agentLabel || report.meta.agent || '')
+			: switching && switchingToLabel
+				? switchingToLabel
+				: agentShortName(
+						headerAgentId,
+						info?.agentLabel ||
+							(headerAgentId && matchAgentLabel(headerAgentId)) ||
+							report.meta.agent ||
+							''
+					)
 	);
+	/** Nombre para “Lanzando …” / detalle: priorizar elección viva, no provenance vieja. */
+	const connectingAgentName = $derived(
+		switching && switchingToLabel
+			? switchingToLabel
+			: agentShortName(
+					headerAgentId || agentChoice,
+					info?.agentLabel ||
+						(agentChoice && matchAgentLabel(agentChoice)) ||
+						report.meta.agent ||
+						''
+				) || 'agente'
+	);
+	const launching = $derived(starting || connecting || switching);
 	const headerSelectDisabled = $derived(
 		busy || updating || connecting || starting || switching || Boolean(pendingSwitch)
 	);
@@ -145,16 +170,16 @@
 			options: chosenAgent?.models ?? [],
 			initialValue: ''
 		};
-		const fallback = fixed.options.filter((m) => m.value !== '');
-		if (live && live !== 'loading' && live.models.length) {
+		if (live === 'loading' || live === undefined) {
+			return [{ value: '', label: 'Cargando modelos…', title: 'Cargando modelos…', badges: [] }];
+		}
+		if (live.models.length) {
 			return buildAcpModelSelectOptions(
 				{ models: live.models, currentModel: live.currentModel || info?.model || report.meta.model || '' },
 				fixed
 			).options;
 		}
-		if (live === 'loading' && !fallback.length) {
-			return [{ value: '', label: 'Cargando modelos…', title: 'Cargando modelos…', badges: [] }];
-		}
+		// Sin catálogo ACP (error / vacío): aliases fijos como último recurso.
 		return sortModelSelectOptions(
 			fixed.options.map((m) => ({
 				value: m.value,
@@ -202,6 +227,8 @@
 		const agentSession = report.meta.agentSession;
 		// Sin sesión guardada: el picker / startFresh se encargan (no desarmar un chat recién abierto).
 		if (!agentSession) return;
+		// No reconectar encima de un switchAgent en curso (carrera con openChat).
+		if (untrack(() => switching)) return;
 		// Ya conectados a esta sesión ACP (p. ej. tras persistir meta desde startFresh).
 		if (
 			untrack(
@@ -209,6 +236,7 @@
 					Boolean(
 						info?.acpSessionId === agentSession.sessionId &&
 							info?.outputFilename === agentSession.outputFilename &&
+							info?.agentId === agentSession.agentId &&
 							stream
 					)
 			)
@@ -404,6 +432,11 @@
 		return false;
 	}
 
+	function matchAgentLabel(id: string): string {
+		const opt = agentOptions.find((a) => a.id === id);
+		return opt ? agentShortName(id, opt.label) : '';
+	}
+
 	function cancelPendingSwitch() {
 		pendingSwitch = null;
 	}
@@ -428,8 +461,13 @@
 		if (!nextAgent || switching) return;
 		if (nextAgentId === (info?.agentId || ref?.agentId)) return;
 
+		const toLabel = nextLabel || agentShortName(nextAgentId, nextAgent.label);
 		switching = true;
+		switchingToLabel = toLabel;
 		error = '';
+		// Actualizar choice + provenance YA: el header / “Lanzando …” no deben seguir en el agente viejo.
+		agentChoice = nextAgentId;
+		modelChoice = '';
 		const outputFilename =
 			report.meta.agentSession?.outputFilename || report.meta.outputFilename || '';
 		const transcript = [...(history || []), ...(stream?.events ?? [])];
@@ -440,7 +478,7 @@
 		const handoffNote = buildAgentSwitchHandoff({
 			document: report.document,
 			fromAgentLabel: currentLabel || headerAgentName,
-			toAgentLabel: nextLabel || agentShortName(nextAgentId, nextAgent.label),
+			toAgentLabel: toLabel,
 			transcript,
 			chatRelPath: handoffChatMarkdown && chatRel ? chatRel : null
 		});
@@ -463,11 +501,12 @@
 			pendingAutoSend = false;
 			clearChat(report.id);
 
-			const cleared = updateReportMeta(report.id, { agentSession: undefined });
+			const cleared = updateReportMeta(report.id, {
+				agentSession: undefined,
+				agent: toLabel,
+				model: undefined
+			});
 			if (cleared) onreportupdated(cleared);
-
-			agentChoice = nextAgentId;
-			modelChoice = '';
 
 			const opened = await openChat({
 				agentId: nextAgentId,
@@ -502,6 +541,7 @@
 			error = err instanceof Error ? err.message : String(err);
 		} finally {
 			switching = false;
+			switchingToLabel = '';
 		}
 	}
 
@@ -602,19 +642,8 @@
 		accountLoggedIn && (authAgentId === 'copilot' || authAgentId === 'claude')
 	);
 
-	/** Un login automático por sesión; si falla, el botón queda para reintentar. */
-	let autoLoginFor = '';
-
-	$effect(() => {
-		if (!needsAuth || loginBusy || copilotPickHost) return;
-		const id = authAgentId;
-		const sessionId = info?.id;
-		if (!sessionId || (id !== 'claude' && id !== 'copilot' && id !== 'cursor')) return;
-		const key = `${id}:${sessionId}`;
-		if (autoLoginFor === key) return;
-		autoLoginFor = key;
-		untrack(() => onLoginClick());
-	});
+	/** Envío diferido tras login iniciado desde Preguntar/Corregir. */
+	let pendingSendAfterAuth = $state<{ body: string; mode: ChatMode } | null>(null);
 
 	function onLoginClick() {
 		loginNote = '';
@@ -662,7 +691,6 @@
 			loginNote = result.resumed
 				? 'Inicio de sesión ok. Reconectando…'
 				: result.hint || 'Esperando que completes el inicio de sesión…';
-			if (result.resumed) autoLoginFor = '';
 			if (!result.resumed && ref) {
 				await connect(report.id, ref);
 			}
@@ -765,12 +793,28 @@
 
 	async function send() {
 		const body = text.trim();
-		if (!body || !info || busy || needsAuth || loginBusy) return;
+		if (!body || !info || busy || loginBusy) return;
 		const sendMode = mode;
+		if (needsAuth) {
+			pendingSendAfterAuth = { body, mode: sendMode };
+			onLoginClick();
+			return;
+		}
+		pendingSendAfterAuth = null;
 		text = '';
 		bumpLogScroll();
 		await sendText(body, sendMode);
 	}
+
+	/** Tras login ok: enviar el mensaje encolado desde Preguntar/Corregir. */
+	$effect(() => {
+		if (needsAuth || loginBusy || !pendingSendAfterAuth || !sessionReady || busy) return;
+		const queued = pendingSendAfterAuth;
+		pendingSendAfterAuth = null;
+		text = '';
+		bumpLogScroll();
+		untrack(() => void sendText(queued.body, queued.mode));
+	});
 
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -875,7 +919,7 @@
 					<ModelSelect
 						bind:value={modelChoice}
 						options={modelOptions}
-						disabled={modelsStatus === 'loading' && !chosenAgent?.models.length}
+						disabled={modelsStatus === 'loading' || modelsStatus === undefined}
 					/>
 				</label>
 				{#if modelsError}
@@ -893,7 +937,7 @@
 					type="button"
 					class="primary start"
 					onclick={() => void startFresh()}
-					disabled={!agentChoice || starting || (modelsStatus === 'loading' && !chosenAgent?.models.length)}
+					disabled={!agentChoice || starting || modelsStatus === 'loading' || modelsStatus === undefined}
 					aria-busy={starting}
 				>
 					{#if starting}
@@ -922,7 +966,7 @@
 							{error ||
 								stream?.errorMessage ||
 								(needsAuth
-									? `Necesitás iniciar sesión en ${report.meta.agent || 'el agente'}.`
+									? `Necesitás iniciar sesión en ${authAgentLabel}.`
 									: '')}
 						</p>
 						{#if needsAuth && authAgentId && copilotPickHost && !loginBusy}
@@ -1003,17 +1047,17 @@
 							<div class="spinner"></div>
 						</div>
 						<p class="connecting-title">
-							{starting || connecting ? `Lanzando ${report.meta.agent || 'agente'}…` : 'Conectando con el agente…'}
+							{launching ? `Lanzando ${connectingAgentName}…` : 'Conectando con el agente…'}
 						</p>
 						<p class="connecting-detail">
-							{report.meta.agent || 'Agente'}
-							{#if displayModel}
+							{connectingAgentName}
+							{#if displayModel && !switching}
 								· {displayModel}
 							{/if}
 						</p>
 						<ol class="connecting-phases">
-							<li class:done={connecting || starting || sessionReady}>Abriendo sesión</li>
-							<li class:done={sessionReady} class:active={(connecting || starting) && !sessionReady}>
+							<li class:done={launching || sessionReady}>Abriendo sesión</li>
+							<li class:done={sessionReady} class:active={launching && !sessionReady}>
 								Esperando al agente
 							</li>
 							<li>Listo para chatear</li>
@@ -1148,7 +1192,7 @@
 					class="primary"
 					title="Ctrl+Enter"
 					onclick={() => void send()}
-					disabled={!text.trim() || busy || !sessionReady || needsAuth || loginBusy}
+					disabled={!text.trim() || busy || !sessionReady || loginBusy}
 				>
 					{#if connecting || !sessionReady}
 						Conectando…
@@ -1308,6 +1352,7 @@
 		font-size: 13px;
 		background: var(--btn-primary-bg);
 		border: 1px solid var(--btn-primary-border);
+		border-radius: var(--radius);
 		color: var(--btn-primary-text);
 	}
 	.start:disabled {
@@ -1358,7 +1403,7 @@
 	.copilot-host-field input {
 		padding: 7px 10px;
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		background: var(--bg);
 		color: var(--text);
 		font: inherit;
@@ -1436,6 +1481,7 @@
 		font-size: 12px;
 		color: var(--text-dim);
 		border: 1px solid transparent;
+		border-radius: var(--radius);
 	}
 	.connecting-phases li::before {
 		content: '';
@@ -1481,7 +1527,7 @@
 	.composer-top {
 		display: flex;
 		flex-wrap: wrap;
-		align-items: flex-end;
+		align-items: center;
 		gap: 10px;
 	}
 	.model-field {
@@ -1493,7 +1539,6 @@
 	.mode-field {
 		flex: 0 1 auto;
 		min-width: 0;
-		align-self: flex-end;
 	}
 	.mode-select {
 		display: block;
@@ -1505,7 +1550,7 @@
 		color: var(--text);
 		background: var(--bg-card);
 		border: 1px solid var(--border);
-		border-radius: 0;
+		border-radius: var(--radius);
 		cursor: pointer;
 	}
 	.mode-select:disabled {
@@ -1532,6 +1577,7 @@
 		background: var(--bg-card);
 		color: var(--text);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 	}
 	.actions {
 		display: flex;
@@ -1547,6 +1593,7 @@
 		font-size: 12.5px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		color: var(--text);
 	}
 	.actions button.primary {
@@ -1574,6 +1621,7 @@
 		padding: 18px 20px;
 		background: var(--bg-elev);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		box-shadow: 0 16px 40px color-mix(in srgb, #000 28%, transparent);
 	}
 	.switch-dialog h2 {
@@ -1602,6 +1650,7 @@
 		font-size: 13px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		color: var(--text);
 		cursor: pointer;
 	}

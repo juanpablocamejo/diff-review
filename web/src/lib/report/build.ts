@@ -109,7 +109,7 @@ export type ReportModel = {
 	/** Todos los archivos del diff, ordenados por path, para el árbol del sidebar. */
 	fileNav: FileNavItem[];
 	groupsNav: GroupNavItem[];
-	/** Todas las findings, ordenadas por bloqueo y severidad — no por orden de aparición. */
+	/** Todas las findings, ordenadas por bloqueo y severidad; `number` sigue ese orden. */
 	findingsNav: FindingCard[];
 	orphanFindings: FindingCard[];
 	hasSkipped: boolean;
@@ -153,9 +153,12 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 	const skipped = doc.skipped ?? [];
 	const notes = doc.notes ?? [];
 
-	// Numeración estable: el orden original del documento, no el de un nav ordenado por severidad.
+	// Numeración = orden de visualización (bloqueo → severidad), para que f1..fN coincidan con la lista.
+	const findingsSorted = findings.slice().sort((a, b) =>
+		a.blocking === b.blocking ? SEV_RANK[a.severity] - SEV_RANK[b.severity] : a.blocking ? -1 : 1
+	);
 	const numberById = new Map<string, number>();
-	findings.forEach((f, i) => numberById.set(f.id, i + 1));
+	findingsSorted.forEach((f, i) => numberById.set(f.id, i + 1));
 	const cardFor = (f: ReviewFinding) => buildFindingCard(f, numberById.get(f.id) ?? 0);
 
 	const filesByPath = new Map(files.map((f) => [f.path, f]));
@@ -308,12 +311,7 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 		}))
 	}));
 
-	const findingsNav = findings
-		.slice()
-		.sort((a, b) =>
-			a.blocking === b.blocking ? SEV_RANK[a.severity] - SEV_RANK[b.severity] : a.blocking ? -1 : 1
-		)
-		.map(cardFor);
+	const findingsNav = findingsSorted.map(cardFor);
 
 	const orphanFindings = findings.filter((f) => !allPaths.has(f.file)).map(cardFor);
 

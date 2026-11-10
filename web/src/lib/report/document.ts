@@ -64,6 +64,11 @@ export function parseReportMeta(raw: unknown, fallback: Partial<ReportMeta> = {}
 				: fallback.source === 'url'
 					? 'url'
 					: 'local';
+	const outputFilename =
+		str(nested.outputFilename ?? rec.outputFilename) ||
+		str(fallback.outputFilename) ||
+		str(fallback.agentSession?.outputFilename) ||
+		undefined;
 	return {
 		source,
 		repo,
@@ -73,7 +78,9 @@ export function parseReportMeta(raw: unknown, fallback: Partial<ReportMeta> = {}
 		generatedAt: str(nested.generatedAt ?? rec.generatedAt) || undefined,
 		agent: str(nested.agent ?? rec.agent) || undefined,
 		model: str(nested.model ?? rec.model) || undefined,
-		agentSession: parseAgentSession(nested.agentSession ?? rec.agentSession)
+		modelLabel: str(nested.modelLabel ?? rec.modelLabel) || undefined,
+		agentSession: parseAgentSession(nested.agentSession ?? rec.agentSession) || fallback.agentSession,
+		...(outputFilename ? { outputFilename } : {})
 	};
 }
 
@@ -97,7 +104,8 @@ export function serializeReviewPayload(document: ReviewDocument, meta: ReportMet
 				...(meta.remoteUrl ? { remoteUrl: meta.remoteUrl } : {}),
 				...(meta.generatedAt ? { generatedAt: meta.generatedAt } : {}),
 				...(meta.agent ? { agent: meta.agent } : {}),
-				...(meta.model ? { model: meta.model } : {})
+				...(meta.model ? { model: meta.model } : {}),
+				...(meta.modelLabel ? { modelLabel: meta.modelLabel } : {})
 			},
 			...document
 		},

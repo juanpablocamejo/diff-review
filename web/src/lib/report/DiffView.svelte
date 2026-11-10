@@ -16,13 +16,22 @@
 	import type { BlockSide } from './types';
 	import { plural } from './labels';
 
-	type Accent = { id: string; side: BlockSide; start: number; end: number; accentColor: string };
+	type BlockExplain = { lines: string; opLabel: string; what: string; why: string };
+	type Accent = {
+		id: string;
+		side: BlockSide;
+		start: number;
+		end: number;
+		accentColor: string;
+		explain?: BlockExplain;
+	};
 
 	let {
 		path,
 		diff,
 		blocks = [],
 		highlightBlockId = null,
+		showBlockNotes = false,
 		mode = 'unified',
 		expanded = false,
 		onToggleExpand,
@@ -36,6 +45,8 @@
 		diff: string;
 		blocks?: Accent[];
 		highlightBlockId?: string | null;
+		/** Sin columna de explicaciones: nota al inicio de cada bloque con popover del qué/por qué. */
+		showBlockNotes?: boolean;
 		mode?: 'unified' | 'split';
 		expanded?: boolean;
 		onToggleExpand?: () => void;
@@ -69,9 +80,12 @@
 	let reveal = $state<RevealState>({});
 
 	// Cambió el archivo que muestra este componente: lo cargado ya no aplica.
+	// Guard: assigning `reveal = {}` every run dirties dependents forever (effect_update_depth).
+	let resetKey = '';
 	$effect(() => {
-		void path;
-		void diff;
+		const key = `${path}\0${diff}`;
+		if (key === resetKey) return;
+		resetKey = key;
 		fileLines = null;
 		linesState = 'idle';
 		reveal = {};
@@ -161,6 +175,53 @@
 					}
 		)
 	);
+
+	/** `${segKey}:${fila}` → bloque que arranca ahí (primera fila visible de cada bloque). */
+	const noteAt = $derived.by(() => {
+		const at = new Map<string, Accent>();
+		if (!showBlockNotes) return at;
+		const seen = new Set<string>();
+		const mark = (key: string, b: Accent | null) => {
+			if (!b?.explain || seen.has(b.id)) return;
+			seen.add(b.id);
+			at.set(key, b);
+		};
+		for (const seg of viewSegments) {
+			if (seg.kind !== 'hunk') continue;
+			if (seg.built) {
+				seg.built.rows.forEach((row, i) => {
+					const oldNo = row.left.blank ? null : Number(row.left.no);
+					const newNo = row.right.blank ? null : Number(row.right.no);
+					mark(`${seg.key}:${i}`, blockFor('old', oldNo) ?? blockFor('new', newNo));
+				});
+			} else {
+				seg.hunk.lines.forEach((line, i) => {
+					const side = line.kind === 'del' ? 'old' : 'new';
+					mark(`${seg.key}:${i}`, blockFor(side, side === 'old' ? line.oldNo : line.newNo));
+				});
+			}
+		}
+		return at;
+	});
+
+	let tip = $state<{ block: Accent; x: number; y: number; above: boolean } | null>(null);
+
+	function showTip(e: Event, block: Accent) {
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		const above = r.bottom + 240 > window.innerHeight;
+		tip = { block, x: Math.min(r.left, window.innerWidth - 400), y: above ? r.top - 6 : r.bottom + 6, above };
+	}
+
+	function hideTip() {
+		tip = null;
+	}
+
+	// El popover es `fixed`: si cualquier contenedor scrollea, deja de estar pegado a su nota.
+	$effect(() => {
+		if (!tip) return;
+		window.addEventListener('scroll', hideTip, true);
+		return () => window.removeEventListener('scroll', hideTip, true);
+	});
 
 	const leftFr = $derived(Math.round(splitRatio * 1000) / 1000);
 	const rightFr = $derived(Math.round((1 - splitRatio) * 1000) / 1000);
@@ -271,6 +332,28 @@
 	</div>
 {/snippet}
 
+{#snippet blockNote(block: Accent)}
+	{@const ex = block.explain}
+	{#if ex}
+		<button
+			type="button"
+			class="block-note"
+			style:--note-accent={block.accentColor}
+			aria-label="Explicación del bloque {ex.lines}: {ex.what}"
+			onmouseenter={(e) => showTip(e, block)}
+			onmouseleave={hideTip}
+			onfocus={(e) => showTip(e, block)}
+			onblur={hideTip}
+		>
+			<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+				<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4" />
+				<path d="M8 7.25v3.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+				<circle cx="8" cy="5" r="0.9" fill="currentColor" />
+			</svg>
+		</button>
+	{/if}
+{/snippet}
+
 <div class="diff-wrap" bind:this={wrapEl} style="--diff-font-size: {fontSize}px">
 	{#if big}
 		<div class="collapse-bar">
@@ -308,6 +391,7 @@
 							{@const newNo = row.right.blank ? null : Number(row.right.no)}
 							{@const leftBg = cellBg(row.left, 'old', oldNo)}
 							{@const rightBg = cellBg(row.right, 'new', newNo)}
+							{@const note = noteAt.get(`${seg.key}:${i}`)}
 							<div class="srow">
 								<span class="ln" style:background={leftBg} style:border-left-color={accentFor('old', oldNo)}
 									>{row.left.no}</span
@@ -331,8 +415,11 @@
 								<span class="sign" class:add={row.right.kind === 'add'} style:background={rightBg}
 									>{row.right.kind === 'add' ? '+' : ''}</span
 								>
-								<span class={['code', row.right.kind]} style:background={rightBg} data-block-id={blockFor('new', newNo)?.id}
-									>{#if !row.right.blank}{@html renderLine(row.right.text, lang, row.right.marks)}{/if}</span
+								<span
+									class={['code', row.right.kind, { 'with-note': !!note }]}
+									style:background={rightBg}
+									data-block-id={blockFor('new', newNo)?.id}
+									>{#if !row.right.blank}{@html renderLine(row.right.text, lang, row.right.marks)}{/if}{#if note}{@render blockNote(note)}{/if}</span
 								>
 							</div>
 						{/each}
@@ -352,6 +439,7 @@
 						{@const side = line.kind === 'del' ? 'old' : 'new'}
 						{@const no = side === 'old' ? line.oldNo : line.newNo}
 						{@const hl = isHighlighted(side, no)}
+						{@const note = noteAt.get(`${seg.key}:${i}`)}
 						<div
 							class={['row', line.kind]}
 							data-block-id={blockFor(side, no)?.id}
@@ -362,6 +450,9 @@
 							<span class="ln">{line.newNo ?? ''}</span>
 							<span class="sign">{line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ''}</span>
 							<span class={['code', line.kind]}>{@html renderLine(line.text, lang, line.marks)}</span>
+							{#if note}
+								<span class="note-slot">{@render blockNote(note)}</span>
+							{/if}
 						</div>
 					{/each}
 				{/if}
@@ -371,7 +462,132 @@
 	</div>
 </div>
 
+{#if tip?.block.explain}
+	{@const ex = tip.block.explain}
+	<div
+		class={['note-tip', { above: tip.above }]}
+		role="tooltip"
+		style:left="{tip.x}px"
+		style:top="{tip.y}px"
+		style:--note-accent={tip.block.accentColor}
+	>
+		<div class="tip-head">
+			<span class="tip-lines">{ex.lines}</span>
+			<span class="tip-op">{ex.opLabel}</span>
+		</div>
+		<p class="tip-what">{ex.what}</p>
+		{#if ex.why}
+			<p class="tip-why">{ex.why}</p>
+		{/if}
+	</div>
+{/if}
+
 <style>
+	/* Columna al final de la fila: sticky para quedar en el borde visible sin sumar alto. */
+	.note-slot {
+		position: sticky;
+		right: 0;
+		display: flex;
+		align-items: center;
+		padding-left: 8px;
+		background: var(--bg);
+	}
+
+	.row.add .note-slot {
+		background: var(--diff-add-bg);
+	}
+
+	.row.del .note-slot {
+		background: var(--diff-del-bg);
+	}
+
+	.block-note {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 16px;
+		height: 16px;
+		padding: 0;
+		border: 0;
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--bg) 72%, transparent);
+		color: var(--note-accent, var(--accent));
+		cursor: help;
+	}
+
+	.block-note:hover,
+	.block-note:focus-visible {
+		color: var(--text);
+		background: var(--bg-card);
+	}
+
+	.block-note:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+
+	/* En split la grilla no admite una columna extra: el ícono flota sobre el código. */
+	.split-grid .code {
+		position: relative;
+	}
+
+	.split-grid .code.with-note {
+		padding-right: 24px;
+	}
+
+	.split-grid .block-note {
+		position: absolute;
+		top: 0;
+		right: 4px;
+		bottom: 0;
+		margin: auto 0;
+	}
+
+	.note-tip {
+		position: fixed;
+		z-index: 200;
+		width: max-content;
+		max-width: min(380px, calc(100vw - 24px));
+		padding: 10px 12px;
+		border: 1px solid var(--border);
+		border-left: 3px solid var(--note-accent, var(--accent));
+		border-radius: var(--radius);
+		background: var(--bg-card);
+		box-shadow: 0 10px 28px color-mix(in srgb, #000 24%, transparent);
+		pointer-events: none;
+	}
+
+	.note-tip.above {
+		transform: translateY(-100%);
+	}
+
+	.tip-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 4px;
+		font-size: 10.5px;
+		color: var(--text-faint);
+	}
+
+	.tip-lines {
+		font-family: var(--mono);
+	}
+
+	.tip-what {
+		margin: 0;
+		font-size: 12.5px;
+		line-height: 1.45;
+		color: var(--text);
+	}
+
+	.tip-why {
+		margin: 6px 0 0;
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--text-dim);
+	}
+
 	.diff-wrap {
 		background: var(--bg);
 		/* Columnas de numeración y signo: lo mínimo para 5 dígitos, pegadas al borde. */
@@ -415,6 +631,7 @@
 	.gap-actions {
 		display: flex;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		overflow: hidden;
 		flex-shrink: 0;
 	}
@@ -516,7 +733,7 @@
 
 	.row {
 		display: grid;
-		grid-template-columns: var(--ln-w) var(--ln-w) var(--sign-w) auto;
+		grid-template-columns: var(--ln-w) var(--ln-w) var(--sign-w) auto auto;
 		border-left: 2px solid transparent;
 		width: max-content;
 		min-width: 100%;

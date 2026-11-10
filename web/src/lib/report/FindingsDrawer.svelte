@@ -1,5 +1,6 @@
 <script lang="ts">
 	import AskAgentButton from './AskAgentButton.svelte';
+	import CopyPathButton from './CopyPathButton.svelte';
 	import type { DecoratedFinding } from './decorate';
 	import FileIcon from './FileIcon.svelte';
 
@@ -58,6 +59,7 @@
 						<span class="dir">{dir}</span>
 					{/if}
 				</span>
+				<CopyPathButton path={filePath} />
 			</span>
 			<button type="button" class="close" onclick={onclose} aria-label="Cerrar">✕</button>
 		</div>
@@ -110,13 +112,13 @@
 											type="button"
 											class="ignore"
 											class:on={f.decided && !f.fixSelected}
-											onclick={() => onignore(f.id)}>Ignorar</button
+											onclick={() => onignore(f.id)}>A ignorar</button
 										>
 										<button
 											type="button"
 											class="fix"
 											class:on={f.decided && f.fixSelected}
-											onclick={() => onfix(f.id)}>Corregir</button
+											onclick={() => onfix(f.id)}>A corregir</button
 										>
 										{#if f.decided}
 											<button type="button" class="clear" title="Limpiar decisión" onclick={() => onclear(f.id)}
@@ -245,6 +247,7 @@
 		height: 14px;
 		flex-shrink: 0;
 		border: 1px solid transparent;
+		border-radius: var(--radius);
 		font-size: 10px;
 		line-height: 1;
 		display: flex;
@@ -319,6 +322,7 @@
 
 	.decision-group.corrected {
 		border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--border));
+		border-radius: var(--radius);
 		background: var(--ok-bg);
 		gap: 0;
 	}
@@ -334,6 +338,7 @@
 		padding: 7px 14px;
 		font-size: 12px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: transparent;
 		color: var(--text-dim);
 		font-weight: 600;
@@ -383,6 +388,7 @@
 
 	.fix-detail {
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--ok-bg);
 		padding: 8px 10px;
 	}

@@ -110,9 +110,9 @@ export function buildFixPromptText(
 			}
 		}
 		const label = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
-		const ref = /^f\d+$/i.test(String(f.id || '').trim())
-			? String(f.id).trim().toLowerCase()
-			: `f${f.number || i + 1}`;
+		// Id estable del JSON (para resolution); el número de lista puede diferir del id.
+		const id = String(f.id || '').trim() || `f${f.number || i + 1}`;
+		const ref = /^f\d+$/i.test(id) ? id.toLowerCase() : id;
 		let out = `${ref}. [${label}] ${f.file}${f.line ? ':' + f.line : ''}\nWhat: ${f.what}\nSuggested fix: ${f.fix}`;
 		if (diffSnippet) out += `\n\n\`\`\`diff\n${diffSnippet}\n\`\`\``;
 		return out;
@@ -154,9 +154,7 @@ export function buildPublishText(
 	const chunks = selectedFindings.map((f) => {
 		const loc = f.file + (f.line ? ':' + f.line : '');
 		const badge = f.blocking ? 'BLOQUEANTE' : severityLabel(f.severity).toUpperCase();
-		const ref = /^f\d+$/i.test(String(f.id || '').trim())
-			? String(f.id).trim().toLowerCase()
-			: `f${f.number}`;
+		const ref = f.number > 0 ? `f${f.number}` : String(f.id || '').trim() || 'f?';
 		return `**${ref} · ${badge}** \`${loc}\`\n\n${f.what}\n\n**Sugerencia:** ${f.fix}`;
 	});
 	return `### Hallazgos de code review${meta.branch ? ', ' + meta.branch : ''}\n\n${chunks.join('\n\n---\n\n')}\n\n_Generado a partir del review automático. Comentario para ${label}._`;

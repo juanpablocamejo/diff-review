@@ -160,13 +160,24 @@ export function loadReportsIndex(): SavedReportSummary[] {
 	const index = readIndex();
 	let changed = false;
 	const enriched = index.map((item) => {
-		if (item.agent || item.model) return item;
+		let next = item;
 		const full = loadReportById(item.id) || loadStoredReport(item.id);
-		const agent = full?.meta?.agent?.trim();
-		const model = full?.meta?.model?.trim();
-		if (!agent && !model) return item;
-		changed = true;
-		return { ...item, ...(agent ? { agent } : {}), ...(model ? { model } : {}) };
+		if (!item.agent && !item.model) {
+			const agent = full?.meta?.agent?.trim();
+			const model = full?.meta?.model?.trim();
+			if (agent || model) {
+				changed = true;
+				next = { ...next, ...(agent ? { agent } : {}), ...(model ? { model } : {}) };
+			}
+		}
+		if (!item.outputFilename) {
+			const filename = full ? reportOutputFilename(full.meta) : '';
+			if (filename) {
+				changed = true;
+				next = { ...next, outputFilename: filename };
+			}
+		}
+		return next;
 	});
 	if (changed) saveReportsIndex(enriched);
 	return enriched;
@@ -207,7 +218,8 @@ export function saveReport(document: ReviewDocument, meta: ReportMeta): SavedRep
 	const blockerCount = document.findings.filter((f) => f.blocking).length;
 	const qualityCount = document.findings.filter((f) => f.class === 'quality').length;
 	const agent = normalized.agent?.trim();
-	const model = normalized.model?.trim();
+	// La tarjeta muestra el nombre con versión ("Haiku 5.5") si diff-review lo estampó.
+	const model = (normalized.modelLabel || normalized.model)?.trim();
 	const summary: SavedReportSummary = {
 		id,
 		repo: normalized.repo,
@@ -219,7 +231,8 @@ export function saveReport(document: ReviewDocument, meta: ReportMeta): SavedRep
 		qualityCount,
 		intent: document.intent,
 		...(agent ? { agent } : {}),
-		...(model ? { model } : {})
+		...(model ? { model } : {}),
+		...(outputFilename ? { outputFilename } : {})
 	};
 
 	saveReportsIndex(trimIndex([summary, ...readIndex().filter((r) => r.id !== id)]));
@@ -274,16 +287,23 @@ export function replaceReportDocument(id: string, document: ReviewDocument, meta
 	memoryReports.set(id, full);
 	writeStored(toStored(full, !canLoadFromDisk(nextMeta)));
 
+	const indexFilename = reportOutputFilename(nextMeta);
 	const index = readIndex().map((item) =>
 		item.id === id
 			? {
 					...item,
+					repo: nextMeta.repo || item.repo,
+					branch: nextMeta.branch || item.branch,
+					base: nextMeta.base || item.base,
 					groupCount: document.groups.length,
 					blockerCount: document.findings.filter((f) => f.blocking).length,
 					qualityCount: document.findings.filter((f) => f.class === 'quality').length,
 					intent: document.intent,
 					...(nextMeta.agent?.trim() ? { agent: nextMeta.agent.trim() } : {}),
-					...(nextMeta.model?.trim() ? { model: nextMeta.model.trim() } : {})
+					...((nextMeta.modelLabel || nextMeta.model)?.trim()
+						? { model: (nextMeta.modelLabel || nextMeta.model)!.trim() }
+						: {}),
+					...(indexFilename ? { outputFilename: indexFilename } : {})
 				}
 			: item
 	);

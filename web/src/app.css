@@ -17,6 +17,8 @@
 	--danger: #ff9a9a;
 	--danger-bg: #2a1414;
 	--danger-border: #4a1e1e;
+	/* Radio mínimo para botones, inputs, chips y paneles; no redondear más. */
+	--radius: 3px;
 	--mono: ui-monospace, 'JetBrains Mono', 'Fira Code', Consolas, 'SFMono-Regular', Menlo, monospace;
 	--sans: -apple-system, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;
 
@@ -350,4 +352,48 @@ body,
 
 *::-webkit-scrollbar-corner {
 	background: transparent;
+}
+
+/*
+ * Header común de las tres pantallas (inicio, review en vivo, reporte): mismo alto,
+ * mismo fondo y la marca siempre a la izquierda. Cada pantalla pone su contenido adentro.
+ */
+.app-header {
+	--app-header-h: 52px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px 16px;
+	min-height: var(--app-header-h);
+	box-sizing: border-box;
+	padding: 0 16px 0 12px;
+	border-bottom: 1px solid var(--border-soft);
+	background: var(--header-bg);
+	flex-shrink: 0;
+	min-width: 0;
+}
+
+.app-brand {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	flex-shrink: 0;
+	padding: 4px 6px;
+	border-radius: var(--radius);
+	font-size: 14px;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	line-height: 1;
+	color: var(--text);
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+a.app-brand:hover {
+	background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+a.app-brand:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
 }

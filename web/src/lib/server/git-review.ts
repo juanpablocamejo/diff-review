@@ -47,6 +47,22 @@ export function describeGitError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
+/** Fallos de validación / repo inválido: se muestran en la UI, no como stack en la terminal. */
+export function isExpectedGitUserError(err: unknown): boolean {
+	const message = describeGitError(err);
+	return (
+		/Indicá la ruta absoluta/i.test(message) ||
+		/no es una ruta/i.test(message) ||
+		/No existe la carpeta/i.test(message) ||
+		/No es un repositorio git/i.test(message) ||
+		/no tiene commits/i.test(message) ||
+		/falta HEAD/i.test(message) ||
+		/not a git repository/i.test(message) ||
+		/ambiguous argument ['"]?HEAD['"]?/i.test(message) ||
+		/unknown revision or path not in the working tree/i.test(message)
+	);
+}
+
 export function resolveSource(source: RepoSource | undefined, repo: string): RepoSource {
 	if (source === 'local' || source === 'url') return source;
 	return looksLikeGitUrl(repo) ? 'url' : 'local';
@@ -103,21 +119,67 @@ export function takePendingImport(): PendingImport | null {
 	}
 }
 
-export type DetectedOutput = { filename: string; path: string; mtimeMs: number };
+export type DetectedOutput = {
+	filename: string;
+	path: string;
+	mtimeMs: number;
+	agent?: string;
+	model?: string;
+	generatedAt?: string;
+	agentId?: string;
+};
+
+type PeekedReviewMeta = {
+	agent?: string;
+	model?: string;
+	generatedAt?: string;
+	agentId?: string;
+};
+
+function peekStr(value: unknown): string {
+	return typeof value === 'string' ? value.trim() : '';
+}
+
+/** Lee meta liviana del JSON sin tirar; para enriquecer el botón de output detectado. */
+export function peekReviewMeta(filePath: string): PeekedReviewMeta {
+	try {
+		const text = readFileSync(filePath, 'utf8');
+		const payload = decodePayload(text);
+		const rec =
+			payload && typeof payload === 'object' && !Array.isArray(payload)
+				? (payload as Record<string, unknown>)
+				: {};
+		const nested =
+			rec.meta && typeof rec.meta === 'object' && !Array.isArray(rec.meta)
+				? (rec.meta as Record<string, unknown>)
+				: {};
+		const sessionRaw = nested.agentSession ?? rec.agentSession;
+		const session =
+			sessionRaw && typeof sessionRaw === 'object' && !Array.isArray(sessionRaw)
+				? (sessionRaw as Record<string, unknown>)
+				: {};
+		const agent = peekStr(nested.agent ?? rec.agent) || undefined;
+		const model = peekStr(nested.model ?? rec.model) || undefined;
+		const generatedAt = peekStr(nested.generatedAt ?? rec.generatedAt) || undefined;
+		const agentId = peekStr(session.agentId) || undefined;
+		return {
+			...(agent ? { agent } : {}),
+			...(model ? { model } : {}),
+			...(generatedAt ? { generatedAt } : {}),
+			...(agentId ? { agentId } : {})
+		};
+	} catch {
+		return {};
+	}
+}
 
 /**
  * Busca un JSON de review en `.diff-review/` o (formato viejo) en la raíz del repo local.
  * Prefiere `preferredName` si existe; si no, el más reciente que matchee el patrón.
  */
 export function detectReviewOutput(repo: string, preferredName?: string): DetectedOutput | null {
-	const raw = String(repo || '').trim();
-	if (!raw || looksLikeGitUrl(raw)) return null;
-	let root: string;
-	try {
-		root = assertGitRepo(raw);
-	} catch {
-		return null;
-	}
+	const root = resolveReviewRoot(repo);
+	if (!root) return null;
 
 	const preferred = String(preferredName || '').trim();
 	if (preferred && isOutputFilename(preferred)) {
@@ -125,7 +187,12 @@ export function detectReviewOutput(repo: string, preferredName?: string): Detect
 		if (preferredPath) {
 			try {
 				const st = statSync(preferredPath);
-				return { filename: preferred, path: preferredPath, mtimeMs: st.mtimeMs };
+				return {
+					filename: preferred,
+					path: preferredPath,
+					mtimeMs: st.mtimeMs,
+					...peekReviewMeta(preferredPath)
+				};
 			} catch {
 				/* seguir al listado */
 			}
@@ -147,7 +214,12 @@ export function detectReviewOutput(repo: string, preferredName?: string): Detect
 				const st = statSync(full);
 				if (!st.isFile()) continue;
 				if (!best || st.mtimeMs > best.mtimeMs) {
-					best = { filename: name, path: full, mtimeMs: st.mtimeMs };
+					best = {
+						filename: name,
+						path: full,
+						mtimeMs: st.mtimeMs,
+						...peekReviewMeta(full)
+					};
 				}
 			} catch {
 				/* ignore */
@@ -157,17 +229,25 @@ export function detectReviewOutput(repo: string, preferredName?: string): Detect
 	return best;
 }
 
+/** Raíz de carpeta para leer `.diff-review/` sin exigir `.git` (reload del viewer). */
+function resolveReviewRoot(repo: string): string | null {
+	const raw = String(repo || '').trim();
+	if (!raw || looksLikeGitUrl(raw)) return null;
+	try {
+		return assertGitRepo(raw);
+	} catch {
+		const resolved = resolve(raw);
+		if (!existsSync(resolved)) return null;
+		return tryResolveGitRoot(resolved) || resolved;
+	}
+}
+
 /** Lee y parsea un JSON de review de `.diff-review/` o la raíz del repo (solo nombres válidos). */
 export function readReviewOutput(repo: string, filename: string): PendingImport | null {
-	const raw = String(repo || '').trim();
 	const name = basename(String(filename || '').trim());
-	if (!raw || !name || !isOutputFilename(name) || looksLikeGitUrl(raw)) return null;
-	let root: string;
-	try {
-		root = assertGitRepo(raw);
-	} catch {
-		return null;
-	}
+	if (!name || !isOutputFilename(name)) return null;
+	const root = resolveReviewRoot(repo);
+	if (!root) return null;
 	const filePath = locateReviewFile(root, name);
 	if (!filePath) return null;
 	try {

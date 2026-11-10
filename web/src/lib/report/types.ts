@@ -67,7 +67,7 @@ export type ReviewFinding = {
 	block: string;
 	what: string;
 	fix: string;
-	/** Decisión de triage persistida; la UI la escribe al marcar Ignorar / Corregir / Corregido. */
+	/** Decisión de triage persistida; la UI la escribe al marcar A ignorar / A corregir / Corregido. */
 	resolution?: FindingResolution;
 };
 
@@ -114,8 +114,10 @@ export type ReportMeta = {
 	generatedAt?: string;
 	/** Nombre del tool/agente; informativo. */
 	agent?: string;
-	/** Id del modelo; informativo. */
+	/** Id del modelo; informativo. Con Claude Code suele ser un alias (`haiku`). */
 	model?: string;
+	/** Nombre legible que el agente da al modelo elegido ("Haiku 5.5"); lo estampa diff-review. */
+	modelLabel?: string;
 	/** Sesión ACP que generó la review (solo si la lanzó diff-review): permite seguir conversando con el agente. */
 	agentSession?: AgentSessionRef;
 	/**
@@ -163,4 +165,6 @@ export type SavedReportSummary = {
 	intent: string;
 	agent?: string;
 	model?: string;
+	/** Puntero a `.diff-review/<name>` para reabrir tras un reload sin el blob en LS. */
+	outputFilename?: string;
 };

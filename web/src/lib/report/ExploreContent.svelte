@@ -3,13 +3,30 @@
 	import type { DecoratedFinding } from './decorate';
 	import { fileAnchor, groupAnchor, groupFileAnchor } from './anchors';
 	import AskAgentButton from './AskAgentButton.svelte';
+	import CopyPathButton from './CopyPathButton.svelte';
 	import DiffView from './DiffView.svelte';
 	import FileIcon from './FileIcon.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
 	import { maxFindingAccent } from './severity';
+
+	/** Bloques del archivo con color y, si hay, el qué/por qué para las notas inline. */
+	function diffBlocks(file: FileSection) {
+		const rowById = new Map(file.rows.map((r) => [r.id, r]));
+		return file.blocksForFile.map((b) => {
+			const row = rowById.get(b.id);
+			return {
+				...b,
+				accentColor: file.blockAccent[b.id] ?? 'transparent',
+				explain: row ? { lines: row.lines, opLabel: row.opLabel, what: row.what, why: row.why } : undefined
+			};
+		});
+	}
 	import { askDraftBlock, askDraftTheme, plural, pluralWord, themeRef } from './labels';
+	import type { Action } from 'svelte/action';
 
 	let {
+		reviewDate = '',
 		intentText,
 		notes,
 		hasBlockers,
@@ -38,6 +55,8 @@
 		onactivefile,
 		onask
 	}: {
+		/** ISO de cuándo se generó la review (o, si el agente no lo puso, cuándo se guardó). */
+		reviewDate?: string;
 		intentText: string;
 		notes: string[];
 		hasBlockers: boolean;
@@ -70,7 +89,28 @@
 		onask?: (draft: string) => void;
 	} = $props();
 
-	let exploreRoot = $state<HTMLElement | null>(null);
+	/** "19 oct 2026, 11:03" + "hace 3 días"; vacío si la fecha no es válida. */
+	const reviewWhen = $derived.by(() => {
+		const d = new Date(reviewDate);
+		if (!reviewDate || Number.isNaN(d.getTime())) return null;
+		const month = d.toLocaleString('es-AR', { month: 'short' }).replace('.', '');
+		const year = d.getFullYear() === new Date().getFullYear() ? '' : ` ${d.getFullYear()}`;
+		const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+		const abs = `${d.getDate()} ${month}${year}, ${time}`;
+		const mins = Math.round((Date.now() - d.getTime()) / 60000);
+		const rtf = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
+		const rel =
+			mins < 1
+				? 'recién'
+				: mins < 60
+					? rtf.format(-mins, 'minute')
+					: mins < 60 * 24
+						? rtf.format(-Math.round(mins / 60), 'hour')
+						: mins < 60 * 24 * 30
+							? rtf.format(-Math.round(mins / 1440), 'day')
+							: rtf.format(-Math.round(mins / 43200), 'month');
+		return { abs, rel, iso: d.toISOString() };
+	});
 
 	function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
 		let p = el?.parentElement ?? null;
@@ -82,72 +122,214 @@
 		return null;
 	}
 
-	$effect(() => {
-		const rootEl = exploreRoot;
-		const notify = onactivefile;
-		if (!rootEl || !notify) return;
+	/**
+	 * Popover con las explicaciones del archivo cuando el panel lateral está oculto. Es `fixed`
+	 * para que no lo recorte el scroll del contenido; por eso se cierra al scrollear afuera.
+	 */
+	const INFO_W = 400; // igual al ancho máximo de .info-pop
+	let info = $state<{
+		file: FileSection;
+		left: number;
+		top?: number;
+		bottom?: number;
+		maxH: number;
+	} | null>(null);
+	let infoEl = $state<HTMLDivElement | null>(null);
+	let infoAnchor: HTMLElement | null = null;
 
-		const scrollRoot = scrollParentOf(rootEl);
+	/*
+	 * Se abre al pasar el mouse (con una pausa corta para no disparar popovers al cruzar
+	 * headers) y se cierra al salir, salvo que el puntero pase al popover. Foco y clic también
+	 * lo abren, para teclado y pantallas táctiles.
+	 */
+	const OPEN_DELAY = 120;
+	const CLOSE_DELAY = 180;
+	let openTimer: ReturnType<typeof setTimeout> | null = null;
+	let closeTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function clearTimers() {
+		if (openTimer) clearTimeout(openTimer);
+		if (closeTimer) clearTimeout(closeTimer);
+		openTimer = closeTimer = null;
+	}
+
+	function hoverInfo(e: Event, file: FileSection) {
+		const btn = e.currentTarget as HTMLElement;
+		clearTimers();
+		if (info?.file.path === file.path) return;
+		openTimer = setTimeout(() => openInfo(btn, file), info ? 0 : OPEN_DELAY);
+	}
+
+	function leaveInfo() {
+		if (openTimer) clearTimeout(openTimer);
+		openTimer = null;
+		if (!info) return;
+		if (closeTimer) clearTimeout(closeTimer);
+		closeTimer = setTimeout(closeInfo, CLOSE_DELAY);
+	}
+
+	function keepInfo() {
+		if (closeTimer) clearTimeout(closeTimer);
+		closeTimer = null;
+	}
+
+	function clickInfo(e: MouseEvent, file: FileSection) {
+		clearTimers();
+		if (info?.file.path !== file.path) openInfo(e.currentTarget as HTMLElement, file);
+	}
+
+	function openInfo(btn: HTMLElement, file: FileSection) {
+		const r = btn.getBoundingClientRect();
+		const left = Math.max(8, Math.min(r.right - INFO_W, window.innerWidth - INFO_W - 8));
+		const below = window.innerHeight - r.bottom - 18;
+		infoAnchor = btn;
+		info =
+			below >= 220 || below >= r.top
+				? { file, left, top: r.bottom + 6, maxH: below }
+				: { file, left, bottom: window.innerHeight - r.top + 6, maxH: r.top - 18 };
+	}
+
+	function closeInfo() {
+		clearTimers();
+		info = null;
+		infoAnchor = null;
+	}
+
+	// Al volver a mostrar el panel lateral, el popover sobra.
+	$effect(() => {
+		if (showExplanations) closeInfo();
+	});
+
+	$effect(() => {
+		if (!info) return;
+		const inside = (t: EventTarget | null) =>
+			t instanceof Node && (!!infoEl?.contains(t) || !!infoAnchor?.contains(t));
+		const onDown = (e: PointerEvent) => {
+			if (!inside(e.target)) closeInfo();
+		};
+		const onScroll = (e: Event) => {
+			if (!inside(e.target)) closeInfo();
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') closeInfo();
+		};
+		window.addEventListener('pointerdown', onDown, true);
+		window.addEventListener('scroll', onScroll, true);
+		window.addEventListener('resize', closeInfo);
+		window.addEventListener('keydown', onKey);
+		return () => {
+			window.removeEventListener('pointerdown', onDown, true);
+			window.removeEventListener('scroll', onScroll, true);
+			window.removeEventListener('resize', closeInfo);
+			window.removeEventListener('keydown', onKey);
+		};
+	});
+
+	type ActiveFileFn =((file: { groupId: string; path: string } | null) => void) | undefined;
+
+	/**
+	 * Action (not $effect + bind:this): `display:contents` + bind:this re-assigns the node when
+	 * the parent re-renders from onactivefile, which re-ran the effect → notify → depth exceeded.
+	 * The action mounts once; `update` only refreshes the callback identity.
+	 */
+	const observeActiveFile: Action<HTMLElement, ActiveFileFn> = (node, initial) => {
+		let notify = initial;
+		const scrollRoot = scrollParentOf(node);
 		const visible = new Map<Element, number>();
+		let lastKey = '';
+		let observer: IntersectionObserver | null = null;
+		let mo: MutationObserver | null = null;
 
 		const publish = () => {
+			if (!notify) return;
 			let best: { el: Element; ratio: number } | null = null;
 			for (const [el, ratio] of visible) {
 				if (!best || ratio > best.ratio) best = { el, ratio };
 			}
-			if (!best || best.ratio <= 0) {
-				notify(null);
-				return;
-			}
+			// Never notify(null): MutationObserver re-watch clears `visible` and would
+			// oscillate null↔file → parent re-render → MO → depth exceeded.
+			if (!best || best.ratio <= 0) return;
 			const groupId = (best.el as HTMLElement).dataset.groupId;
 			const path = (best.el as HTMLElement).dataset.path;
-			if (groupId && path) notify({ groupId, path });
-			else notify(null);
+			if (!groupId || !path) return;
+			const key = `${groupId}\0${path}`;
+			if (key === lastKey) return;
+			lastKey = key;
+			notify({ groupId, path });
 		};
 
-		const observer = new IntersectionObserver(
-			(entries) => {
-				for (const entry of entries) {
-					if (entry.isIntersecting && entry.intersectionRatio > 0) {
-						visible.set(entry.target, entry.intersectionRatio);
-					} else {
-						visible.delete(entry.target);
-					}
-				}
-				publish();
-			},
-			{
-				root: scrollRoot,
-				rootMargin: '-12% 0px -55% 0px',
-				threshold: [0, 0.1, 0.25, 0.5, 0.75, 1]
-			}
-		);
-
-		const watch = () => {
-			observer.disconnect();
+		const stop = () => {
+			mo?.disconnect();
+			observer?.disconnect();
+			mo = null;
+			observer = null;
 			visible.clear();
-			rootEl.querySelectorAll<HTMLElement>('[data-explore-file]').forEach((el) => observer.observe(el));
 		};
 
-		watch();
-		const mo = new MutationObserver(watch);
-		mo.observe(rootEl, { childList: true, subtree: true });
-
-		return () => {
-			mo.disconnect();
-			observer.disconnect();
-			notify(null);
+		const start = () => {
+			if (!notify) return;
+			observer = new IntersectionObserver(
+				(entries) => {
+					for (const entry of entries) {
+						if (entry.isIntersecting && entry.intersectionRatio > 0) {
+							visible.set(entry.target, entry.intersectionRatio);
+						} else {
+							visible.delete(entry.target);
+						}
+					}
+					publish();
+				},
+				{
+					root: scrollRoot,
+					rootMargin: '-12% 0px -55% 0px',
+					threshold: [0, 0.1, 0.25, 0.5, 0.75, 1]
+				}
+			);
+			const watch = () => {
+				observer?.disconnect();
+				// Keep last intersection ratios; only drop nodes that left the tree.
+				const nodes = [...node.querySelectorAll<HTMLElement>('[data-explore-file]')];
+				const alive = new Set<Element>(nodes);
+				for (const el of visible.keys()) {
+					if (!alive.has(el)) visible.delete(el);
+				}
+				nodes.forEach((el) => observer?.observe(el));
+			};
+			watch();
+			mo = new MutationObserver(watch);
+			mo.observe(node, { childList: true, subtree: true });
 		};
-	});
+
+		start();
+
+		return {
+			update(next) {
+				const was = Boolean(notify);
+				notify = next;
+				if (!was && next) start();
+				else if (was && !next) stop();
+			},
+			destroy() {
+				stop();
+			}
+		};
+	};
 </script>
 
-<div class="explore" bind:this={exploreRoot}>
+<div class="explore" use:observeActiveFile={onactivefile}>
 {#if hasBlockers}
 	<p class="blocker-bar">{blockerBannerText}</p>
 {/if}
 
 <section class="intent">
-	<h2>Intención</h2>
+	<div class="intent-head">
+		<h2>Intención</h2>
+		{#if reviewWhen}
+			<time class="review-date" datetime={reviewWhen.iso} title="Fecha de la review">
+				{reviewWhen.abs}<span class="review-sep" aria-hidden="true">·</span><span class="review-rel">{reviewWhen.rel}</span>
+			</time>
+		{/if}
+	</div>
 	<p class="intent-text">{intentText}</p>
 	{#each notes as note (note)}
 		<p class="note">{note}</p>
@@ -170,6 +352,33 @@
 		{/if}
 		<span class="arrow">→</span>
 	</button>
+{/snippet}
+
+{#snippet explainRows(file: FileSection)}
+	{#each file.rows as row (row.id)}
+		<div class="explain-row">
+			<div class="explain-top">
+				<span class="lines">{row.lines}</span>
+				<span class="op">{row.opLabel}</span>
+				{#if onask}
+					<span class="explain-ask">
+						<AskAgentButton
+							{agentId}
+							title="Preguntar al agente sobre este bloque"
+							onclick={() => {
+								closeInfo();
+								onask(askDraftBlock({ id: row.id, file: file.path, lines: row.lines }));
+							}}
+						/>
+					</span>
+				{/if}
+			</div>
+			<p class="what">{row.what}</p>
+			{#if row.why}
+				<p class="why">{row.why}</p>
+			{/if}
+		</div>
+	{/each}
 {/snippet}
 
 {#snippet fileBlock(file: FileSection, defaultOpen = true, groupId: string | null = null)}
@@ -196,13 +405,36 @@
 						class="file-toggle"
 						onclick={() => ontogglefile(file.path, defaultOpen)}
 					>
-						<span class="caret">{open ? '▾' : '▸'}</span>
+						<span class="caret" class:open><Icon name="chevron-right" size={16} /></span>
 						<FileIcon path={file.path} />
 						<span class="path">{file.path}</span>
 						<span class="change-label">{file.changeLabel}</span>
 					</button>
-					{#if total > 0 && !showExplanations}
-						{@render findingsControl(total, allDone, maxAccent, file.path)}
+					<CopyPathButton path={file.path} />
+					{#if !showExplanations && (total > 0 || file.rows.length > 0)}
+						<div class="head-actions">
+							{#if total > 0}
+								{@render findingsControl(total, allDone, maxAccent, file.path)}
+							{/if}
+							{#if file.rows.length > 0}
+								{@const infoOpen = info?.file.path === file.path}
+								<button
+									type="button"
+									class="info-btn"
+									class:on={infoOpen}
+									aria-label="Explicación de los bloques de {file.path}"
+									aria-expanded={infoOpen}
+									aria-haspopup="dialog"
+									onmouseenter={(e) => hoverInfo(e, file)}
+									onmouseleave={leaveInfo}
+									onfocus={(e) => hoverInfo(e, file)}
+									onblur={leaveInfo}
+									onclick={(e) => clickInfo(e, file)}
+								>
+									<Icon name="info" size={15} />
+								</button>
+							{/if}
+						</div>
 					{/if}
 				</div>
 				{#if showExplanations}
@@ -224,10 +456,8 @@
 						<DiffView
 							path={file.path}
 							diff={file.diff}
-							blocks={file.blocksForFile.map((b) => ({
-								...b,
-								accentColor: file.blockAccent[b.id] ?? 'transparent'
-							}))}
+							blocks={diffBlocks(file)}
+							showBlockNotes={!showExplanations}
 							mode={diffMode}
 							expanded={!!expandedDiffs[file.path]}
 							onToggleExpand={() => ontoggleexpand(file.path)}
@@ -241,28 +471,7 @@
 					{#if showExplanations}
 						<ResizeHandle ondrag={onresizeexplanation} />
 						<div class="explain-col">
-							{#each file.rows as row (row.id)}
-								<div class="explain-row">
-									<div class="explain-top">
-										<span class="lines">{row.lines}</span>
-										<span class="op">{row.opLabel}</span>
-										{#if onask}
-											<span class="explain-ask">
-												<AskAgentButton
-													{agentId}
-													title="Preguntar al agente sobre este bloque"
-													onclick={() =>
-														onask(askDraftBlock({ id: row.id, file: file.path, lines: row.lines }))}
-												/>
-											</span>
-										{/if}
-									</div>
-									<p class="what">{row.what}</p>
-									{#if row.why}
-										<p class="why">{row.why}</p>
-									{/if}
-								</div>
-							{/each}
+							{@render explainRows(file)}
 						</div>
 					{/if}
 				</div>
@@ -336,11 +545,43 @@
 		</div>
 	</section>
 {/if}
+
+{#if info}
+	<div
+		bind:this={infoEl}
+		class="info-pop"
+		role="dialog"
+		tabindex="-1"
+		aria-label="Explicación de los bloques de {info.file.path}"
+		onmouseenter={keepInfo}
+		onmouseleave={leaveInfo}
+		onfocusin={keepInfo}
+		onfocusout={leaveInfo}
+		style:left="{info.left}px"
+		style:top={info.top != null ? `${info.top}px` : undefined}
+		style:bottom={info.bottom != null ? `${info.bottom}px` : undefined}
+		style:max-height="{info.maxH}px"
+	>
+		<div class="info-head">
+			<FileIcon path={info.file.path} />
+			<span class="info-path" title={info.file.path}>{info.file.path}</span>
+			<span class="info-count">{plural(info.file.rows.length, 'bloque', 'bloques')}</span>
+		</div>
+		<div class="info-body">
+			{@render explainRows(info.file)}
+		</div>
+	</div>
+{/if}
 </div>
 
 <style>
+	/* Real box (not display:contents): contents + action/bind:this was recreated whenever
+	   onactivefile updated the parent → remount observers → effect_update_depth_exceeded. */
 	.explore {
-		display: contents;
+		display: flex;
+		flex-direction: column;
+		gap: 18px;
+		min-width: 0;
 	}
 
 	.blocker-bar {
@@ -348,6 +589,7 @@
 		padding: 10px 14px;
 		background: var(--danger-bg);
 		border: 1px solid var(--danger-border);
+		border-radius: var(--radius);
 		color: var(--danger);
 		font-size: 13px;
 		font-weight: 600;
@@ -365,6 +607,34 @@
 	.intent {
 		padding: 0 0 16px;
 		border-bottom: 1px solid var(--border);
+	}
+
+	.intent-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+		margin-bottom: 8px;
+	}
+
+	.intent-head h2 {
+		margin: 0;
+	}
+
+	.review-date {
+		flex-shrink: 0;
+		font-size: 11.5px;
+		color: var(--text-faint);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.review-sep {
+		margin: 0 6px;
+		opacity: 0.6;
+	}
+
+	.review-rel {
+		opacity: 0.8;
 	}
 
 	.intent-text {
@@ -437,6 +707,7 @@
 		font-weight: 700;
 		padding: 2px 8px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		flex-shrink: 0;
 	}
@@ -479,7 +750,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		flex: 1;
+		flex: 0 1 auto;
 		min-width: 0;
 		padding: 4px 0;
 		border: 0;
@@ -494,10 +765,19 @@
 	}
 
 	.caret {
-		width: 10px;
+		display: inline-flex;
 		flex-shrink: 0;
-		font-size: 10px;
+		margin-left: -3px;
 		color: var(--text-faint);
+		transition: transform 0.12s ease;
+	}
+
+	.caret.open {
+		transform: rotate(90deg);
+	}
+
+	.file-toggle:hover .caret {
+		color: var(--text);
 	}
 
 	.file-head-gutter {
@@ -523,7 +803,90 @@
 	.change-label {
 		font-size: 11px;
 		color: var(--text-faint);
+		flex-shrink: 0;
+	}
+
+	.head-actions {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-left: auto;
+		flex-shrink: 0;
+	}
+
+	.info-btn {
+		width: 26px;
+		height: 26px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		border: 0;
+		border-radius: var(--radius);
+		background: transparent;
+		color: var(--text-faint);
+		cursor: pointer;
+	}
+
+	.info-btn:hover,
+	.info-btn.on {
+		background: color-mix(in srgb, var(--text) 8%, transparent);
+		color: var(--text);
+	}
+
+	.info-btn:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+
+	.info-pop {
+		position: fixed;
+		z-index: 200;
+		width: min(400px, calc(100vw - 16px));
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-elev);
+		box-shadow: 0 12px 32px color-mix(in srgb, #000 28%, transparent);
+		overflow: hidden;
+	}
+
+	.info-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 14px;
+		border-bottom: 1px solid var(--border-soft);
+		background: var(--bg-card);
+		flex-shrink: 0;
+	}
+
+	.info-path {
 		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-family: var(--mono);
+		font-size: 11.5px;
+		color: var(--text-dim);
+	}
+
+	.info-count {
+		flex-shrink: 0;
+		font-size: 10.5px;
+		color: var(--text-faint);
+	}
+
+	.info-body {
+		overflow-y: auto;
+		min-height: 0;
+	}
+
+	.info-body .explain-row:last-child {
+		border-bottom: 0;
 	}
 
 	.findings-control {
@@ -534,6 +897,7 @@
 		border: 0;
 		padding: 0;
 		flex-shrink: 0;
+		margin-left: auto;
 		color: var(--text);
 	}
 
@@ -550,6 +914,7 @@
 
 	.count-badge.done {
 		border: 1px solid var(--fix-border);
+		border-radius: var(--radius);
 		color: var(--ok);
 	}
 
@@ -689,5 +1054,6 @@
 		color: var(--text-faint);
 		padding: 4px 8px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 	}
 </style>

@@ -4,11 +4,12 @@
 	import ExploreContent from './ExploreContent.svelte';
 	import FindingsContent from './FindingsContent.svelte';
 	import FindingsDrawer from './FindingsDrawer.svelte';
+	import PromptDrawer from './PromptDrawer.svelte';
 	import ReportFooter from './ReportFooter.svelte';
 	import ResizeHandle from './ResizeHandle.svelte';
 	import Sidebar from './Sidebar.svelte';
 	import { tick, untrack } from 'svelte';
-	import { agentShortName, reportAgentId } from './agent-icons';
+	import { reportAgentId } from './agent-icons';
 	import { acpAgents } from './agent.remote';
 	import type { AcpAgentOption } from './agent-events';
 	import { fileAnchor, groupFileAnchor, scrollToAnchor } from './anchors';
@@ -44,6 +45,8 @@
 		onpendingfixappliedconsumed,
 		onask,
 		onfixwithagent,
+		onopendrawer,
+		agentDrawerOpen = false,
 		onreportupdated
 	}: {
 		report: SavedReport;
@@ -58,8 +61,12 @@
 		onpendingfixappliedconsumed?: () => void;
 		/** Abre el chat con un borrador (referencia); el usuario completa y envía. */
 		onask?: (draft: string) => void;
-		/** Abre el chat en modo fix y auto-envía el prompt. `false` = sin agente ACP → panel de copiar. */
+		/** Abre el ChatPanel en modo fix con el prompt. `false` = sin agente ACP (el drawer de copiar queda abierto). */
 		onfixwithagent?: (text: string, findingIds: string[]) => boolean | Promise<boolean>;
+		/** Antes de abrir PromptDrawer (fix/publish): la página cierra el chat u otros drawers. */
+		onopendrawer?: () => void;
+		/** Chat del agente abierto → cerrar PromptDrawer para no apilar paneles. */
+		agentDrawerOpen?: boolean;
 		onreportupdated?: (report: SavedReport) => void;
 	} = $props();
 
@@ -80,8 +87,6 @@
 		return installedAgents.some((a) => a.id === preferred) ? preferred : '';
 	});
 	/** Mismo nombre corto que el botón del header / chat (Claude, Cursor, … o "Agente"). */
-	const agentName = $derived(agentShortName(agentId, report.meta.agent || ''));
-
 	let reportMode = $state<'explore' | 'findings'>('explore');
 	let activeFindingId = $state<string | null>(null);
 	let decided = $state<Record<string, boolean>>({});
@@ -108,13 +113,16 @@
 
 	$effect(() => {
 		let cancelled = false;
-		void acpAgents()
-			.then((agents) => {
-				if (!cancelled) installedAgents = agents;
-			})
-			.catch(() => {
-				if (!cancelled) installedAgents = [];
-			});
+		// acpAgents is a remote query — untrack so this effect doesn't subscribe to query internals.
+		untrack(() => {
+			void acpAgents()
+				.then((agents) => {
+					if (!cancelled) installedAgents = agents;
+				})
+				.catch(() => {
+					if (!cancelled) installedAgents = [];
+				});
+		});
 		return () => {
 			cancelled = true;
 		};
@@ -141,16 +149,21 @@
 		showPublishPrompt = false;
 		fileOpen = {};
 		activeExploreFile = null;
+		// Defer: sync onreportupdated during this effect can deepen the update flush.
 		if (triageNeedsDocumentWrite(fromDoc, merged)) {
-			void persistTriageState(merged);
+			queueMicrotask(() => {
+				if (hydratedReportId === id) void persistTriageState(merged);
+			});
 		}
 	});
 
 	$effect(() => {
 		const payload = pendingFixApplied;
 		if (!payload?.findingIds?.length) return;
-		applyFixFromAgent(payload.findingIds, payload.summary || '');
-		onpendingfixappliedconsumed?.();
+		untrack(() => {
+			applyFixFromAgent(payload.findingIds, payload.summary || '');
+			onpendingfixappliedconsumed?.();
+		});
 	});
 
 	function currentTriage(): TriageState {
@@ -347,6 +360,15 @@
 		fileOpen = { ...fileOpen, [path]: !(fileOpen[path] ?? defaultOpen) };
 	}
 
+	/** Estable (no flecha inline): ExploreContent no debe reconstruir observers por identidad. */
+	function setActiveExploreFile(file: { groupId: string; path: string } | null) {
+		if (file?.groupId === activeExploreFile?.groupId && file?.path === activeExploreFile?.path) {
+			return;
+		}
+		if (file == null && activeExploreFile == null) return;
+		activeExploreFile = file;
+	}
+
 	function askFinding(id: string) {
 		const f = decoratedFindingsNav.find((x) => x.id === id);
 		if (!f || !onask) return;
@@ -365,22 +387,37 @@
 		else done();
 	}
 
-	function openCopyFixPrompt() {
-		showFixPrompt = true;
+	function closePromptDrawers() {
+		showFixPrompt = false;
 		showPublishPrompt = false;
+	}
+
+	function openCopyFixPrompt() {
+		onopendrawer?.();
+		showPublishPrompt = false;
+		showFixPrompt = true;
 		reportMode = 'findings';
 	}
 
-	async function fixWithAgent() {
+	function openPublishPrompt() {
+		onopendrawer?.();
+		showFixPrompt = false;
+		showPublishPrompt = true;
+		reportMode = 'findings';
+	}
+
+	// Chat abierto ⇒ no dejar PromptDrawer al mismo tiempo.
+	$effect(() => {
+		if (agentDrawerOpen) closePromptDrawers();
+	});
+
+	/** Desde el PromptDrawer: abre el ChatPanel con el prompt; si ok, cierra el drawer. */
+	async function fixWithAgentFromDrawer() {
 		const ids = fixSelectionFindings.map((f) => f.id);
 		const text = buildFixPromptText(fixSelectionFindings, documentWithTriage(), report.meta);
-		if (!text.trim()) return;
-		if (!onfixwithagent) {
-			openCopyFixPrompt();
-			return;
-		}
+		if (!text.trim() || !onfixwithagent) return;
 		const ok = await onfixwithagent(text, ids);
-		if (!ok) openCopyFixPrompt();
+		if (ok) showFixPrompt = false;
 	}
 
 	async function purgeIgnored() {
@@ -435,124 +472,130 @@
 </script>
 
 <div class="report-shell">
-<div
-	class="report"
-	style:grid-template-columns={sidebarCollapsed ? '48px minmax(0,1fr)' : `${sidebarWidth}px 6px minmax(0,1fr)`}
->
-	<Sidebar
-		collapsed={sidebarCollapsed}
-		mode={reportMode}
-		onsetmode={(m) => (reportMode = m)}
-		groupsNav={model.groupsNav}
-		fileNav={model.fileNav}
-		onselectfile={selectFile}
-		findings={decoratedFindingsNav}
-		{activeFindingId}
-		onselectfinding={(id) => (activeFindingId = id)}
-		{activeExploreFile}
-	/>
-
-	{#if !sidebarCollapsed}
-		<ResizeHandle ondrag={(dx) => (sidebarWidth = clamp(sidebarWidth + dx, 200, 480))} />
-	{/if}
-
-	<div class="content">
-		{#if reportMode === 'explore'}
-			<ExploreContent
-				intentText={model.intentText}
-				notes={model.notes}
-				hasBlockers={model.hasBlockers}
-				blockerBannerText={model.blockerBannerText}
-				groupSections={model.groupSections}
-				looseFileSections={model.looseFileSections}
-				{fileOpen}
-				ontogglefile={toggleFileOpen}
-				orphanFindings={decoratedOrphans}
-				hasSkipped={model.hasSkipped}
-				skippedList={model.skippedList}
-				{diffMode}
-				{showExplanations}
-				{expandedDiffs}
-				{decided}
-				{explanationWidth}
-				{splitRatio}
-				{diffFontSize}
-				{wrapLines}
-				{agentId}
-				ontoggleexpand={(path) => (expandedDiffs = { ...expandedDiffs, [path]: !expandedDiffs[path] })}
-				onopenfindings={openDrawerFile}
-				onresizeexplanation={(dx) => (explanationWidth = clamp(explanationWidth - dx, 220, 560))}
-				onresizesplit={(r) => (splitRatio = clamp(r, 0.2, 0.8))}
-				onrequestlines={requestLines}
-				onactivefile={(file) => (activeExploreFile = file)}
-				{onask}
+	<div class="report-row">
+		<div
+			class="report"
+			style:grid-template-columns={sidebarCollapsed
+				? '48px minmax(0,1fr)'
+				: `${sidebarWidth}px 6px minmax(0,1fr)`}
+		>
+			<Sidebar
+				collapsed={sidebarCollapsed}
+				mode={reportMode}
+				onsetmode={(m) => (reportMode = m)}
+				groupsNav={model.groupsNav}
+				fileNav={model.fileNav}
+				onselectfile={selectFile}
+				findings={decoratedFindingsNav}
+				{activeFindingId}
+				onselectfinding={(id) => (activeFindingId = id)}
+				{activeExploreFile}
 			/>
-		{:else}
-			<FindingsContent
-				{activeFinding}
-				{activeFile}
-				{diffMode}
-				{showExplanations}
-				{explanationWidth}
-				{splitRatio}
-				{diffFontSize}
-				{wrapLines}
-				{reviewedLabel}
+
+			{#if !sidebarCollapsed}
+				<ResizeHandle ondrag={(dx) => (sidebarWidth = clamp(sidebarWidth + dx, 200, 480))} />
+			{/if}
+
+			<div class="content">
+				{#if reportMode === 'explore'}
+					<ExploreContent
+						reviewDate={report.meta.generatedAt || report.savedAt}
+						intentText={model.intentText}
+						notes={model.notes}
+						hasBlockers={model.hasBlockers}
+						blockerBannerText={model.blockerBannerText}
+						groupSections={model.groupSections}
+						looseFileSections={model.looseFileSections}
+						{fileOpen}
+						ontogglefile={toggleFileOpen}
+						orphanFindings={decoratedOrphans}
+						hasSkipped={model.hasSkipped}
+						skippedList={model.skippedList}
+						{diffMode}
+						{showExplanations}
+						{expandedDiffs}
+						{decided}
+						{explanationWidth}
+						{splitRatio}
+						{diffFontSize}
+						{wrapLines}
+						{agentId}
+						ontoggleexpand={(path) => (expandedDiffs = { ...expandedDiffs, [path]: !expandedDiffs[path] })}
+						onopenfindings={openDrawerFile}
+						onresizeexplanation={(dx) => (explanationWidth = clamp(explanationWidth - dx, 220, 560))}
+						onresizesplit={(r) => (splitRatio = clamp(r, 0.2, 0.8))}
+						onrequestlines={requestLines}
+						onactivefile={setActiveExploreFile}
+						{onask}
+					/>
+				{:else}
+					<FindingsContent
+						{activeFinding}
+						{activeFile}
+						{diffMode}
+						{showExplanations}
+						{explanationWidth}
+						{splitRatio}
+						{diffFontSize}
+						{wrapLines}
+						{reviewedLabel}
+						{agentId}
+						onignore={() => activeFinding && setFindingDecision(activeFinding.id, false)}
+						onfix={() => activeFinding && setFindingDecision(activeFinding.id, true)}
+						onclear={() => activeFinding && clearDecision(activeFinding.id)}
+						onaskfinding={onask && activeFinding ? () => askFinding(activeFinding.id) : undefined}
+						onresizeexplanation={(dx) => (explanationWidth = clamp(explanationWidth - dx, 220, 560))}
+						onresizesplit={(r) => (splitRatio = clamp(r, 0.2, 0.8))}
+						onrequestlines={requestLines}
+					/>
+				{/if}
+			</div>
+
+			<FindingsDrawer
+				filePath={drawerFilePath}
+				findings={drawerFindings}
+				expandedId={drawerExpandedFindingId}
 				{agentId}
-				onignore={() => activeFinding && setFindingDecision(activeFinding.id, false)}
-				onfix={() => activeFinding && setFindingDecision(activeFinding.id, true)}
-				onclear={() => activeFinding && clearDecision(activeFinding.id)}
-				onaskfinding={onask && activeFinding ? () => askFinding(activeFinding.id) : undefined}
-				onresizeexplanation={(dx) => (explanationWidth = clamp(explanationWidth - dx, 220, 560))}
-				onresizesplit={(r) => (splitRatio = clamp(r, 0.2, 0.8))}
-				onrequestlines={requestLines}
-				{fixSelectionCount}
-				{showFixPrompt}
+				onclose={closeDrawer}
+				ontoggle={toggleDrawerExpanded}
+				onignore={(id) => setFindingDecision(id, false)}
+				onfix={(id) => setFindingDecision(id, true)}
+				onclear={clearDecision}
+				onaskfinding={onask ? askFinding : undefined}
+			/>
+		</div>
+
+		{#if showFixPrompt || showPublishPrompt}
+			<PromptDrawer
+				mode={showFixPrompt ? 'fix' : 'publish'}
+				findingCount={fixSelectionCount}
 				{fixPromptText}
-				{fixCopyLabel}
-				onclosefixprompt={() => (showFixPrompt = false)}
-				oncopyfix={() => copyToClipboard(fixPromptText, () => (fixCopyLabel = 'Copiado ✓'))}
-				{showPublishPrompt}
-				{publishPlatform}
 				{publishText}
-				{publishTargetLabel}
+				{fixCopyLabel}
 				{publishCopyLabel}
-				onclosepublishprompt={() => (showPublishPrompt = false)}
+				{publishPlatform}
+				{publishTargetLabel}
 				onsetpublishplatform={(p) => (publishPlatform = p)}
+				oncopyfix={() => copyToClipboard(fixPromptText, () => (fixCopyLabel = 'Copiado ✓'))}
 				oncopypublish={() => copyToClipboard(publishText, () => (publishCopyLabel = 'Copiado ✓'))}
+				onclose={() => {
+					showFixPrompt = false;
+					showPublishPrompt = false;
+				}}
+				onfixwithagent={onfixwithagent ? () => void fixWithAgentFromDrawer() : undefined}
 			/>
 		{/if}
 	</div>
 
-	<FindingsDrawer
-		filePath={drawerFilePath}
-		findings={drawerFindings}
-		expandedId={drawerExpandedFindingId}
-		{agentId}
-		onclose={closeDrawer}
-		ontoggle={toggleDrawerExpanded}
-		onignore={(id) => setFindingDecision(id, false)}
-		onfix={(id) => setFindingDecision(id, true)}
-		onclear={clearDecision}
-		onaskfinding={onask ? askFinding : undefined}
+	<ReportFooter
+		{reviewedLabel}
+		hasFixSelection={fixSelectionCount > 0}
+		{fixSelectionCount}
+		{ignoredCount}
+		onfixwithagent={openCopyFixPrompt}
+		onopenpublishprompt={openPublishPrompt}
+		onpurgeignored={purgeIgnored}
 	/>
-</div>
-
-<ReportFooter
-	{reviewedLabel}
-	hasFixSelection={fixSelectionCount > 0}
-	{fixSelectionCount}
-	{ignoredCount}
-	{agentName}
-	onfixwithagent={() => void fixWithAgent()}
-	oncopyfixprompt={openCopyFixPrompt}
-	onopenpublishprompt={() => {
-		showPublishPrompt = true;
-		showFixPrompt = false;
-		reportMode = 'findings';
-	}}
-	onpurgeignored={purgeIgnored}
-/>
 </div>
 
 <style>
@@ -563,8 +606,16 @@
 		flex-direction: column;
 	}
 
+	.report-row {
+		flex: 1;
+		min-height: 0;
+		min-width: 0;
+		display: flex;
+	}
+
 	.report {
 		flex: 1;
+		min-width: 0;
 		min-height: 0;
 		display: grid;
 	}

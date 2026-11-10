@@ -834,6 +834,8 @@ async function checkOutput(entry: Entry, since: number, retriesLeft: number): Pr
 		stampReviewProvenance(path, {
 			agent: entry.agentLabel,
 			model: entry.model,
+			// Nombre que el agente le da a la opción elegida: lleva la versión que el alias no dice.
+			modelLabel: entry.acp?.models.find((o) => o.value === entry.model)?.name,
 			agentSession: { agentId: entry.agentId, sessionId: entry.acpSessionId, outputFilename: entry.outputFilename }
 		});
 		emit(entry, { type: 'review', ok: true, filename: entry.outputFilename, errors: [], final: true });

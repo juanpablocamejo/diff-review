@@ -150,6 +150,7 @@
 		padding: 9px 12px;
 		background: var(--bg-card);
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		color: var(--text);
 		font: inherit;
 		font-size: inherit;
@@ -199,6 +200,7 @@
 		gap: 0;
 		padding: 4px;
 		border: 1px solid var(--border);
+		border-radius: var(--radius);
 		background: var(--bg-card);
 		box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
 	}
