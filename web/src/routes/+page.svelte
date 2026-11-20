@@ -10,20 +10,25 @@
 		makeOutputFilename
 	} from '$lib/report/prompts';
 	import { uncoveredFiles } from '$lib/report/coverage';
-	import { coerceDocument, hasUsableDiffs, parseReportMeta } from '$lib/report/document';
+	import { loadRepoCatalog } from '$lib/report/catalog';
+	import { coerceDocument, hasUsableDiffs, parseReportMeta, viewerIdFromPayload } from '$lib/report/document';
 	import {
+		branchFreshness,
 		detectOutput,
 		hydrateFromGit,
 		launchContext,
+		deleteReviewOutput,
+		ensureReviewViewerId,
 		loadDetectedOutput,
+		prepareReview,
 		writeReviewOutput,
 		loadRepo,
-		outputName,
 		pendingImport,
+		updateBranch,
 		pickLocalFolder,
 		pickReviewFile
 	} from '$lib/report/git.remote';
-	import type { DetectedOutput } from '$lib/report/git.remote';
+	import type { BranchFreshness, DetectedOutput } from '$lib/report/git.remote';
 	import {
 		acpAgentModels,
 		acpAgents,
@@ -44,10 +49,10 @@
 		deleteReport,
 		loadLastLocalRepo,
 		loadLastMeta,
-		loadReportsIndex,
 		reportOutputFilename,
 		saveLastMeta,
-		saveReport
+		saveReport,
+		viewerIdAssociatedWith
 	} from '$lib/report/storage';
 	import type { ReportMeta, RepoSource, ReviewDocument, SavedReportSummary } from '$lib/report/types';
 	import { validateDocument } from '$lib/report/validate';
@@ -100,6 +105,9 @@
 	let uncovered = $state<string[]>([]);
 	let coverageCopied = $state(false);
 	let reports = $state<SavedReportSummary[]>([]);
+	let reportsReady = $state(false);
+	let catalogBoot = true;
+	let catalogSeq = 0;
 	let reportMenuId = $state<string | null>(null);
 	let reportMenuPos = $state<{ top: number; left: number } | null>(null);
 
@@ -129,6 +137,12 @@
 	/** Evita re-importar el mismo archivo (path+mtime). */
 	let consumedDetectionKey = $state('');
 	let nameRefreshSeq = 0;
+	let behindSeq = 0;
+	let behind = $state<BranchFreshness[]>([]);
+	let behindBusy = $state('');
+	let behindNote = $state('');
+	let promptError = $state('');
+	let copyingPrompt = $state(false);
 
 	/** Agentes con modo ACP: se lanzan desde acá y el progreso se ve en vivo. */
 	let agentOptions = $state<AcpAgentOption[]>([]);
@@ -207,8 +221,9 @@
 		agentModels = next;
 	}
 	const canLaunchAgent = $derived(
-		meta.source === 'local' && looksLikePath(meta.repo) && Boolean(meta.branch.trim()) && meta.branch !== meta.base
+		meta.source === 'local' && looksLikePath(meta.repo) && Boolean(meta.branch.trim())
 	);
+	const behindWarnings = $derived(behind.filter((row) => row.behind > 0));
 
 	const canWatchRepo = $derived(meta.source === 'local' && looksLikePath(meta.repo));
 
@@ -235,17 +250,23 @@
 			outputFilename = outParam;
 		}
 		promptText = buildPrompt(meta, { outputFilename });
-		reports = loadReportsIndex();
 		// Los flags ya quedaron en estado. Sacarlos de la URL evita que un back/refresh vuelva a importar.
 		if (wantImport || wantWatch || wantNotify || outParam || agentParam) clearLaunchQuery();
 		void loadAgentOptions();
 		if (agentParam) void followAgentSession(agentParam);
-		void bootstrapFromLaunch(last, {
-			wantImport,
-			wantWatch,
-			wantNotify,
-			keepOutName: Boolean(outParam && isOutputFilename(outParam))
-		});
+		void (async () => {
+			try {
+				await bootstrapFromLaunch(last, {
+					wantImport,
+					wantWatch,
+					wantNotify,
+					keepOutName: Boolean(outParam && isOutputFilename(outParam))
+				});
+			} finally {
+				catalogBoot = false;
+				void refreshReports();
+			}
+		})();
 
 		const timer = setInterval(() => {
 			void pollDetectedOutput({ auto: true });
@@ -472,8 +493,10 @@
 				void loadRepoBranches(last.repo, last.source);
 				if (!opts.keepOutName && last.source === 'local') await refreshOutputFilename();
 			}
+			void refreshBehind();
 		} catch {
 			if (last.repo.trim()) void loadRepoBranches(last.repo, last.source);
+			void refreshBehind();
 		}
 
 		if (opts.wantNotify) {
@@ -502,6 +525,70 @@
 		if (opts.wantWatch) void pollDetectedOutput({ auto: true });
 	}
 
+	function promptFromPrepared(prepared: {
+		outputFilename: string;
+		diffRelPath: string | null;
+		diffFingerprint: string;
+		includesWorktree: boolean;
+		mergeBase?: string;
+		branchSha?: string;
+		baseSha?: string;
+		files: Array<{ path: string; changeType?: string }>;
+		ignored: string[];
+		ignoreGlobs: string[];
+	}) {
+		return buildPrompt(meta, {
+			outputFilename: prepared.outputFilename,
+			diffRelPath: prepared.diffRelPath,
+			diffFingerprint: prepared.diffFingerprint,
+			includesWorktree: prepared.includesWorktree,
+			mergeBase: prepared.mergeBase,
+			branchSha: prepared.branchSha,
+			baseSha: prepared.baseSha,
+			files: prepared.files,
+			ignored: prepared.ignored,
+			ignoreGlobs: prepared.ignoreGlobs
+		});
+	}
+
+	async function refreshBehind() {
+		if (meta.source !== 'local' || !looksLikePath(meta.repo) || !meta.branch.trim() || !meta.base.trim()) {
+			behind = [];
+			return;
+		}
+		const seq = ++behindSeq;
+		try {
+			const rows = await branchFreshness({
+				repo: meta.repo.trim(),
+				branches: [meta.branch.trim(), meta.base.trim() || 'develop']
+			});
+			if (seq !== behindSeq) return;
+			behind = rows;
+		} catch {
+			if (seq !== behindSeq) return;
+			behind = [];
+		}
+	}
+
+	async function updateOneBranch(branch: string) {
+		if (behindBusy || meta.source !== 'local') return;
+		behindBusy = branch;
+		behindNote = '';
+		try {
+			const result = await updateBranch({ repo: meta.repo.trim(), branch });
+			branches = result.branches;
+			behindNote = result.upstream
+				? `${branch} quedó al día con ${result.upstream}.`
+				: `${branch} quedó al día.`;
+			await refreshBehind();
+			void refreshOutputFilename();
+		} catch (err) {
+			behindNote = errMessage(err);
+		} finally {
+			behindBusy = '';
+		}
+	}
+
 	async function refreshOutputFilename() {
 		if (meta.source !== 'local' || !looksLikePath(meta.repo) || !meta.branch.trim()) {
 			outputFilename = makeOutputFilename({});
@@ -510,14 +597,14 @@
 		}
 		const seq = ++nameRefreshSeq;
 		try {
-			const info = await outputName({
+			const prepared = await prepareReview({
 				repo: meta.repo.trim(),
 				branch: meta.branch.trim(),
 				base: meta.base.trim() || 'develop'
 			});
 			if (seq !== nameRefreshSeq) return;
-			outputFilename = info.filename;
-			if (!promptEdited) promptText = buildPrompt(meta, { outputFilename });
+			outputFilename = prepared.outputFilename;
+			if (!promptEdited) promptText = promptFromPrepared(prepared);
 		} catch {
 			if (seq !== nameRefreshSeq) return;
 			outputFilename = makeOutputFilename({});
@@ -526,8 +613,11 @@
 	}
 
 	function updateMeta(patch: Partial<ReportMeta>) {
+		const { viewerId: _viewerId, ...rest } = patch;
 		const prev = meta;
-		meta = { ...meta, ...patch };
+		const next = { ...meta, ...rest };
+		delete next.viewerId;
+		meta = next;
 		if (meta.source === 'local' && looksLikePath(meta.repo)) {
 			lastLocalRepo = meta.repo.trim();
 		}
@@ -538,7 +628,34 @@
 			prev.branch !== meta.branch ||
 			prev.base !== meta.base ||
 			prev.source !== meta.source;
-		if (tipsChanged && meta.source === 'local') void refreshOutputFilename();
+		if (tipsChanged && meta.source === 'local') {
+			void refreshOutputFilename();
+			void refreshBehind();
+		}
+		if (!catalogBoot && prev.repo !== meta.repo) void refreshReports();
+	}
+
+	async function refreshReports() {
+		const seq = ++catalogSeq;
+		const repo = meta.source === 'local' && looksLikePath(meta.repo) ? meta.repo.trim() : '';
+		if (!repo) {
+			if (seq !== catalogSeq) return;
+			reports = [];
+			reportsReady = true;
+			return;
+		}
+		// Pendiente hasta que el scan termina: el panel muestra skeleton, no el vacío.
+		reportsReady = false;
+		try {
+			await new Promise((r) => setTimeout(r, 8000));
+			const next = await loadRepoCatalog(repo);
+			if (seq !== catalogSeq) return;
+			reports = next;
+		} catch {
+			if (seq !== catalogSeq) return;
+		} finally {
+			if (seq === catalogSeq) reportsReady = true;
+		}
 	}
 
 	function setSource(source: RepoSource) {
@@ -581,8 +698,38 @@
 		else done();
 	}
 
-	function copyPrompt() {
-		copyToClipboard(promptText, (v) => (copied = v));
+	async function copyPrompt() {
+		promptError = '';
+		if (meta.source !== 'local' || !looksLikePath(meta.repo)) {
+			promptError =
+				'No hay un worktree local donde escribir el diff. No copié el prompt: apuntaría a un archivo que no existe.';
+			return;
+		}
+		if (!meta.branch.trim()) {
+			promptError = 'Elegí el branch a revisar antes de copiar el prompt.';
+			return;
+		}
+		copyingPrompt = true;
+		try {
+			const prepared = await prepareReview({
+				repo: meta.repo.trim(),
+				branch: meta.branch.trim(),
+				base: meta.base.trim() || 'develop'
+			});
+			if (prepared.empty) {
+				promptError = 'El diff está vacío (ni commits ni cambios sin commitear). No copié el prompt.';
+				return;
+			}
+			outputFilename = prepared.outputFilename;
+			const prompt = promptFromPrepared(prepared);
+			promptText = prompt;
+			promptEdited = false;
+			copyToClipboard(prompt, (v) => (copied = v));
+		} catch (err) {
+			promptError = errMessage(err);
+		} finally {
+			copyingPrompt = false;
+		}
 	}
 
 	function copyCoveragePrompt() {
@@ -674,6 +821,7 @@
 				base: nextBase,
 				remoteUrl: result.remoteUrl || (result.source === 'url' ? result.repo : meta.remoteUrl)
 			});
+			void refreshBehind();
 		} catch (err) {
 			branches = [];
 			folderError = 'No se pudo leer el repo: ' + errMessage(err);
@@ -971,26 +1119,56 @@
 			...(ctx.generatedAt ? { generatedAt: ctx.generatedAt } : {}),
 			...(ctx.agent ? { agent: ctx.agent } : {}),
 			...(ctx.model ? { model: ctx.model } : {}),
+			...(ctx.viewerId ? { viewerId: ctx.viewerId } : {}),
 			...(ctx.agentSession ? { agentSession: ctx.agentSession } : {}),
 			...(filename ? { outputFilename: filename } : {})
 		};
 	}
 
+	function payloadWithViewerId(raw: unknown, viewerId: string): unknown {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+		const rec = { ...(raw as Record<string, unknown>) };
+		const metaRaw = rec.meta;
+		const fileMeta =
+			metaRaw && typeof metaRaw === 'object' && !Array.isArray(metaRaw)
+				? { ...(metaRaw as Record<string, unknown>) }
+				: {};
+		const existing = String(fileMeta.viewerId || '').trim();
+		fileMeta.viewerId = existing || viewerId;
+		rec.meta = fileMeta;
+		return rec;
+	}
+
 	async function ensureReviewOnDisk(raw: unknown, reportMeta: ReportMeta): Promise<ReportMeta> {
 		const filename = reportOutputFilename(reportMeta);
+		const preferred =
+			String(reportMeta.viewerId || '').trim() ||
+			(filename ? viewerIdAssociatedWith(filename) : '') ||
+			crypto.randomUUID();
 		if (!filename || reportMeta.source !== 'local' || !looksLikePath(reportMeta.repo)) {
-			return reportMeta;
+			return { ...reportMeta, viewerId: String(reportMeta.viewerId || '').trim() || preferred };
 		}
 		const withName = { ...reportMeta, outputFilename: filename };
 		try {
 			const existing = await loadDetectedOutput({ repo: withName.repo, filename });
-			if (existing?.payload) return withName;
-			await writeReviewOutput({ repo: withName.repo, filename, payload: raw });
-			return withName;
+			if (existing?.payload) {
+				const fromFile = viewerIdFromPayload(existing.payload);
+				if (fromFile) return { ...withName, viewerId: fromFile };
+				const stamped = await ensureReviewViewerId({
+					repo: withName.repo,
+					filename,
+					viewerId: preferred
+				});
+				return { ...withName, viewerId: stamped?.viewerId || preferred };
+			}
+			const payload = payloadWithViewerId(raw, preferred);
+			const viewerId = viewerIdFromPayload(payload) || preferred;
+			await writeReviewOutput({ repo: withName.repo, filename, payload });
+			return { ...withName, viewerId };
 		} catch {
 			// Sin archivo en disco, saveReport embebe el documento en localStorage.
-			const { outputFilename: _drop, ...rest } = reportMeta;
-			return rest;
+			const { outputFilename: _drop, ...rest } = withName;
+			return { ...rest, viewerId: String(rest.viewerId || '').trim() || preferred };
 		}
 	}
 
@@ -1055,12 +1233,23 @@
 		placeReportMenu(button);
 	}
 
-	function removeReport(item: SavedReportSummary) {
+	async function removeReport(item: SavedReportSummary) {
 		const label = item.branch || 'este reporte';
 		if (!confirm(`¿Eliminar “${label}”? No se puede deshacer.`)) return;
-		deleteReport(item.id);
-		reports = loadReportsIndex();
 		closeReportMenu();
+		try {
+			if (item.outputFilename && looksLikePath(item.repo)) {
+				await deleteReviewOutput({
+					repo: item.repo,
+					filename: item.outputFilename,
+					viewerId: item.id
+				});
+			}
+			deleteReport(item.id);
+			reports = reports.filter((report) => report.id !== item.id);
+		} catch (err) {
+			alert(`No se pudo eliminar el reporte: ${errMessage(err)}`);
+		}
 	}
 </script>
 
@@ -1331,6 +1520,26 @@
 						{/if}
 					</label>
 				</div>
+				{#if meta.source === 'local' && behindWarnings.length}
+					<div class="behind-box" role="status">
+						{#each behindWarnings as row (row.branch)}
+							<p>
+								<code>{row.branch}</code> está {row.behind === 1 ? '1 commit' : `${row.behind} commits`} detrás
+								{#if row.upstream}de <code>{row.upstream}</code>{/if}.
+							</p>
+							<button
+								type="button"
+								onclick={() => void updateOneBranch(row.branch)}
+								disabled={Boolean(behindBusy)}
+							>
+								{behindBusy === row.branch ? 'Actualizando…' : `Actualizar ${row.branch}`}
+							</button>
+						{/each}
+					</div>
+				{/if}
+				{#if behindNote}
+					<p class="hint-text">{behindNote}</p>
+				{/if}
 			</div>
 
 			<div class="section-head">
@@ -1402,7 +1611,7 @@
 					</button>
 				</div>
 				{#if !canLaunchAgent}
-					<p class="hint-text">Elegí un repo local y un branch distinto de la base.</p>
+					<p class="hint-text">Elegí un repo local y un branch. El diff incluye commits y, si ese branch está checked out, los cambios sin commitear.</p>
 				{/if}
 				{#if agentError}
 					<p class="error-line">{agentError}</p>
@@ -1413,8 +1622,13 @@
 				</p>
 				<textarea value={promptText} oninput={onPromptInput}></textarea>
 				<div class="actions">
-					<button type="button" class="primary" onclick={copyPrompt}>{copied ? 'Copiado ✓' : 'Copiar prompt'}</button>
+					<button type="button" class="primary" onclick={() => void copyPrompt()} disabled={copyingPrompt}>
+						{copyingPrompt ? 'Preparando diff…' : copied ? 'Copiado ✓' : 'Copiar prompt'}
+					</button>
 				</div>
+				{#if promptError}
+					<p class="error-line">{promptError}</p>
+				{/if}
 			{/if}
 
 			<h2 class="result-head">3. Resultado</h2>
@@ -1542,9 +1756,28 @@
 			{/if}
 		</section>
 
-		<aside class="reports-col" onscroll={() => reportMenuId && closeReportMenu()}>
+		<aside
+			class="reports-col"
+			aria-busy={!reportsReady}
+			onscroll={() => reportMenuId && closeReportMenu()}
+		>
 			<h2>Reportes recientes</h2>
-			{#if reports.length}
+			{#if !reportsReady}
+				<ul class="report-list report-skeleton" aria-hidden="true">
+					<li class="report-item skeleton-row">
+						<span class="skel-line skel-title"></span>
+						<span class="skel-line skel-meta"></span>
+					</li>
+					<li class="report-item skeleton-row">
+						<span class="skel-line skel-title"></span>
+						<span class="skel-line skel-meta"></span>
+					</li>
+					<li class="report-item skeleton-row">
+						<span class="skel-line skel-title"></span>
+						<span class="skel-line skel-meta"></span>
+					</li>
+				</ul>
+			{:else if reports.length}
 				<ul class="report-list">
 					{#each reports as item (item.id)}
 						<li class="report-item">
@@ -1946,6 +2179,26 @@
 		transform: translateX(2px);
 	}
 
+	.behind-box {
+		margin-top: 10px;
+		padding: 10px 12px;
+		border: 1px solid var(--warn, var(--danger));
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--warn, var(--danger)) 12%, transparent);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.behind-box p {
+		margin: 0;
+		font-size: 13px;
+	}
+
+	.behind-box button {
+		align-self: flex-start;
+	}
+
 	.error-line {
 		margin: 0 0 10px;
 		font-size: 12px;
@@ -2253,7 +2506,9 @@
 
 	.reports-col {
 		position: sticky;
-		top: 88px;
+		/* El scroll es .workspace; top > 0 baja el panel respecto del form. */
+		top: 0;
+		align-self: start;
 		max-height: calc(100vh - 110px);
 		overflow: auto;
 		min-width: 0;
@@ -2266,6 +2521,63 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+	}
+
+	.report-item.skeleton-row {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 12px 14px;
+		min-height: 58px;
+	}
+
+	.report-item.skeleton-row:hover {
+		border-color: var(--border);
+		background: var(--bg-card);
+	}
+
+	.skel-line {
+		display: block;
+		height: 12px;
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--text-faint) 32%, var(--bg-card));
+	}
+
+	.skel-title {
+		width: 68%;
+	}
+
+	.skel-meta {
+		width: 42%;
+		height: 10px;
+	}
+
+	.report-item.skeleton-row:nth-child(2) .skel-title {
+		width: 52%;
+	}
+
+	.report-item.skeleton-row:nth-child(2) .skel-meta {
+		width: 30%;
+	}
+
+	.report-item.skeleton-row:nth-child(3) .skel-title {
+		width: 76%;
+	}
+
+	.report-item.skeleton-row:nth-child(3) .skel-meta {
+		width: 36%;
+	}
+
+	@media (prefers-reduced-motion: no-preference) {
+		.skel-line {
+			animation: skel-pulse 1.2s ease-in-out infinite;
+		}
+	}
+
+	@keyframes skel-pulse {
+		50% {
+			opacity: 0.45;
+		}
 	}
 
 	.report-item {

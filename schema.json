@@ -35,6 +35,10 @@
           "type": "string",
           "minLength": 1,
           "description": "Id exacto del modelo que escribió la review. Obligatorio."
+        },
+        "diffFingerprint": {
+          "type": "string",
+          "description": "SHA-256 del diff (commits desde el merge-base, más worktree si el branch está checked out) con el que se creó o actualizó la review. Lo estampa el host."
         }
       }
     },

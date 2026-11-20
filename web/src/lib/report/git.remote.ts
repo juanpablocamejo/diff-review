@@ -13,15 +13,23 @@ import {
 	loadRepoInfo,
 	pickLocalFolder as pickLocalFolderSync,
 	pickReviewJsonFile,
+	adoptLocalReviews,
+	ensureLocalReviewViewerId,
+	findLocalReview,
+	listLocalReviewCatalog,
 	readReviewOutput,
+	prepareLocalReview,
+	readBranchFreshness,
+	removeLocalReviewJson,
 	resolveOutputName,
 	takePendingImport,
+	updateLocalBranch,
 	writeReviewOutput as writeReviewOutputFile,
 	type DetectedOutput,
 	type OutputNameInfo,
 	type PendingImport
 } from '$lib/server/git-review';
-import type { RepoSource, ReviewDocument } from './types';
+import type { RepoSource, ReviewDocument, SavedReportSummary } from './types';
 
 export type { DetectedOutput, OutputNameInfo, PendingImport };
 
@@ -144,6 +152,103 @@ export const writeReviewOutput = command(
 	}
 );
 
+export type ReviewCatalogHint = { filename: string; viewerId: string };
+
+/** Lista los JSON del repo abierto. Estampa `meta.viewerId` en los que no tienen. */
+export const listReviewCatalog = command(
+	'unchecked',
+	async (input: { repo: string; hints?: ReviewCatalogHint[] }): Promise<SavedReportSummary[]> => {
+		try {
+			return listLocalReviewCatalog(String(input?.repo || '').trim(), input?.hints || []);
+		} catch (err) {
+			console.error('[diff-review git] catalog', describeGitError(err), err);
+			return [];
+		}
+	}
+);
+
+export type FoundReviewFile = {
+	repo: string;
+	filename: string;
+	payload: unknown;
+	viewerId: string;
+	location: 'dir' | 'root';
+};
+
+/** Busca en esos repos un JSON con ese `viewerId` o ese nombre de archivo. */
+export const findReviewOutput = command(
+	'unchecked',
+	async (input: { repos: string[]; viewerId?: string; filename?: string }): Promise<FoundReviewFile | null> => {
+		try {
+			return findLocalReview(input?.repos || [], {
+				viewerId: String(input?.viewerId || '').trim(),
+				filename: String(input?.filename || '').trim()
+			});
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
+/** Borra el JSON del reporte (allowlist). No toca otros archivos. */
+export const deleteReviewOutput = command(
+	'unchecked',
+	async (input: { repo: string; filename: string; viewerId?: string }): Promise<{ deleted: boolean }> => {
+		try {
+			return {
+				deleted: removeLocalReviewJson(
+					String(input?.repo || '').trim(),
+					String(input?.filename || '').trim(),
+					String(input?.viewerId || '').trim()
+				)
+			};
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
+export type AdoptReviewResult = {
+	filename: string;
+	viewerId: string;
+	status: 'stamped' | 'kept' | 'written' | 'missing';
+};
+
+/** Una pasada del índice viejo: estampar el UUID o reescribir el JSON que solo estaba en el navegador. */
+export const adoptReviewFiles = command(
+	'unchecked',
+	async (input: {
+		repo: string;
+		items: { filename: string; viewerId: string; payload?: unknown }[];
+	}): Promise<AdoptReviewResult[]> => {
+		try {
+			return adoptLocalReviews(String(input?.repo || '').trim(), input?.items || []);
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
+/** Si el JSON existe y no tiene `meta.viewerId`, escribe el que se pasa (o uno nuevo). */
+export const ensureReviewViewerId = command(
+	'unchecked',
+	async (input: {
+		repo: string;
+		filename: string;
+		viewerId?: string;
+	}): Promise<{ filename: string; viewerId: string } | null> => {
+		try {
+			return ensureLocalReviewViewerId(
+				String(input?.repo || '').trim(),
+				String(input?.filename || '').trim(),
+				String(input?.viewerId || '').trim()
+			);
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
 export const pickLocalFolder = command('unchecked', async (_input: null): Promise<string | null> => {
 	try {
 		return await pickLocalFolderSync();
@@ -186,6 +291,64 @@ export const fileLines = query(
 			source: input?.source,
 			path: String(input?.path || '').trim()
 		})
+);
+
+export type BranchFreshness = {
+	branch: string;
+	upstream: string | null;
+	behind: number;
+	local: boolean;
+};
+
+/** ¿El branch o la base están detrás de su upstream? Usa los remote-tracking que ya hay (sin fetch). */
+export const branchFreshness = query(
+	'unchecked',
+	async (input: { repo: string; branches: string[] }): Promise<BranchFreshness[]> => {
+		try {
+			return readBranchFreshness(String(input?.repo || '').trim(), input?.branches || []);
+		} catch (err) {
+			console.error('[diff-review git] freshness', describeGitError(err), err);
+			return [];
+		}
+	}
+);
+
+/** Fetch + fast-forward de un branch. No descarta cambios. */
+export const updateBranch = command(
+	'unchecked',
+	async (input: { repo: string; branch: string }) => {
+		try {
+			return updateLocalBranch(String(input?.repo || '').trim(), String(input?.branch || '').trim());
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
+/** Escribe el diff de review en `.diff-review/` y devuelve el nombre y la huella. */
+export const prepareReview = command(
+	'unchecked',
+	async (input: {
+		repo: string;
+		branch: string;
+		base?: string;
+		outputFilename?: string;
+		stamp?: boolean;
+		acp?: boolean;
+	}) => {
+		try {
+			return prepareLocalReview({
+				repo: String(input?.repo || '').trim(),
+				branch: String(input?.branch || '').trim(),
+				base: String(input?.base || 'develop').trim(),
+				outputFilename: String(input?.outputFilename || '').trim() || undefined,
+				stamp: Boolean(input?.stamp),
+				acp: Boolean(input?.acp)
+			});
+		} catch (err) {
+			fail(err);
+		}
+	}
 );
 
 export const hydrateFromGit = command(

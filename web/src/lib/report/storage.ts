@@ -8,8 +8,6 @@ const REPORT_KEY = (id: string) => `diff-review:report:${id}`;
 const TRIAGE_KEY = (id: string) => `diff-review:triage:${id}`;
 const CHAT_KEY = (id: string) => `diff-review:chat:${id}`;
 
-const MAX_REPORTS = 50;
-
 /** Documento hidratado de la pestaña actual (no se serializa a localStorage si hay archivo en disco). */
 const memoryReports = new Map<string, SavedReport>();
 
@@ -38,6 +36,11 @@ function looksLikeStoredLocalPath(value: string) {
 	const v = value.trim();
 	if (!v || /^(https?:\/\/|git@|ssh:\/\/)/i.test(v)) return false;
 	return /[\\/]/.test(v) || /^[A-Za-z]:/.test(v);
+}
+
+/** Ruta de carpeta local (no una URL git). */
+export function isLocalRepoPath(value: string): boolean {
+	return looksLikeStoredLocalPath(String(value || ''));
 }
 
 /** ¿Se puede volver a abrir el reporte leyendo `.diff-review/<outputFilename>`? */
@@ -74,17 +77,36 @@ function persistJson(key: string, json: string): boolean {
 	}
 }
 
-/** Persiste un blob grande (import sin disco); evacúa reportes viejos si hace falta. */
+function embeddedReportIds(): { id: string; savedAt: string }[] {
+	const found: { id: string; savedAt: string }[] = [];
+	try {
+		for (let i = 0; i < localStorage.length; i++) {
+			const key = localStorage.key(i);
+			if (!key?.startsWith('diff-review:report:')) continue;
+			const id = key.slice('diff-review:report:'.length);
+			const parsed = safeParse<StoredReport | null>(localStorage.getItem(key), null);
+			if (!parsed?.document) continue;
+			found.push({ id, savedAt: String(parsed.savedAt || '') });
+		}
+	} catch {
+		/* localStorage no disponible */
+	}
+	found.sort((a, b) => a.savedAt.localeCompare(b.savedAt));
+	return found;
+}
+
+/** Persiste un blob grande (import sin disco); suelta documentos embebidos viejos si hace falta. */
 function persistHeavy(id: string, json: string): boolean {
 	if (persistJson(REPORT_KEY(id), json)) return true;
-	const index = readIndex().filter((r) => r.id !== id);
-	for (let i = index.length - 1; i >= 0; i--) {
-		purgeStoredReport(index[i].id);
-		index.splice(i, 1);
-		if (persistJson(REPORT_KEY(id), json)) {
-			saveReportsIndex(index);
-			return true;
+	for (const victim of embeddedReportIds()) {
+		if (victim.id === id) continue;
+		try {
+			localStorage.removeItem(REPORT_KEY(victim.id));
+		} catch {
+			/* ignore */
 		}
+		memoryReports.delete(victim.id);
+		if (persistJson(REPORT_KEY(id), json)) return true;
 	}
 	return false;
 }
@@ -156,86 +178,77 @@ export function saveLastMeta(meta: ReportMeta, localRepo?: string) {
 	}
 }
 
-export function loadReportsIndex(): SavedReportSummary[] {
-	const index = readIndex();
-	let changed = false;
-	const enriched = index.map((item) => {
-		let next = item;
-		const full = loadReportById(item.id) || loadStoredReport(item.id);
-		if (!item.agent && !item.model) {
-			const agent = full?.meta?.agent?.trim();
-			const model = full?.meta?.model?.trim();
-			if (agent || model) {
-				changed = true;
-				next = { ...next, ...(agent ? { agent } : {}), ...(model ? { model } : {}) };
-			}
-		}
-		if (!item.outputFilename) {
-			const filename = full ? reportOutputFilename(full.meta) : '';
-			if (filename) {
-				changed = true;
-				next = { ...next, outputFilename: filename };
-			}
-		}
-		return next;
-	});
-	if (changed) saveReportsIndex(enriched);
-	return enriched;
+/** Índice viejo (`diff-review:reports-index`). Ya no es el catálogo: solo se lee para migrar. */
+export function readLegacyReportIndex(): SavedReportSummary[] {
+	return readIndex();
 }
 
-function saveReportsIndex(index: SavedReportSummary[]) {
+/** Deja el índice viejo en las entradas que todavía no se pudieron migrar, o lo borra. */
+export function replaceLegacyReportIndex(index: SavedReportSummary[]) {
+	if (!index.length) {
+		try {
+			localStorage.removeItem(REPORTS_INDEX_KEY);
+		} catch {
+			/* ignore */
+		}
+		return;
+	}
 	persistJson(REPORTS_INDEX_KEY, JSON.stringify(index));
 }
 
-function trimIndex(next: SavedReportSummary[]): SavedReportSummary[] {
-	const trimmed = next.slice(0, MAX_REPORTS);
-	const keep = new Set(trimmed.map((r) => r.id));
-	for (const old of next) {
-		if (keep.has(old.id)) continue;
-		purgeStoredReport(old.id);
+/** filename → viewerId que el navegador ya conoce, para no inventar otro al estampar el JSON. */
+export function viewerIdHints(): { filename: string; viewerId: string }[] {
+	const hints: { filename: string; viewerId: string }[] = [];
+	const seen = new Set<string>();
+	const push = (filename: string, viewerId: string) => {
+		const name = String(filename || '').trim();
+		const id = String(viewerId || '').trim();
+		if (!name || !id || seen.has(name)) return;
+		seen.add(name);
+		hints.push({ filename: name, viewerId: id });
+	};
+	for (const item of readIndex()) push(String(item.outputFilename || ''), item.id);
+	for (const report of memoryReports.values()) push(reportOutputFilename(report.meta), report.id);
+	try {
+		for (let i = 0; i < localStorage.length; i++) {
+			const key = localStorage.key(i);
+			if (!key?.startsWith('diff-review:report:')) continue;
+			const stored = loadStoredReport(key.slice('diff-review:report:'.length));
+			if (!stored) continue;
+			push(reportOutputFilename(stored.meta), stored.id);
+		}
+	} catch {
+		/* ignore */
 	}
-	return trimmed;
+	return hints;
+}
+
+export function viewerIdAssociatedWith(filename: string): string {
+	const name = String(filename || '').trim();
+	if (!name) return '';
+	return viewerIdHints().find((hint) => hint.filename === name)?.viewerId || '';
 }
 
 export function rememberReport(full: SavedReport): void {
 	memoryReports.set(full.id, full);
+	const existing = loadStoredReport(full.id);
+	if (existing?.document) return;
+	if (!canLoadFromDisk(full.meta)) return;
+	writeStored(toStored(full, false));
 }
 
 export function saveReport(document: ReviewDocument, meta: ReportMeta): SavedReport {
 	const outputFilename = reportOutputFilename(meta);
+	const id = String(meta.viewerId || '').trim() || crypto.randomUUID();
 	const normalized: ReportMeta = {
 		...meta,
+		viewerId: id,
 		...(outputFilename ? { outputFilename } : {})
 	};
-	const id = crypto.randomUUID();
 	const savedAt = new Date().toISOString();
 	const full: SavedReport = { id, meta: normalized, document, savedAt };
 	memoryReports.set(id, full);
-
-	const disk = canLoadFromDisk(normalized);
-	writeStored(toStored(full, !disk));
-
-	const blockerCount = document.findings.filter((f) => f.blocking).length;
-	const qualityCount = document.findings.filter((f) => f.class === 'quality').length;
-	const agent = normalized.agent?.trim();
-	// La tarjeta muestra el nombre con versión ("Haiku 5.5") si diff-review lo estampó.
-	const model = (normalized.modelLabel || normalized.model)?.trim();
-	const summary: SavedReportSummary = {
-		id,
-		repo: normalized.repo,
-		branch: normalized.branch,
-		base: normalized.base,
-		savedAt,
-		groupCount: document.groups.length,
-		blockerCount,
-		qualityCount,
-		intent: document.intent,
-		...(agent ? { agent } : {}),
-		...(model ? { model } : {}),
-		...(outputFilename ? { outputFilename } : {})
-	};
-
-	saveReportsIndex(trimIndex([summary, ...readIndex().filter((r) => r.id !== id)]));
+	writeStored(toStored(full, !canLoadFromDisk(normalized)));
 	return full;
 }
 
@@ -247,9 +260,11 @@ export function updateReportMeta(id: string, patch: Partial<ReportMeta>): SavedR
 
 	const baseMeta = mem?.meta || stored!.meta;
 	const filename = reportOutputFilename({ ...baseMeta, ...patch });
+	const viewerId = String(patch.viewerId || baseMeta.viewerId || id).trim() || id;
 	const nextMeta: ReportMeta = {
 		...baseMeta,
 		...patch,
+		viewerId,
 		...(filename ? { outputFilename: filename } : {})
 	};
 	// Permitir borrar la sesión ACP (`{ agentSession: undefined }`) al cambiar de agente.
@@ -278,39 +293,17 @@ export function replaceReportDocument(id: string, document: ReviewDocument, meta
 
 	const savedAt = mem?.savedAt || stored!.savedAt;
 	const filename = reportOutputFilename(meta) || reportOutputFilename(mem?.meta || stored!.meta);
+	const viewerId = String(meta.viewerId || mem?.meta.viewerId || stored?.meta.viewerId || id).trim() || id;
 	const nextMeta: ReportMeta = {
 		...(mem?.meta || stored!.meta),
 		...meta,
+		viewerId,
 		...(filename ? { outputFilename: filename } : {})
 	};
 	const full: SavedReport = { id, meta: nextMeta, document, savedAt };
 	memoryReports.set(id, full);
 	writeStored(toStored(full, !canLoadFromDisk(nextMeta)));
-
-	const indexFilename = reportOutputFilename(nextMeta);
-	const index = readIndex().map((item) =>
-		item.id === id
-			? {
-					...item,
-					repo: nextMeta.repo || item.repo,
-					branch: nextMeta.branch || item.branch,
-					base: nextMeta.base || item.base,
-					groupCount: document.groups.length,
-					blockerCount: document.findings.filter((f) => f.blocking).length,
-					qualityCount: document.findings.filter((f) => f.class === 'quality').length,
-					intent: document.intent,
-					...(nextMeta.agent?.trim() ? { agent: nextMeta.agent.trim() } : {}),
-					...((nextMeta.modelLabel || nextMeta.model)?.trim()
-						? { model: (nextMeta.modelLabel || nextMeta.model)!.trim() }
-						: {}),
-					...(indexFilename ? { outputFilename: indexFilename } : {})
-				}
-			: item
-	);
-	saveReportsIndex(index);
-
 	saveTriage(id, triageForSavedDocument(document.findings, loadTriage(id)));
-
 	return full;
 }
 
@@ -370,7 +363,10 @@ export function loadReportById(id: string): SavedReport | null {
 
 export function deleteReport(id: string) {
 	purgeStoredReport(id);
-	saveReportsIndex(readIndex().filter((r) => r.id !== id));
+	const index = readIndex();
+	if (index.some((item) => item.id === id)) {
+		replaceLegacyReportIndex(index.filter((item) => item.id !== id));
+	}
 }
 
 export function loadTriage(id: string): TriageState {

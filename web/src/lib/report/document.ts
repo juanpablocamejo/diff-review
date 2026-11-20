@@ -69,6 +69,9 @@ export function parseReportMeta(raw: unknown, fallback: Partial<ReportMeta> = {}
 		str(fallback.outputFilename) ||
 		str(fallback.agentSession?.outputFilename) ||
 		undefined;
+	const diffFingerprint =
+		str(nested.diffFingerprint ?? rec.diffFingerprint) || str(fallback.diffFingerprint) || undefined;
+	const viewerId = str(nested.viewerId ?? rec.viewerId) || str(fallback.viewerId) || undefined;
 	return {
 		source,
 		repo,
@@ -80,8 +83,17 @@ export function parseReportMeta(raw: unknown, fallback: Partial<ReportMeta> = {}
 		model: str(nested.model ?? rec.model) || undefined,
 		modelLabel: str(nested.modelLabel ?? rec.modelLabel) || undefined,
 		agentSession: parseAgentSession(nested.agentSession ?? rec.agentSession) || fallback.agentSession,
-		...(outputFilename ? { outputFilename } : {})
+		...(outputFilename ? { outputFilename } : {}),
+		...(diffFingerprint ? { diffFingerprint } : {}),
+		...(viewerId ? { viewerId } : {})
 	};
+}
+
+/** `meta.viewerId` del JSON, si ya está. No inventa uno. */
+export function viewerIdFromPayload(raw: unknown): string {
+	const rec = asRecord(raw);
+	const nested = asRecord(rec.meta);
+	return str(nested.viewerId ?? rec.viewerId);
 }
 
 function parseAgentSession(raw: unknown): AgentSessionRef | undefined {
@@ -105,7 +117,10 @@ export function serializeReviewPayload(document: ReviewDocument, meta: ReportMet
 				...(meta.generatedAt ? { generatedAt: meta.generatedAt } : {}),
 				...(meta.agent ? { agent: meta.agent } : {}),
 				...(meta.model ? { model: meta.model } : {}),
-				...(meta.modelLabel ? { modelLabel: meta.modelLabel } : {})
+				...(meta.modelLabel ? { modelLabel: meta.modelLabel } : {}),
+				...(meta.diffFingerprint ? { diffFingerprint: meta.diffFingerprint } : {}),
+				...(meta.outputFilename ? { outputFilename: meta.outputFilename } : {}),
+				...(meta.viewerId ? { viewerId: meta.viewerId } : {})
 			},
 			...document
 		},

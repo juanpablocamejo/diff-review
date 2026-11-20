@@ -4,14 +4,16 @@ import { severityLabel } from './labels';
 import type { FindingSeverity, ReportMeta, ReviewDocument } from './types';
 import {
 	buildPrompt as buildPromptCore,
+	buildUpdatePrompt as buildUpdatePromptCore,
 	makeOutputFilename,
+	makeStampedOutputFilename,
 	isOutputFilename,
 	OUTPUT_FILENAME_LEGACY,
 	OUTPUT_SCHEMA_BLOCK
 } from '$review/lib/prompt.mjs';
 import { chatRelPath } from '$review/lib/output-name.mjs';
 
-export { makeOutputFilename, isOutputFilename, OUTPUT_SCHEMA_BLOCK, chatRelPath };
+export { makeOutputFilename, makeStampedOutputFilename, isOutputFilename, OUTPUT_SCHEMA_BLOCK, chatRelPath };
 /** Legacy fijo; preferí `makeOutputFilename()` / `outputFilename` de sesión. */
 export const OUTPUT_FILENAME = OUTPUT_FILENAME_LEGACY;
 
@@ -27,12 +29,27 @@ export function buildPrompt(
 		files?: Array<{ path: string; changeType?: string }>;
 		ignored?: string[];
 		ignoreGlobs?: string[];
+		includesWorktree?: boolean;
+		diffFingerprint?: string;
 	}
 ): string {
 	return buildPromptCore(meta, {
 		...opts,
 		outputFilename: opts?.outputFilename || makeOutputFilename()
 	});
+}
+
+export function buildUpdatePrompt(
+	meta: ReportMeta,
+	opts: {
+		outputFilename: string;
+		diffRelPath?: string | null;
+		diffFingerprint?: string;
+		includesWorktree?: boolean;
+		acp?: boolean;
+	}
+): string {
+	return buildUpdatePromptCore(meta, opts);
 }
 
 /** How many uncovered paths to list in the coverage prompt before truncating. */

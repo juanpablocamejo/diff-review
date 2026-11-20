@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { buildReportModel } from './build';
-	import { decorateFinding } from './decorate';
+	import { decorateFinding, isSettledFinding } from './decorate';
 	import ExploreContent from './ExploreContent.svelte';
 	import FindingsContent from './FindingsContent.svelte';
 	import FindingsDrawer from './FindingsDrawer.svelte';
@@ -205,29 +205,40 @@
 		model.findingsNav.map((f) => decorateFinding(f, decided, fixSelected, corrected, fixedDetail))
 	);
 	const decoratedOrphans = $derived(
-		model.orphanFindings.map((f) => decorateFinding(f, decided, fixSelected, corrected, fixedDetail))
+		model.orphanFindings
+			.map((f) => decorateFinding(f, decided, fixSelected, corrected, fixedDetail))
+			.filter((f) => !isSettledFinding(f))
 	);
 
+	let showResolved = $state(false);
+	const openFindingsNav = $derived(decoratedFindingsNav.filter((f) => !isSettledFinding(f)));
+	const visibleFindings = $derived(showResolved ? decoratedFindingsNav : openFindingsNav);
+
 	function fileFindings(path: string) {
-		return decoratedFindingsNav.filter((f) => f.file === path);
+		return decoratedFindingsNav.filter((f) => f.file === path && (showResolved || !isSettledFinding(f)));
 	}
 
 	const activeFinding = $derived(
-		decoratedFindingsNav.find((f) => f.id === activeFindingId) ?? decoratedFindingsNav[0] ?? null
+		visibleFindings.find((f) => f.id === activeFindingId) ?? visibleFindings[0] ?? null
 	);
 	const activeFile = $derived(activeFinding ? (model.fileSectionsByPath.get(activeFinding.file) ?? null) : null);
 	const drawerFindings = $derived(drawerFilePath ? fileFindings(drawerFilePath) : []);
+
+	$effect(() => {
+		const visible = visibleFindings;
+		const id = activeFindingId;
+		if (!visible.length || visible.some((f) => f.id === id)) return;
+		activeFindingId = visible[0].id;
+	});
 
 	const fixSelectionFindings = $derived(
 		decoratedFindingsNav.filter((f) => fixSelected[f.id] && !corrected[f.id])
 	);
 	const fixSelectionCount = $derived(fixSelectionFindings.length);
-	const ignoredFindings = $derived(
-		decoratedFindingsNav.filter((f) => f.decided && !f.fixSelected && !f.corrected)
-	);
+	const ignoredFindings = $derived(decoratedFindingsNav.filter((f) => f.ignored));
 	const ignoredCount = $derived(ignoredFindings.length);
-	const reviewedCount = $derived(decoratedFindingsNav.filter((f) => f.decided).length);
-	const reviewedLabel = $derived(`${reviewedCount} de ${decoratedFindingsNav.length} revisados`);
+	const reviewedCount = $derived(openFindingsNav.filter((f) => f.decided).length);
+	const reviewedLabel = $derived(`${reviewedCount} de ${openFindingsNav.length} revisados`);
 
 	const fixPromptText = $derived(
 		showFixPrompt
@@ -487,6 +498,8 @@
 				fileNav={model.fileNav}
 				onselectfile={selectFile}
 				findings={decoratedFindingsNav}
+				{showResolved}
+				onshowresolved={(value) => (showResolved = value)}
 				{activeFindingId}
 				onselectfinding={(id) => (activeFindingId = id)}
 				{activeExploreFile}
@@ -515,6 +528,8 @@
 						{showExplanations}
 						{expandedDiffs}
 						{decided}
+						{fixSelected}
+						{corrected}
 						{explanationWidth}
 						{splitRatio}
 						{diffFontSize}

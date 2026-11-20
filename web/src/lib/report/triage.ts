@@ -1,6 +1,12 @@
 import type { TriageState } from './storage';
 import type { FindingResolution, ReviewFinding } from './types';
 
+/** Abierto: sin resolution, o marcado A corregir. Corregido e ignorado no cuentan. */
+export function findingIsOpen(f: { resolution?: { kind?: string } | undefined }): boolean {
+	const kind = f.resolution?.kind;
+	return kind !== 'corrected' && kind !== 'ignored';
+}
+
 /** Deriva el mapa de triage desde `findings[].resolution` del documento. */
 export function triageFromFindings(findings: ReviewFinding[]): TriageState {
 	const decided: Record<string, boolean> = {};

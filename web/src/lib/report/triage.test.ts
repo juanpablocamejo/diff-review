@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
 	applyTriageToFindings,
+	findingIsOpen,
 	triageForSavedDocument,
 	triageFromFindings
 } from './triage.ts';
@@ -79,6 +80,13 @@ test('purge-style apply + triageForSavedDocument keeps corregir after dropping i
 	assert.equal(next.corrected.c, true);
 	assert.equal(next.fixedDetail.c, 'ya aplicado');
 	assert.equal(next.decided.a, undefined);
+});
+
+test('findingIsOpen excludes ignored and corrected', () => {
+	assert.equal(findingIsOpen(finding('a', 'ignored')), false);
+	assert.equal(findingIsOpen(finding('b', 'corrected')), false);
+	assert.equal(findingIsOpen(finding('c', 'fix')), true);
+	assert.equal(findingIsOpen(finding('d')), true);
 });
 
 test('triageFromFindings round-trips fix and ignored', () => {

@@ -16,7 +16,7 @@ import {
 	setPermissionTrust as setSessionPermissionTrust,
 	startReview as startReviewSession
 } from '$lib/server/agent-sessions';
-import { resolveOutputName } from '$lib/server/git-review';
+import { prepareLocalReview, resolveOutputName } from '$lib/server/git-review';
 import type { AcpAgentOption, AcpModels, AgentSessionInfo, ChatMode } from './agent-events';
 
 function fail(err: unknown): never {
@@ -64,22 +64,82 @@ export const agentSession = query('unchecked', async (input: { id: string }): Pr
 	sessionInfo(String(input?.id || ''))
 );
 
+function preparedOrThrow(repo: string, branch: string, base: string, outputFilename?: string) {
+	const prepared = prepareLocalReview({
+		repo,
+		branch,
+		base,
+		...(outputFilename ? { outputFilename, stamp: true } : {}),
+		acp: true
+	});
+	if (prepared.empty) {
+		throw new Error(
+			'El diff está vacío (ni commits ni cambios sin commitear en ese branch). No hay nada que revisar.'
+		);
+	}
+	return prepared;
+}
+
 export const startReview = command(
 	'unchecked',
-	async (input: { repo: string; branch: string; base: string; agentId: string; model?: string }): Promise<AgentSessionInfo> => {
+	async (input: {
+		repo: string;
+		branch: string;
+		base: string;
+		agentId: string;
+		model?: string;
+		/** Si viene, la review nueva escribe ese JSON (no el nombre canónico del diff). */
+		outputFilename?: string;
+	}): Promise<AgentSessionInfo> => {
 		try {
 			const repo = String(input?.repo || '').trim();
 			const branch = String(input?.branch || '').trim();
 			const base = String(input?.base || 'develop').trim();
 			if (!repo || !branch) throw new Error('Faltan repo y branch.');
-			const { filename } = resolveOutputName(repo, branch, base);
+			const outputFilename = String(input?.outputFilename || '').trim() || undefined;
+			const prepared = preparedOrThrow(repo, branch, base, outputFilename);
 			return startReviewSession({
 				repo,
 				branch,
 				base,
-				outputFilename: filename,
+				outputFilename: prepared.outputFilename,
 				agentId: String(input?.agentId || ''),
-				model: String(input?.model || '').trim() || undefined
+				model: String(input?.model || '').trim() || undefined,
+				prepared
+			});
+		} catch (err) {
+			fail(err);
+		}
+	}
+);
+
+/** Lanza al agente con el prompt de actualización sobre el JSON existente. */
+export const startUpdateReview = command(
+	'unchecked',
+	async (input: {
+		repo: string;
+		branch: string;
+		base: string;
+		outputFilename: string;
+		agentId: string;
+		model?: string;
+	}): Promise<AgentSessionInfo> => {
+		try {
+			const repo = String(input?.repo || '').trim();
+			const branch = String(input?.branch || '').trim();
+			const base = String(input?.base || 'develop').trim();
+			const outputFilename = String(input?.outputFilename || '').trim();
+			if (!repo || !branch || !outputFilename) throw new Error('Faltan repo, branch o el JSON del reporte.');
+			const prepared = preparedOrThrow(repo, branch, base, outputFilename);
+			return startReviewSession({
+				repo,
+				branch,
+				base,
+				outputFilename: prepared.outputFilename,
+				agentId: String(input?.agentId || ''),
+				model: String(input?.model || '').trim() || undefined,
+				update: true,
+				prepared
 			});
 		} catch (err) {
 			fail(err);

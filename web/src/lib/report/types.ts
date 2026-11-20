@@ -125,6 +125,13 @@ export type ReportMeta = {
 	 * en vez de guardar el documento entero en localStorage.
 	 */
 	outputFilename?: string;
+	/** SHA-256 del diff con el que se creó o actualizó el reporte. Sirve para avisar si no hubo cambios. */
+	diffFingerprint?: string;
+	/**
+	 * UUID estable del viewer. Es el id de `/report/<id>` y vive en el JSON, así el nombre
+	 * del archivo (hash del diff, regenerate con timestamp) puede cambiar y el link sigue.
+	 */
+	viewerId?: string;
 };
 
 export type AgentSessionRef = {
@@ -142,8 +149,8 @@ export type SavedReport = {
 };
 
 /**
- * Lo que vive en localStorage: meta (+ puntero al JSON en disco). El `document` solo se embebe
- * cuando no hay archivo local (p. ej. drag-and-drop sin repo).
+ * Puntero en localStorage (meta + id). El `document` solo se embebe cuando no hay archivo
+ * local (p. ej. una URL sin carpeta). La lista de reportes sale de los JSON del repo.
  */
 export type StoredReport = {
 	id: string;
@@ -165,6 +172,6 @@ export type SavedReportSummary = {
 	intent: string;
 	agent?: string;
 	model?: string;
-	/** Puntero a `.diff-review/<name>` para reabrir tras un reload sin el blob en LS. */
+	/** Puntero a `.diff-review/<name>` (o al JSON viejo en la raíz) para borrar y reabrir. */
 	outputFilename?: string;
 };

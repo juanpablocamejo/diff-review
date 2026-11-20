@@ -4,6 +4,8 @@ export type DecoratedFinding = FindingCard & {
 	decided: boolean;
 	fixSelected: boolean;
 	corrected: boolean;
+	/** Marcado A ignorar. No es un corregido. */
+	ignored: boolean;
 	fixedDetail: string;
 	opacity: number;
 	strike: 'line-through' | 'none';
@@ -16,6 +18,11 @@ export type DecoratedFinding = FindingCard & {
 	ignoreColor: string;
 	fixColor: string;
 };
+
+/** Corregido o marcado A ignorar: no es trabajo abierto. "A corregir" sigue abierto. */
+export function isSettledFinding(f: { corrected: boolean; ignored: boolean }): boolean {
+	return f.corrected || f.ignored;
+}
 
 /** Deriva el estilo de un finding a partir de su estado de triage. */
 export function decorateFinding(
@@ -36,8 +43,9 @@ export function decorateFinding(
 			decided: true,
 			fixSelected: false,
 			corrected: true,
+			ignored: false,
 			fixedDetail: detail,
-			opacity: 1,
+			opacity: 0.62,
 			strike: 'none',
 			statusMark: '✓',
 			statusColor: 'var(--ok)',
@@ -55,6 +63,7 @@ export function decorateFinding(
 		decided: isDecided,
 		fixSelected: isFix,
 		corrected: false,
+		ignored: isDecided && !isFix,
 		fixedDetail: '',
 		opacity: isDecided ? 0.55 : 1,
 		strike: isDecided ? 'line-through' : 'none',

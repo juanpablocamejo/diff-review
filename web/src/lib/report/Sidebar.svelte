@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { DecoratedFinding } from './decorate';
+	import { isSettledFinding, type DecoratedFinding } from './decorate';
 	import { groupAnchor } from './anchors';
 	import type { FileNavItem, GroupNavItem } from './build';
 	import CopyPathButton from './CopyPathButton.svelte';
@@ -8,7 +8,7 @@
 	import { findingSeverityRank, maxFindingAccent } from './severity';
 	import { buildTreeRows, collectTreeDirPaths, type FileCount } from './tree';
 	import { findingRef, plural, themeRef } from './labels';
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 
 	let {
 		collapsed,
@@ -20,6 +20,8 @@
 		activeFindingId,
 		onselectfinding,
 		onselectfile,
+		showResolved = false,
+		onshowresolved,
 		/** Archivo visible en Explore (tema + path), para resaltar en el acordeón. */
 		activeExploreFile = null
 	}: {
@@ -32,19 +34,35 @@
 		activeFindingId: string | null;
 		onselectfinding: (id: string) => void;
 		onselectfile: (path: string, groupId?: string) => void;
+		showResolved?: boolean;
+		onshowresolved?: (value: boolean) => void;
 		activeExploreFile?: { groupId: string; path: string } | null;
 	} = $props();
 
-	const reviewedCount = $derived(findings.filter((f) => f.decided).length);
-	const reviewedPct = $derived(findings.length ? Math.round((reviewedCount / findings.length) * 100) : 0);
+	const openFindings = $derived(findings.filter((f) => !isSettledFinding(f)));
+	const listedFindings = $derived(showResolved ? findings : openFindings);
+	const resolvedCount = $derived(findings.length - openFindings.length);
+	const reviewedCount = $derived(openFindings.filter((f) => f.decided).length);
+	const reviewedPct = $derived(openFindings.length ? Math.round((reviewedCount / openFindings.length) * 100) : 0);
 
 	/** Índice de Explorar: los mismos archivos, indexados por tema o por carpeta. */
 	let exploreIndex = $state<'temas' | 'archivos'>('temas');
 	let collapsedDirs = $state<string[]>([]);
 	/** Árbol con carpetas, o lista plana de paths. */
 	let filesLayout = $state<'tree' | 'list'>('tree');
+	/**
+	 * Lista plana: «junto» (nombre y carpeta en la misma fila) o «aparte»
+	 * (carpeta en su línea). No cambia la vista en árbol.
+	 */
+	let flatStyle = $state<'junto' | 'aparte'>('junto');
 	/** Acordeón de temas: un solo tema abierto a la vez. */
 	let expandedGroupId = $state<string | null>(null);
+
+	const FLAT_STYLE_KEY = 'diff-review:flat-list';
+
+	onMount(() => {
+		flatStyle = loadFlatStyle();
+	});
 
 	/** Al scrollear el panel, abrir el tema del archivo visible. */
 	$effect(() => {
@@ -67,6 +85,7 @@
 	const fileCounts = $derived.by(() => {
 		const counts = new Map<string, FileCount>();
 		for (const f of findings) {
+			if (isSettledFinding(f)) continue;
 			const rank = findingSeverityRank(f);
 			const entry = counts.get(f.file) ?? {
 				total: 0,
@@ -89,9 +108,21 @@
 	const treeRows = $derived(buildTreeRows(fileNav, fileCounts, new Set(collapsedDirs)));
 	const allExpanded = $derived(collapsedDirs.length === 0);
 
-	const listRows = $derived.by(() =>
+	type FlatFileRow = {
+		path: string;
+		name: string;
+		dir: string;
+		changeMark: string;
+		navigable: boolean;
+		findings: number;
+		done: boolean;
+		accent: string;
+		skipReasonLabel?: string;
+	};
+
+	/** Lista plana ordenada por path: el nombre y la carpeta van en la misma fila. */
+	const listRows = $derived.by((): FlatFileRow[] =>
 		[...fileNav]
-			.sort((a, b) => a.path.localeCompare(b.path))
 			.map((file) => {
 				const count = fileCounts.get(file.path);
 				const slash = file.path.lastIndexOf('/');
@@ -107,13 +138,35 @@
 					skipReasonLabel: file.skipReasonLabel
 				};
 			})
+			.sort((a, b) => a.path.localeCompare(b.path))
 	);
+
+	/** La misma lista, agrupada por carpeta. La raíz no tiene línea propia. */
+	const listGroups = $derived.by(() => {
+		const rows = [...listRows].sort((a, b) => {
+			if (a.dir !== b.dir) {
+				if (!a.dir) return -1;
+				if (!b.dir) return 1;
+				return a.dir.localeCompare(b.dir);
+			}
+			return a.name.localeCompare(b.name);
+		});
+		const groups: { dir: string; files: FlatFileRow[] }[] = [];
+		for (const row of rows) {
+			const last = groups.at(-1);
+			if (last && last.dir === row.dir) last.files.push(row);
+			else groups.push({ dir: row.dir, files: [row] });
+		}
+		return groups;
+	});
 
 	const groupCounts = $derived.by(() => {
 		const byId = new Map(findings.map((f) => [f.id, f]));
 		return new Map(
 			groupsNav.map((g) => {
-				const groupFindings = g.findingIds.map((id) => byId.get(id)).filter(Boolean) as DecoratedFinding[];
+				const groupFindings = g.findingIds
+					.map((id) => byId.get(id))
+					.filter((f): f is DecoratedFinding => !!f && !isSettledFinding(f));
 				const total = groupFindings.length;
 				const done = groupFindings.filter((f) => f.decided).length;
 				return [g.id, { total, done, accent: maxFindingAccent(groupFindings) }] as const;
@@ -121,7 +174,32 @@
 		);
 	});
 
-	const findingsMaxAccent = $derived(maxFindingAccent(findings));
+	const findingsMaxAccent = $derived(maxFindingAccent(openFindings));
+
+	function loadFlatStyle(): 'junto' | 'aparte' {
+		try {
+			return localStorage.getItem(FLAT_STYLE_KEY) === 'aparte' ? 'aparte' : 'junto';
+		} catch {
+			return 'junto';
+		}
+	}
+
+	function saveFlatStyle(style: 'junto' | 'aparte') {
+		try {
+			localStorage.setItem(FLAT_STYLE_KEY, style);
+		} catch {
+			/* localStorage deshabilitado: la preferencia no persiste, pero la sesión sigue andando */
+		}
+	}
+
+	function toggleFlatStyle() {
+		flatStyle = flatStyle === 'junto' ? 'aparte' : 'junto';
+		saveFlatStyle(flatStyle);
+	}
+
+	const flatStyleLabel = $derived(
+		flatStyle === 'junto' ? 'Mostrar la carpeta en su propia línea' : 'Mostrar la carpeta junto al nombre'
+	);
 
 	function toggleDir(key: string) {
 		collapsedDirs = collapsedDirs.includes(key)
@@ -172,8 +250,8 @@
 			<button type="button" class:on={mode === 'findings'} onclick={() => onsetmode('findings')}>
 				<span class="mode-label">
 					Hallazgos
-					{#if findings.length}
-						<span class="count-badge" style:--finding-sev={findingsMaxAccent}>{findings.length}</span>
+					{#if openFindings.length}
+						<span class="count-badge" style:--finding-sev={findingsMaxAccent}>{openFindings.length}</span>
 					{/if}
 				</span>
 			</button>
@@ -217,10 +295,53 @@
 									<Icon name="list" size={14} />
 								</button>
 							</div>
-							{#if filesLayout === 'tree'}
+							{#if filesLayout === 'list'}
 								<button
 									type="button"
 									class="tool"
+									title={flatStyleLabel}
+									aria-label={flatStyleLabel}
+									onclick={toggleFlatStyle}
+								>
+									{#if flatStyle === 'junto'}
+										<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+											<path
+												d="M2.25 3.5h11.5"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												opacity="0.45"
+											/>
+											<path
+												d="M2.25 7.75h7.5M2.25 11.75h5"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+											/>
+										</svg>
+									{:else}
+										<svg class="tool-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+											<path
+												d="M2.25 4.5h4M2.25 8h5M2.25 11.5h3.5"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+											/>
+											<path
+												d="M8.25 4.5h5.5M9.25 8h4.5M7.75 11.5h6"
+												stroke="currentColor"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												opacity="0.45"
+											/>
+										</svg>
+									{/if}
+								</button>
+							{/if}
+							{#if filesLayout === 'tree'}
+								<button
+									type="button"
+									class="tool end"
 									disabled={allDirPaths.length === 0}
 									title={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
 									aria-label={allExpanded ? 'Colapsar todo el árbol' : 'Expandir todo el árbol'}
@@ -422,47 +543,77 @@
 						</div>
 					{:else}
 						<div class="tree list">
-							{#each listRows as row (row.path)}
-								<div class="tree-row-wrap" class:active={activeExploreFile?.path === row.path}>
-								<button
-									type="button"
-									class="tree-row file"
-									class:skipped={!!row.skipReasonLabel}
-									class:muted={!row.navigable}
-									class:active={activeExploreFile?.path === row.path}
-									style:padding-left="{TREE_PAD}px"
-									disabled={!row.navigable}
-									title={row.skipReasonLabel ? `${row.path} · omitido (${row.skipReasonLabel})` : row.path}
-									onclick={() => onselectfile(row.path)}
-								>
-									<span class="tree-slot">
-										<FileIcon path={row.path} size={TREE_SLOT} />
-									</span>
-									<span class="name-line">
-										<span class="name">{row.name}</span>
-										{#if row.dir}
-											<span class="dir">{row.dir}</span>
-										{/if}
-									</span>
-									{#if row.findings}
-										<span
-											class="count"
-											class:done={row.done}
-											style:--finding-sev={row.accent}
-											title="{plural(row.findings, 'hallazgo', 'hallazgos')}{row.done
-												? ' · todos revisados'
-												: ''}">{row.done ? '✓' : row.findings}</span
-										>
-									{/if}
-									<span class="mark" class:add={row.changeMark === 'A'} class:del={row.changeMark === 'D'} class:mod={row.changeMark === 'M'}
-										>{row.changeMark}</span
+							{#snippet flatFile(row: FlatFileRow)}
+								<div class={['tree-row-wrap', { active: activeExploreFile?.path === row.path }]}>
+									<button
+										type="button"
+										class={[
+											'tree-row file',
+											{
+												skipped: !!row.skipReasonLabel,
+												muted: !row.navigable,
+												active: activeExploreFile?.path === row.path
+											}
+										]}
+										style:padding-left="{TREE_PAD}px"
+										disabled={!row.navigable}
+										title={row.skipReasonLabel ? `${row.path} · omitido (${row.skipReasonLabel})` : row.path}
+										onclick={() => onselectfile(row.path)}
 									>
-								</button>
-								<span class="copy-slot">
-									<CopyPathButton path={row.path} />
-								</span>
+										<span class="tree-slot">
+											<FileIcon path={row.path} size={TREE_SLOT} />
+										</span>
+										{#if flatStyle === 'junto'}
+											<span class="name-line">
+												<span class="name">{row.name}</span>
+												{#if row.dir}
+													<span class="dir">{row.dir}</span>
+												{/if}
+											</span>
+										{:else}
+											<span class="name">{row.name}</span>
+										{/if}
+										{#if row.findings}
+											<span
+												class={['count', { done: row.done }]}
+												style:--finding-sev={row.accent}
+												title="{plural(row.findings, 'hallazgo', 'hallazgos')}{row.done
+													? ' · todos revisados'
+													: ''}">{row.done ? '✓' : row.findings}</span
+											>
+										{/if}
+										<span
+											class={[
+												'mark',
+												{
+													add: row.changeMark === 'A',
+													del: row.changeMark === 'D',
+													mod: row.changeMark === 'M'
+												}
+											]}>{row.changeMark}</span
+										>
+									</button>
+									<span class="copy-slot">
+										<CopyPathButton path={row.path} />
+									</span>
 								</div>
-							{/each}
+							{/snippet}
+							{#if flatStyle === 'junto'}
+								{#each listRows as row (row.path)}
+									{@render flatFile(row)}
+								{/each}
+							{:else}
+								{#each listGroups as group (group.dir || '.')}
+									{#if group.dir}
+										<div class="list-folder" style:padding-left="{TREE_PAD}px" title={group.dir}>
+											{group.dir}
+										</div>
+									{/if}
+									{#each group.files as row (row.path)}
+										{@render flatFile(row)}
+									{/each}
+								{/each}
+							{/if}
 						</div>
 					{/if}
 				</div>
@@ -470,20 +621,33 @@
 		{:else}
 			<div class="panel findings-panel">
 				<div class="findings-head">
-					<h3>Hallazgos · {findings.length}</h3>
+					<h3>Hallazgos · {openFindings.length}</h3>
 					<span class="reviewed"
-						>{reviewedCount} de {findings.length} {findings.length === 1 ? 'revisado' : 'revisados'}</span
+						>{reviewedCount} de {openFindings.length} {openFindings.length === 1 ? 'revisado' : 'revisados'}</span
 					>
 				</div>
+				{#if resolvedCount > 0}
+					<label class="show-corrected">
+						<input
+							type="checkbox"
+							checked={showResolved}
+							onchange={(e) => onshowresolved?.((e.currentTarget as HTMLInputElement).checked)}
+						/>
+						Mostrar resueltos
+						<span class="corrected-count">{resolvedCount}</span>
+					</label>
+				{/if}
 				<div class="progress">
 					<div class="progress-bar" style:width="{reviewedPct}%"></div>
 				</div>
 				<div class="findings-list">
-					{#each findings as f (f.id)}
+					{#each listedFindings as f (f.id)}
 						<button
 							type="button"
-							class="finding-row"
-							class:active={f.id === activeFindingId}
+							class={[
+								'finding-row',
+								{ 'is-corrected': f.corrected, 'is-ignored': f.ignored, active: f.id === activeFindingId }
+							]}
 							style:border-left-color={f.accentColor}
 							style:opacity={f.opacity}
 							onclick={() => onselectfinding(f.id)}
@@ -642,9 +806,13 @@
 	.files-toolbar {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		gap: 6px;
 		margin: -2px 0 8px;
+	}
+
+	/* El control del árbol sigue a la derecha; el de la lista plana queda junto al segmento. */
+	.files-toolbar > .tool.end {
+		margin-left: auto;
 	}
 
 	.files-toolbar .tool {
@@ -890,6 +1058,22 @@
 		line-height: 1.3;
 	}
 
+	.list-folder {
+		margin-top: 6px;
+		padding-right: 8px;
+		font-family: var(--mono);
+		font-size: 10.5px;
+		line-height: 16px;
+		color: var(--text-faint);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.tree.list > .list-folder:first-child {
+		margin-top: 2px;
+	}
+
 	.tree-row .name-line {
 		flex: 1;
 		min-width: 0;
@@ -1050,6 +1234,27 @@
 
 	.findings-head h3 {
 		margin: 0;
+	}
+
+	.show-corrected {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin: 0 0 8px;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+
+	.corrected-count {
+		color: var(--text-faint);
+	}
+
+	.finding-row.is-corrected {
+		background: color-mix(in srgb, var(--text) 4%, var(--bg-elev));
+	}
+
+	.finding-row.is-ignored {
+		background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev));
 	}
 
 	.reviewed {

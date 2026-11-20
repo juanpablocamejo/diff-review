@@ -40,7 +40,7 @@ import {
 } from '$review/lib/agent-login.mjs';
 import { checkReportFile, formatCheckReport } from '$review/lib/check-report.mjs';
 import { stampReviewProvenance } from '$review/lib/review-meta.mjs';
-import { buildPrompt, outputRelPath, validateCliCommand } from '$review/lib/prompt.mjs';
+import { buildPrompt, buildUpdatePrompt, outputRelPath, validateCliCommand } from '$review/lib/prompt.mjs';
 import { getRemoteUrl } from '$review/lib/git.mjs';
 import { prepareReviewPromptOpts } from '$review/lib/review-prep.mjs';
 import {
@@ -102,6 +102,8 @@ type Entry = AgentSessionInfo & {
 	handoffChatMarkdown: string | null;
 	/** Paths del diff ya resueltos al arrancar la review (evita `git diff` al validar). */
 	diffPaths: string[] | null;
+	/** SHA-256 del diff preparado; se estampa en meta al validar el JSON. */
+	diffFingerprint: string;
 	/** Permisos pendientes de confirmación del usuario (política negó). */
 	pendingPermissions: Map<string, PendingPermission>;
 	/**
@@ -838,6 +840,7 @@ async function checkOutput(entry: Entry, since: number, retriesLeft: number): Pr
 			modelLabel: entry.acp?.models.find((o) => o.value === entry.model)?.name,
 			// La fecha de la review la ponemos nosotros (la del agente no es confiable); un edit desde el chat no la cambia.
 			...(entry.mode === 'review' ? { generatedAt: new Date().toISOString() } : {}),
+			...(entry.diffFingerprint ? { diffFingerprint: entry.diffFingerprint } : {}),
 			agentSession: { agentId: entry.agentId, sessionId: entry.acpSessionId, outputFilename: entry.outputFilename }
 		});
 		emit(entry, { type: 'review', ok: true, filename: entry.outputFilename, errors: [], final: true });
@@ -970,6 +973,7 @@ function newEntry(agent: DetectedAgent, fields: {
 		handoffNote: null,
 		handoffChatMarkdown: null,
 		diffPaths: null,
+		diffFingerprint: '',
 		pendingPermissions: new Map(),
 		sessionAllowDenied: false,
 		cancelled: false,
@@ -990,11 +994,17 @@ export function startReview(input: {
 	model?: string;
 	/** Id fijado de antemano (la CLI lo elige para abrir la URL antes de que arranque el server). */
 	id?: string;
+	/** Actualizar el JSON existente en vez de generar una review nueva. */
+	update?: boolean;
+	/** Diff ya escrito por el caller (mismo resultado que `prepareReviewPromptOpts`). */
+	prepared?: ReturnType<typeof prepareReviewPromptOpts>;
 }): AgentSessionInfo {
 	const agent = findAgent(input.agentId);
 	const entry = newEntry(agent, { ...input, model: input.model || '' });
-	emit(entry, { type: 'phase', phase: 'diff', detail: 'Calculando el diff…' });
-	setStatus(entry, 'starting', 'Calculando el diff…');
+	if (input.prepared?.diffFingerprint) entry.diffFingerprint = input.prepared.diffFingerprint;
+	if (input.prepared?.files) entry.diffPaths = input.prepared.files.map((f) => f.path);
+	emit(entry, { type: 'phase', phase: 'diff', detail: input.update ? 'Preparando la actualización…' : 'Calculando el diff…' });
+	setStatus(entry, 'starting', input.update ? 'Preparando la actualización…' : 'Calculando el diff…');
 	// Devolver ya la sesión y seguir en el event loop: la UI puede suscribirse y mostrar
 	// "calculando el diff" mientras preparamos el contexto.
 	void continueReviewAfterDiff(entry, input);
@@ -1009,60 +1019,85 @@ async function continueReviewAfterDiff(
 		base: string;
 		outputFilename: string;
 		model?: string;
+		update?: boolean;
+		prepared?: ReturnType<typeof prepareReviewPromptOpts>;
 	}
 ) {
 	// Cedé el event loop para que SSE/HTTP atiendan antes del prep (git puede tardar).
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	if (!sessions.has(entry.id) || entry.cancelled) return;
 
-	let promptOpts: ReturnType<typeof prepareReviewPromptOpts> = {
-		outputFilename: input.outputFilename,
-		acp: true,
-		diffRelPath: null,
-		files: [],
-		ignored: [],
-		ignoreGlobs: []
-	};
-	try {
-		promptOpts = prepareReviewPromptOpts({
-			repo: input.repo,
-			branch: input.branch,
-			base: input.base,
+	let promptOpts: ReturnType<typeof prepareReviewPromptOpts> =
+		input.prepared || {
 			outputFilename: input.outputFilename,
-			acp: true
-		});
-		if (entry.cancelled || !sessions.has(entry.id)) return;
-		entry.diffPaths = (promptOpts.files || []).map((f) => f.path);
-		const n = entry.diffPaths.length;
-		const detail =
-			n > 0
-				? `Diff listo · ${n} archivo${n === 1 ? '' : 's'}. Pasando el contexto al agente…`
-				: 'Diff listo. Pasando el contexto al agente…';
-		emit(entry, { type: 'phase', phase: 'diff', detail });
-		setStatus(entry, 'starting', detail);
-	} catch (err) {
-		if (entry.cancelled || !sessions.has(entry.id)) return;
-		const msg = `No pude precomputar el diff (${err instanceof Error ? err.message : String(err)}); el agente lo resolverá.`;
-		emit(entry, { type: 'phase', phase: 'diff', detail: msg });
-		emit(entry, { type: 'status', status: entry.status, message: msg });
+			acp: true,
+			diffRelPath: null,
+			diffFingerprint: '',
+			diffHash: '',
+			dirty: false,
+			empty: false,
+			includesWorktree: false,
+			files: [],
+			ignored: [],
+			ignoreGlobs: []
+		};
+	if (!input.prepared) {
+		try {
+			promptOpts = prepareReviewPromptOpts({
+				repo: input.repo,
+				branch: input.branch,
+				base: input.base,
+				// Una review nueva nombra el archivo con el hash del diff. Una actualización pisa el JSON existente.
+				...(input.update ? { outputFilename: input.outputFilename } : {}),
+				acp: true
+			});
+		} catch (err) {
+			if (entry.cancelled || !sessions.has(entry.id)) return;
+			const msg = `No pude precomputar el diff (${err instanceof Error ? err.message : String(err)}); el agente lo resolverá.`;
+			emit(entry, { type: 'phase', phase: 'diff', detail: msg });
+			emit(entry, { type: 'status', status: entry.status, message: msg });
+		}
 	}
+	if (entry.cancelled || !sessions.has(entry.id)) return;
+	if (promptOpts.outputFilename && !input.update && promptOpts.outputFilename !== entry.outputFilename) {
+		entry.outputFilename = promptOpts.outputFilename;
+	}
+	if (promptOpts.diffFingerprint) entry.diffFingerprint = promptOpts.diffFingerprint;
+	entry.diffPaths = (promptOpts.files || []).map((f) => f.path);
+	const n = entry.diffPaths.length;
+	const detail =
+		n > 0
+			? `Diff listo · ${n} archivo${n === 1 ? '' : 's'}. Pasando el contexto al agente…`
+			: 'Diff listo. Pasando el contexto al agente…';
+	emit(entry, { type: 'phase', phase: 'diff', detail });
+	setStatus(entry, 'starting', detail);
 
 	if (!sessions.has(entry.id) || entry.cancelled) return;
-	emit(entry, { type: 'phase', phase: 'agent', detail: 'El agente está revisando el branch…' });
-	const review = buildPrompt(
-		{
-			source: 'local',
-			repo: input.repo,
-			branch: input.branch,
-			base: input.base,
-			remoteUrl: getRemoteUrl(input.repo) || undefined
-		},
-		promptOpts
-	);
+	if (promptOpts.empty) {
+		const msg = 'El diff está vacío (ni commits ni cambios sin commitear). No hay nada que revisar.';
+		setStatus(entry, 'error', msg);
+		emit(entry, { type: 'status', status: 'error', message: msg });
+		return;
+	}
+	emit(entry, {
+		type: 'phase',
+		phase: 'agent',
+		detail: input.update ? 'El agente está actualizando la review…' : 'El agente está revisando el branch…'
+	});
+	const meta = {
+		source: 'local' as const,
+		repo: input.repo,
+		branch: input.branch,
+		base: input.base,
+		remoteUrl: getRemoteUrl(input.repo) || undefined
+	};
+	const review = input.update ? buildUpdatePrompt(meta, promptOpts) : buildPrompt(meta, promptOpts);
 	const prompt = `${review}\n\n${TOOL_RULES}\n\n${SERVER_VALIDATES}`;
 	void runTurn(entry, prompt, 'review', {
 		model: input.model,
-		shown: `Review de ${input.branch} contra ${input.base}`
+		shown: input.update
+			? `Actualizar review de ${input.branch} contra ${input.base}`
+			: `Review de ${input.branch} contra ${input.base}`
 	});
 }
 

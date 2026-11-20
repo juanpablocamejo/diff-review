@@ -15,7 +15,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as p from '@clack/prompts';
 import { AGENTS, detectAgents, modelChoices, resolvedRunModel, runAgent } from '../lib/agents.mjs';
@@ -26,10 +26,11 @@ import { buildAcpModelSelectOptions, sortModelSelectOptions } from '../lib/model
 import { autocompleteEs } from '../lib/autocomplete-es.mjs';
 import { copyTextToClipboard } from '../lib/clipboard.mjs';
 import { branchTips, getRemoteUrl, listBranches, tryResolveGitRoot } from '../lib/git.mjs';
-import { makeOutputFilename } from '../lib/output-name.mjs';
-import { buildPrompt, outputRelPath } from '../lib/prompt.mjs';
+import { decodePayload } from '../lib/json-payload.mjs';
+import { isOutputFilename, makeOutputFilename } from '../lib/output-name.mjs';
+import { buildPrompt, buildUpdatePrompt, outputRelPath } from '../lib/prompt.mjs';
 import { prepareReviewPromptOpts } from '../lib/review-prep.mjs';
-import { ensureReviewDir, writeDiffCache } from '../lib/review-dir.mjs';
+import { ensureReviewDir, locateReviewFile, writeDiffCache } from '../lib/review-dir.mjs';
 import { existingReviewOutput, waitForReviewOutput } from '../lib/wait-output.mjs';
 import { stampReviewProvenance } from '../lib/review-meta.mjs';
 import { runValidateCli } from '../lib/check-report.mjs';
@@ -122,6 +123,7 @@ function printHelp() {
 Usage:
   diff-review [options]
   diff-review validate <file.json>
+  diff-review --update <file.json> [--yes]
 
 Por defecto (desde un repo git): elegís branch/base en la terminal (Clack),
 copia el prompt, espera el JSON y abre el viewer. Si hay agentes instalados,
@@ -142,6 +144,8 @@ Options:
       --ui         Abrir la UI primero (sin esperar JSON)
       --base <b>   Base del merge-base (salta el select de base)
       --branch <b> Branch a revisar (salta el select de branch)
+      --update <f> Actualizar un reporte existente: prepara el diff actual (commits + sin commitear) y copia un prompt que edita ese JSON
+      --yes        Con --update, seguir aunque el diff no haya cambiado
       --agent      Lanzar un agente instalado (${AGENTS.map((a) => a.bins[0]).join(', ')}) con el prompt
       --headless   Con agente: correrlo en la terminal (sin ACP ni chat en la web)
       --no-open    No abrir el navegador
@@ -163,7 +167,9 @@ function parseArgs(argv) {
 		agent: false,
 		headless: false,
 		base: '',
-		branch: ''
+		branch: '',
+		update: '',
+		yes: false
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
@@ -176,6 +182,8 @@ function parseArgs(argv) {
 		else if (a === '--host') opts.host = argv[++i] || opts.host;
 		else if (a === '--base') opts.base = argv[++i] || opts.base;
 		else if (a === '--branch') opts.branch = argv[++i] || opts.branch;
+		else if (a === '--update') opts.update = argv[++i] || opts.update;
+		else if (a === '--yes') opts.yes = true;
 		else if (a === '-p' || a === '--port') {
 			const n = Number(argv[++i]);
 			if (!Number.isFinite(n) || n <= 0) {
@@ -368,31 +376,10 @@ async function resolveBranchBase(launch, opts, pickOpts = {}) {
 			p.log.step(`Base: ${base}`);
 		}
 
-		if (branch === base || sameCommitTips(launch.repo, branch, base)) {
-			p.log.warn(emptyDiffPickMessage(branch, base));
-			continue;
-		}
 		break;
 	}
 
 	return { branch, base, prompted: true };
-}
-
-/** ¿Branch y base resuelven al mismo SHA? (diff committed vacío aunque los nombres difieran). */
-function sameCommitTips(repo, branch, base) {
-	try {
-		const { branchSha, baseSha } = branchTips(repo, branch, base);
-		return Boolean(branchSha && baseSha && branchSha === baseSha);
-	} catch {
-		return false;
-	}
-}
-
-function emptyDiffPickMessage(branch, base) {
-	if (branch === base) {
-		return `Branch y base son iguales (${branch}): no hay diff que revisar.`;
-	}
-	return `\`${branch}\` y \`${base}\` apuntan al mismo commit: no hay diff que revisar.`;
 }
 
 function buildOutputFilename(repo, branch, base) {
@@ -415,36 +402,36 @@ function buildOutputFilename(repo, branch, base) {
  * Precomputa el diff en CLI (spinner si hay Clack).
  * @returns {{ empty: true, message: string } | { empty: false, promptOpts: ReturnType<typeof prepareReviewPromptOpts> }}
  */
-function prepareContext(launch, branch, base, outputFilename, { useClack }) {
+function prepareContext(launch, branch, base, { useClack, outputFilename = '' }) {
 	const spin = useClack ? p.spinner() : null;
 	if (!useClack) console.log('Preparando el contexto…');
 	spin?.start('Preparando el contexto…');
 
 	/** @type {ReturnType<typeof prepareReviewPromptOpts>} */
-	let promptOpts = { outputFilename };
+	let promptOpts = { outputFilename: outputFilename || makeOutputFilename({}) };
 	try {
 		promptOpts = prepareReviewPromptOpts({
 			repo: launch.repo,
 			branch,
 			base,
-			outputFilename
+			...(outputFilename ? { outputFilename } : {})
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		spin?.stop('No pude precomputar el diff');
 		if (useClack) p.log.warn(`No pude precomputar el diff: ${msg}`);
 		else console.warn('No pude precomputar el diff:', msg);
+		const fallbackName = outputFilename || buildOutputFilename(launch.repo, branch, base);
 		ensureReviewDir(launch.repo);
-		writeDiffCache(launch.repo, outputFilename, { branch, base });
-		return { empty: false, promptOpts };
+		writeDiffCache(launch.repo, fallbackName, { branch, base });
+		return { empty: false, promptOpts: { ...promptOpts, outputFilename: fallbackName } };
 	}
 
-	const n = Array.isArray(promptOpts.files) ? promptOpts.files.length : 0;
-	if (n === 0) {
+	if (promptOpts.empty) {
 		spin?.stop('Diff vacío');
 		return {
 			empty: true,
-			message: `El diff entre \`${branch}\` y \`${base}\` está vacío: no hay nada que revisar.`
+			message: `El diff entre \`${branch}\` y \`${base}\` está vacío (tampoco hay cambios sin commitear en ese branch): no hay nada que revisar.`
 		};
 	}
 
@@ -644,9 +631,9 @@ async function reuseExistingReview(existing, outputFilename) {
 /**
  * Lanza el agente y espera el JSON. Devuelve el reporte válido; si el agente termina sin dejarlo, sale con error.
  * @param {import('../lib/agents.mjs').DetectedAgent} agent
- * @param {{ repo: string, prompt: string, model: string, outputFilename: string, useClack: boolean }} run
+ * @param {{ repo: string, prompt: string, model: string, outputFilename: string, useClack: boolean, diffFingerprint?: string }} run
  */
-async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, useClack }) {
+async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, useClack, diffFingerprint }) {
 	const what = `${agent.def.label} (${model || 'modelo por defecto'})`;
 	const msg = `Lanzando ${what}. Espera ${outputRelPath(outputFilename)}; Ctrl+C cancela.`;
 	if (useClack) p.outro(msg);
@@ -684,7 +671,8 @@ async function runAgentAndWait(agent, { repo, prompt, model, outputFilename, use
 	stampReviewProvenance(result.path, {
 		agent: agent.def.label,
 		model: resolvedRunModel(agent.def, model),
-		generatedAt: new Date().toISOString()
+		generatedAt: new Date().toISOString(),
+		...(diffFingerprint ? { diffFingerprint } : {})
 	});
 	return /** @type {{ path: string }} */ (result);
 }
@@ -766,7 +754,7 @@ async function ensureAgentAuthBeforeUi(agent, repo, useClack) {
  * @param {{ repo: string, branch: string, base: string, model: string, outputFilename: string, useClack: boolean }} run
  * @param {{ host: string, port: number, open: boolean }} opts
  */
-async function runAgentInUi(agent, { repo, branch, base, model, outputFilename, useClack }, opts) {
+async function runAgentInUi(agent, { repo, branch, base, model, outputFilename, useClack, update = false }, opts) {
 	await ensureAgentAuthBeforeUi(agent, repo, useClack);
 	const id = randomUUID();
 	const msg = `Lanzando ${agent.def.label} (${model || 'modelo por defecto'}). El progreso se ve en la web; Ctrl+C corta.`;
@@ -778,8 +766,162 @@ async function runAgentInUi(agent, { repo, branch, base, model, outputFilename, 
 		open: opts.open,
 		launchCwd: repo,
 		openPath: `/?agent=${encodeURIComponent(id)}`,
-		agentRun: { id, repo, branch, base, outputFilename, agentId: agent.def.id, ...(model ? { model } : {}) }
+		agentRun: {
+			id,
+			repo,
+			branch,
+			base,
+			outputFilename,
+			agentId: agent.def.id,
+			...(model ? { model } : {}),
+			...(update ? { update: true } : {})
+		}
 	});
+}
+
+/** Aviso de “nada cambió”: en TTY pregunta; sin TTY hace falta --yes. */
+async function confirmUnchanged(opts) {
+	const msg =
+		'El diff no cambió desde la última review (misma huella). No hay cambios nuevos para analizar.';
+	if (opts.yes) {
+		console.warn(`${msg} Continúo igual (--yes).`);
+		return true;
+	}
+	if (!isInteractive()) {
+		console.error(`${msg}\nPasá --yes para continuar igual.`);
+		return false;
+	}
+	p.intro(TITLE);
+	p.log.warn(msg);
+	const answer = await p.confirm({ message: '¿Continuar igual?', initialValue: false });
+	if (p.isCancel(answer) || !answer) {
+		p.cancel('Cancelado.');
+		return false;
+	}
+	return true;
+}
+
+/**
+ * `--update <reporte.json>`: prepara el diff actual junto al JSON existente y copia (o lanza) un prompt de actualización.
+ */
+async function runUpdateMode(opts) {
+	const raw = String(opts.update || '').trim();
+	if (!raw) {
+		console.error('Falta el archivo: diff-review --update <reporte.json>');
+		process.exit(1);
+	}
+	const filePath = resolve(raw);
+	if (!existsSync(filePath)) {
+		console.error(`No existe el reporte: ${filePath}`);
+		process.exit(1);
+	}
+	const name = basename(filePath);
+	if (!isOutputFilename(name)) {
+		console.error(`No es un JSON de review: ${name}`);
+		process.exit(1);
+	}
+	let payload;
+	try {
+		payload = decodePayload(readFileSync(filePath, 'utf8'));
+	} catch (err) {
+		console.error('No pude leer el JSON:', err instanceof Error ? err.message : err);
+		process.exit(1);
+	}
+	const meta =
+		payload && typeof payload === 'object' && !Array.isArray(payload)
+			? payload.meta && typeof payload.meta === 'object'
+				? payload.meta
+				: payload
+			: {};
+	const repo = tryResolveGitRoot(String(meta.repo || '').trim()) || tryResolveGitRoot(process.cwd());
+	if (!repo) {
+		console.error(
+			'No hay un worktree local escribible (meta.repo o el directorio actual). No preparé el diff ni copié un prompt que apunte a un archivo inexistente.'
+		);
+		process.exit(1);
+	}
+	const branch = String(meta.branch || '').trim();
+	const base = String(meta.base || 'develop').trim() || 'develop';
+	if (!branch) {
+		console.error('El reporte no tiene meta.branch.');
+		process.exit(1);
+	}
+
+	/** @type {ReturnType<typeof prepareReviewPromptOpts>} */
+	let promptOpts;
+	try {
+		promptOpts = prepareReviewPromptOpts({ repo, branch, base, outputFilename: name });
+	} catch (err) {
+		console.error('No pude preparar el diff:', err instanceof Error ? err.message : err);
+		process.exit(1);
+	}
+	if (promptOpts.empty) {
+		console.error('El diff está vacío (ni commits ni cambios sin commitear). No hay nada que actualizar.');
+		process.exit(1);
+	}
+
+	const stored = String(meta.diffFingerprint || '').trim();
+	if (stored && stored === promptOpts.diffFingerprint) {
+		const ok = await confirmUnchanged(opts);
+		if (!ok) process.exit(1);
+	}
+
+	const jsonInRepo = locateReviewFile(repo, name) || filePath;
+	stampReviewProvenance(jsonInRepo, { diffFingerprint: promptOpts.diffFingerprint });
+
+	const prompt = buildUpdatePrompt(
+		{
+			source: 'local',
+			repo,
+			branch,
+			base,
+			remoteUrl: String(meta.remoteUrl || '').trim() || getRemoteUrl(repo) || undefined
+		},
+		{ ...promptOpts, outputFilename: name, acp: Boolean(opts.agent && !opts.headless) }
+	);
+
+	if (opts.agent) {
+		const detected = detectAgents();
+		if (!detected.length) {
+			console.warn(`No encontré agentes instalados (${AGENTS.map((a) => a.bins[0]).join(', ')}). Copio el prompt.`);
+		} else {
+			const { agent, model } = await pickAgentAndModel(detected, undefined, {
+				repo,
+				headless: opts.headless
+			});
+			if (supportsAcp(agent) && !opts.headless) {
+				await runAgentInUi(
+					agent,
+					{
+						repo,
+						branch,
+						base,
+						model,
+						outputFilename: name,
+						useClack: isInteractive(),
+						update: true
+					},
+					opts
+				);
+				return;
+			}
+			await runAgentAndWait(agent, {
+				repo,
+				prompt,
+				model,
+				outputFilename: name,
+				useClack: isInteractive(),
+				diffFingerprint: promptOpts.diffFingerprint
+			});
+			console.log('JSON actualizado.');
+			return;
+		}
+	}
+
+	if (copyTextToClipboard(prompt)) console.log('Prompt de actualización copiado al portapapeles.');
+	else console.log('No pude copiar el prompt al portapapeles.');
+	console.log(`Reporte: ${outputRelPath(name)}`);
+	console.log(`Diff:    ${promptOpts.diffRelPath}`);
 }
 
 function explainWaitingForAgent(outputFilename, { copied, useClack }) {
@@ -800,7 +942,7 @@ function explainWaitingForAgent(outputFilename, { copied, useClack }) {
 }
 
 /**
- * @typedef {{ id: string, repo: string, branch: string, base: string, outputFilename: string, agentId: string, model?: string }} AgentRun
+ * @typedef {{ id: string, repo: string, branch: string, base: string, outputFilename: string, agentId: string, model?: string, update?: boolean }} AgentRun
  * @param {{ host: string, port: number, open: boolean, launchCwd: string, importFile?: string, openPath?: string, agentRun?: AgentRun }} cfg
  */
 async function startServer(cfg) {
@@ -881,22 +1023,17 @@ async function runUiMode(opts, launch, launchCwd) {
 	const branch = String(opts.branch || '').trim() || (listed ? defaultBranch(listed) : '');
 	const base =
 		String(opts.base || '').trim() || (listed ? defaultBase(listed, branch) : 'develop');
-	const outputFilename = launch
-		? buildOutputFilename(launch.repo, branch, base)
-		: makeOutputFilename({});
+	let outputFilename = makeOutputFilename({});
 
 	if (launch) {
 		console.log(`Repo:   ${launch.repo}`);
 		console.log(`Branch: ${branch}  (base: ${base})`);
-		if (branch === base || sameCommitTips(launch.repo, branch, base)) {
-			console.error(emptyDiffPickMessage(branch, base));
-			process.exit(1);
-		}
-		const prep = prepareContext(launch, branch, base, outputFilename, { useClack: false });
+		const prep = prepareContext(launch, branch, base, { useClack: false });
 		if (prep.empty) {
 			console.error(prep.message);
 			process.exit(1);
 		}
+		outputFilename = prep.promptOpts.outputFilename || outputFilename;
 		const prompt = buildPrompt(
 			{
 				source: 'local',
@@ -943,6 +1080,11 @@ async function main() {
 		process.exit(0);
 	}
 
+	if (opts.update) {
+		await runUpdateMode(opts);
+		return;
+	}
+
 	const launchCwd = process.cwd();
 	const launch = loadRepoLaunch();
 
@@ -976,27 +1118,13 @@ async function main() {
 		({ branch, base, prompted } = await resolveBranchBase(launch, pick, { skipIntro }));
 		if (prompted) skipIntro = true;
 
-		if (branch === base || sameCommitTips(launch.repo, branch, base)) {
-			const msg = emptyDiffPickMessage(branch, base);
-			if (prompted || isInteractive()) {
-				p.log.warn(msg);
-				pick = { branch: '', base: '' };
-				continue;
-			}
-			console.error(msg);
-			process.exit(1);
-		}
-
-		outputFilename = buildOutputFilename(launch.repo, branch, base);
 		if (!prompted) {
 			console.log(`Repo:   ${launch.repo}`);
 			console.log(`Branch: ${branch}  (base: ${base})`);
-		} else {
-			p.note(`${branch}  →  ${base}\n${outputRelPath(outputFilename)}`, 'Review');
 		}
 
 		// El agente escribe en .diff-review/ (que se ignora sola) y lee de ahí el diff ya calculado.
-		const prep = prepareContext(launch, branch, base, outputFilename, {
+		const prep = prepareContext(launch, branch, base, {
 			useClack: prompted || isInteractive()
 		});
 		if (prep.empty) {
@@ -1009,6 +1137,8 @@ async function main() {
 			process.exit(1);
 		}
 		promptOpts = prep.promptOpts;
+		outputFilename = promptOpts.outputFilename || buildOutputFilename(launch.repo, branch, base);
+		if (prompted) p.note(`${branch}  →  ${base}\n${outputRelPath(outputFilename)}`, 'Review');
 		break;
 	}
 
@@ -1063,7 +1193,8 @@ async function main() {
 			prompt,
 			model,
 			outputFilename,
-			useClack
+			useClack,
+			diffFingerprint: promptOpts.diffFingerprint
 		});
 	} else if (!result) {
 		// Si eligió generar de nuevo, el JSON existente no cuenta hasta que el agente lo reescriba.
@@ -1079,7 +1210,10 @@ async function main() {
 			}
 		});
 		// Por el portapapeles no sabemos qué agente fue, pero sí cuándo escribió el JSON.
-		stampReviewProvenance(result.path, { generatedAt: statSync(result.path).mtime.toISOString() });
+		stampReviewProvenance(result.path, {
+			generatedAt: statSync(result.path).mtime.toISOString(),
+			diffFingerprint: promptOpts.diffFingerprint
+		});
 	}
 
 	console.log('JSON OK. Abriendo la UI web…');

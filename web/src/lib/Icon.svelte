@@ -7,6 +7,7 @@
 		| 'minus'
 		| 'plus'
 		| 'wrap'
+		| 'nowrap'
 		| 'chat'
 		| 'download'
 		| 'more'
@@ -53,6 +54,9 @@
 		<path d="M4 8h8M8 4v8" />
 	{:else if name === 'wrap'}
 		<path d="M2.5 4h11M2.5 8h9a2 2 0 0 1 0 4H8.5M10 10.5 8.5 12l1.5 1.5M2.5 12h3" />
+	{:else if name === 'nowrap'}
+		<!-- Línea que sigue recta hacia la derecha: el texto no vuelve, se desplaza. -->
+		<path d="M2.5 3.25h8.5M2.5 8h6.75M8.75 5.75 13 8 8.75 10.25M2.5 12.75h8.5" />
 	{:else if name === 'chat'}
 		<path
 			d="M2.5 3.25h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7.2L4 13.75V11.25H2.5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"

@@ -70,7 +70,7 @@
 	);
 </script>
 
-<div class="detail-panel">
+<div class={['detail-panel', { 'is-corrected': activeFinding?.corrected }]}>
 	{#if onmarkallfix || onmarkallignore || onmarkallclear}
 		<div class="bulk-bar">
 			<span class="bulk-label">Marcar todos</span>
@@ -182,6 +182,10 @@
 </div>
 
 <style>
+	.detail-panel.is-corrected {
+		opacity: 0.72;
+	}
+
 	.detail-panel {
 		border: 1px solid var(--border);
 		border-radius: var(--radius);

@@ -66,7 +66,7 @@
 		<div class="list">
 			{#each findings as f (f.id)}
 				{@const expanded = f.id === expandedId}
-				<div class="item">
+				<div class={['item', { 'is-corrected': f.corrected, 'is-ignored': f.ignored }]}>
 					<button
 						type="button"
 						class="item-head"
@@ -228,6 +228,14 @@
 
 	.item {
 		border-bottom: 1px solid var(--border-soft);
+	}
+
+	.item.is-corrected {
+		background: color-mix(in srgb, var(--text) 4%, transparent);
+	}
+
+	.item.is-ignored {
+		background: color-mix(in srgb, var(--danger) 8%, transparent);
 	}
 
 	.item-head {

@@ -1,4 +1,5 @@
 import { changeLabel, displayGroupTitle, findingKindLabel, kindLabel, opLabel, plural, severityLabel, skipLabel } from './labels';
+import { findingIsOpen } from './triage';
 import { SEV_RANK } from './severity';
 import type {
 	BlockSide,
@@ -193,8 +194,9 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 			const blockAccent: Record<string, string> = {};
 			const rows: BlockRow[] = blocksForFile.map((b) => {
 				const matched = findings.filter((f) => f.file === path && f.block === b.id);
-				const hasBlocking = matched.some((f) => f.blocking);
-				const topSeverity = matched.slice().sort((a, c) => SEV_RANK[a.severity] - SEV_RANK[c.severity])[0];
+				const openMatched = matched.filter((f) => findingIsOpen(f));
+				const hasBlocking = openMatched.some((f) => f.blocking);
+				const topSeverity = openMatched.slice().sort((a, c) => SEV_RANK[a.severity] - SEV_RANK[c.severity])[0];
 				const accentColor = hasBlocking
 					? 'var(--danger)'
 					: topSeverity
@@ -315,7 +317,7 @@ export function buildReportModel(doc: ReviewDocument): ReportModel {
 
 	const orphanFindings = findings.filter((f) => !allPaths.has(f.file)).map(cardFor);
 
-	const blockerCount = findings.filter((f) => f.blocking).length;
+	const blockerCount = findings.filter((f) => f.blocking && findingIsOpen(f)).length;
 
 	return {
 		intentText: doc.intent || 'El agente no dejó una intención general.',

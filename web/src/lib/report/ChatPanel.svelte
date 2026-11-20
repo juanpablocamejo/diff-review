@@ -20,8 +20,8 @@
 	} from './agent.remote';
 	import type { AcpAgentOption, AcpModels, AgentSessionInfo, ChatMode, SeqEvent } from './agent-events';
 	import { AgentStream } from './agent-stream.svelte';
-	import { parseReportMeta, reviewSeedDiff, reviewSeedPayload } from './document';
-	import { hydrateFromGit, loadDetectedOutput } from './git.remote';
+	import { parseReportMeta, reviewSeedDiff, reviewSeedPayload, viewerIdFromPayload } from './document';
+	import { ensureReviewViewerId, hydrateFromGit, loadDetectedOutput } from './git.remote';
 	import { buildAcpModelSelectOptions, sortModelSelectOptions } from './model-label';
 	import ModelSelect from './ModelSelect.svelte';
 	import {
@@ -36,6 +36,7 @@
 		clearChat,
 		loadChat,
 		replaceReportDocument,
+		reportOutputFilename,
 		saveChat,
 		updateReportMeta
 	} from './storage';
@@ -747,7 +748,26 @@
 		try {
 			const loaded = await loadDetectedOutput({ repo: report.meta.repo, filename });
 			if (!loaded?.payload) throw new Error(`No pude leer ${filename}.`);
-			const meta = { ...parseReportMeta(loaded.payload, report.meta), agentSession: report.meta.agentSession };
+			const openName = reportOutputFilename(report.meta);
+			const sameFile = !openName || openName === filename;
+			let viewerId = viewerIdFromPayload(loaded.payload);
+			if (!viewerId && sameFile) {
+				viewerId = report.meta.viewerId || report.id;
+				const stamped = await ensureReviewViewerId({
+					repo: report.meta.repo,
+					filename,
+					viewerId
+				});
+				if (stamped?.viewerId) viewerId = stamped.viewerId;
+			} else if (!viewerId) {
+				viewerId = report.meta.viewerId || report.id;
+			}
+			const meta = {
+				...parseReportMeta(loaded.payload, { ...report.meta, viewerId }),
+				viewerId,
+				...(sameFile ? { outputFilename: filename } : {}),
+				agentSession: report.meta.agentSession
+			};
 			const document = await hydrateFromGit({
 				repo: meta.repo,
 				branch: meta.branch,
@@ -802,6 +822,7 @@
 		}
 		pendingSendAfterAuth = null;
 		text = '';
+		if (sendMode === 'fix') mode = 'ask';
 		bumpLogScroll();
 		await sendText(body, sendMode);
 	}
@@ -1139,14 +1160,22 @@
 		{/if}
 		<div class="composer">
 			<div class="composer-top">
-				<label class="mode-field">
-					<span class="sr-only">Modo</span>
-					<select class="mode-select" bind:value={mode} disabled={busy}>
-						<option value="ask">Preguntar</option>
-						<option value="edit">Modificar reporte</option>
-						<option value="fix">Corregir código</option>
-					</select>
-				</label>
+				{#if mode === 'fix'}
+					<p class="fix-hint">
+						Este envío corrige el código.
+						<button
+							type="button"
+							class="linkish"
+							disabled={busy}
+							onclick={() => {
+								mode = 'ask';
+								pendingAutoSend = false;
+							}}
+						>
+							Preguntar en su lugar
+						</button>
+					</p>
+				{/if}
 				<div class="model-field">
 					<ModelSelect
 						compact
@@ -1168,11 +1197,9 @@
 				rows="3"
 				placeholder={connecting || !sessionReady
 					? 'Podés ir escribiendo; se habilita el envío cuando la sesión esté lista…'
-					: mode === 'ask'
-						? '¿Por qué el hallazgo f2 es bloqueante?'
-						: mode === 'edit'
-							? 'Bajá la severidad de f3 a low: el caso no llega a producción.'
-							: 'Aplicá los hallazgos marcados para corregir en el código del repo.'}
+					: mode === 'fix'
+						? 'Aplicá los hallazgos marcados para corregir en el código del repo.'
+						: '¿Por qué el hallazgo f2 es bloqueante?'}
 				onkeydown={onKeydown}
 			></textarea>
 			<div class="actions">
@@ -1198,12 +1225,10 @@
 						Conectando…
 					{:else if sending || stream?.busy}
 						Enviando…
-					{:else if mode === 'ask'}
-						Preguntar
-					{:else if mode === 'edit'}
-						Pedir cambio
-					{:else}
+					{:else if mode === 'fix'}
 						Corregir
+					{:else}
+						Preguntar
 					{/if}
 				</button>
 			</div>
@@ -1357,6 +1382,27 @@
 	}
 	.start:disabled {
 		opacity: 0.5;
+	}
+
+	.ghost {
+		padding: 7px 12px;
+		font-size: 13px;
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text);
+		cursor: pointer;
+	}
+
+	.ghost:hover:not(:disabled) {
+		border-color: var(--accent);
+	}
+
+	.ghost:disabled {
+		background: var(--bg-card);
+		border-color: var(--border);
+		color: var(--text-dim);
+		cursor: not-allowed;
 	}
 	.hint,
 	.note,
@@ -1536,37 +1582,11 @@
 		max-width: min(280px, 48%);
 		margin-left: auto;
 	}
-	.mode-field {
-		flex: 0 1 auto;
-		min-width: 0;
-	}
-	.mode-select {
-		display: block;
-		width: 100%;
-		max-width: 180px;
-		padding: 5px 8px;
-		font: inherit;
+	.fix-hint {
+		margin: 0;
+		flex: 1 1 auto;
 		font-size: 12px;
-		color: var(--text);
-		background: var(--bg-card);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		cursor: pointer;
-	}
-	.mode-select:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.sr-only {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
+		color: var(--text-dim);
 	}
 	textarea {
 		resize: vertical;

@@ -14,6 +14,14 @@ declare module '$review/lib/git.mjs' {
 		branch: string,
 		base: string
 	): { branchSha: string; baseSha: string };
+	export function branchBehind(
+		repo: string,
+		branch: string
+	): { branch: string; upstream: string | null; behind: number; local: boolean };
+	export function fastForwardBranch(
+		repo: string,
+		branch: string
+	): { branch: string; upstream: string | null; behind: number; local: boolean };
 	export function fingerprint(branchSha: string, baseSha: string): string | null;
 	export function reportId(branchSha: string, baseSha: string): string;
 }
@@ -26,6 +34,12 @@ declare module '$review/lib/output-name.mjs' {
 	export function makeOutputFilename(input?: {
 		branchSha?: string;
 		baseSha?: string;
+		diffHash?: string;
+	}): string;
+	export function makeStampedOutputFilename(input?: {
+		branchSha?: string;
+		baseSha?: string;
+		now?: Date;
 	}): string;
 	export function isOutputFilename(name: string): boolean;
 	export const OUTPUT_DIR: string;
@@ -39,6 +53,12 @@ declare module '$review/lib/prompt.mjs' {
 	export function makeOutputFilename(input?: {
 		branchSha?: string;
 		baseSha?: string;
+		diffHash?: string;
+	}): string;
+	export function makeStampedOutputFilename(input?: {
+		branchSha?: string;
+		baseSha?: string;
+		now?: Date;
 	}): string;
 	export function isOutputFilename(name: string): boolean;
 	export const OUTPUT_DIR: string;
@@ -69,6 +89,24 @@ declare module '$review/lib/prompt.mjs' {
 			files?: Array<{ path: string; changeType?: string }>;
 			ignored?: string[];
 			ignoreGlobs?: string[];
+			includesWorktree?: boolean;
+			diffFingerprint?: string;
+		}
+	): string;
+	export function buildUpdatePrompt(
+		meta: {
+			source?: string;
+			repo?: string;
+			branch?: string;
+			base?: string;
+			remoteUrl?: string;
+		},
+		opts: {
+			outputFilename: string;
+			diffRelPath?: string | null;
+			diffFingerprint?: string;
+			includesWorktree?: boolean;
+			acp?: boolean;
 		}
 	): string;
 }
@@ -78,12 +116,17 @@ declare module '$review/lib/review-prep.mjs' {
 		repo: string;
 		branch: string;
 		base?: string;
-		outputFilename: string;
+		outputFilename?: string;
 		acp?: boolean;
 	}): {
 		outputFilename: string;
 		acp: boolean;
 		diffRelPath: string | null;
+		diffFingerprint: string;
+		diffHash: string;
+		dirty: boolean;
+		empty: boolean;
+		includesWorktree: boolean;
 		mergeBase?: string;
 		branchSha?: string;
 		baseSha?: string;
@@ -431,6 +474,7 @@ declare module '$review/lib/review-meta.mjs' {
 			model?: string;
 			modelLabel?: string;
 			generatedAt?: string;
+			diffFingerprint?: string;
 			agentSession?: { agentId: string; sessionId: string; outputFilename: string };
 		}
 	): boolean;
@@ -443,6 +487,49 @@ declare module '$review/lib/check-report.mjs' {
 		opts?: { repo?: string; branch?: string; base?: string; cwd?: string; paths?: string[] }
 	): CheckResult;
 	export function formatCheckReport(file: string, command: string, result: CheckResult): string;
+}
+
+declare module '$review/lib/review-catalog.mjs' {
+	export type ReviewCatalogEntry = {
+		id: string;
+		repo: string;
+		branch: string;
+		base: string;
+		savedAt: string;
+		groupCount: number;
+		blockerCount: number;
+		qualityCount: number;
+		intent: string;
+		outputFilename: string;
+		agent?: string;
+		model?: string;
+	};
+	export function viewerIdOf(payload: unknown): string;
+	export function stampViewerId(filePath: string, preferred?: string): string;
+	export function collectReviewJson(repoRoot: string): {
+		name: string;
+		fullPath: string;
+		location: 'dir' | 'root';
+		mtimeMs: number;
+	}[];
+	export function listReviewCatalog(
+		repoRoot: string,
+		hints?: { filename?: string; viewerId?: string }[]
+	): ReviewCatalogEntry[];
+	export function findReviewInRepo(
+		repoRoot: string,
+		query?: { viewerId?: string; filename?: string }
+	): { filename: string; payload: unknown; viewerId: string; location: 'dir' | 'root' } | null;
+	export function deleteReviewJson(repoRoot: string, filename: string, viewerId?: string): boolean;
+	export function adoptReviewFile(
+		repoRoot: string,
+		item: { filename?: string; viewerId?: string; payload?: unknown }
+	): { filename: string; viewerId: string; status: 'stamped' | 'kept' | 'written' | 'missing' };
+	export function ensureFileViewerId(
+		repoRoot: string,
+		filename: string,
+		preferred?: string
+	): { filename: string; viewerId: string } | null;
 }
 
 declare module '$review/lib/review-dir.mjs' {

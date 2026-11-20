@@ -42,6 +42,8 @@
 		showExplanations,
 		expandedDiffs,
 		decided,
+		fixSelected = {},
+		corrected = {},
 		explanationWidth,
 		splitRatio,
 		diffFontSize,
@@ -73,6 +75,10 @@
 		showExplanations: boolean;
 		expandedDiffs: Record<string, boolean>;
 		decided: Record<string, boolean>;
+		/** A corregir. Junto con `decided` distingue "A ignorar" de lo que sigue abierto. */
+		fixSelected?: Record<string, boolean>;
+		/** Hallazgos ya corregidos: no cuentan como trabajo abierto. */
+		corrected?: Record<string, boolean>;
 		explanationWidth: number;
 		splitRatio: number;
 		diffFontSize: number;
@@ -383,10 +389,13 @@
 
 {#snippet fileBlock(file: FileSection, defaultOpen = true, groupId: string | null = null)}
 		{@const open = fileOpen[file.path] ?? defaultOpen}
-		{@const total = file.allFindings.length}
-		{@const doneCount = file.allFindings.filter((f) => decided[f.id]).length}
+		{@const openCards = file.allFindings.filter(
+			(f) => !corrected[f.id] && !(decided[f.id] && !fixSelected[f.id])
+		)}
+		{@const total = openCards.length}
+		{@const doneCount = openCards.filter((f) => decided[f.id]).length}
 		{@const allDone = total > 0 && doneCount === total}
-		{@const maxAccent = maxFindingAccent(file.allFindings)}
+		{@const maxAccent = maxFindingAccent(openCards)}
 		<div
 			id={groupId ? groupFileAnchor(groupId, file.path) : fileAnchor(file.path)}
 			class="file-section"

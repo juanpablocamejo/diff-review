@@ -3,7 +3,9 @@ import { basename, join, resolve } from 'node:path';
 import { loadBranchDiff } from '$review/lib/extract.mjs';
 import {
 	assertGitRepo,
+	branchBehind,
 	branchTips,
+	fastForwardBranch,
 	fingerprint,
 	getRemoteUrl,
 	listBranches,
@@ -12,6 +14,16 @@ import {
 } from '$review/lib/git.mjs';
 import { decodePayload } from '$review/lib/json-payload.mjs';
 import { isOutputFilename, makeOutputFilename } from '$review/lib/output-name.mjs';
+import { prepareReviewPromptOpts } from '$review/lib/review-prep.mjs';
+import { stampReviewProvenance } from '$review/lib/review-meta.mjs';
+import {
+	adoptReviewFile,
+	deleteReviewJson,
+	ensureFileViewerId,
+	findReviewInRepo,
+	listReviewCatalog,
+	type ReviewCatalogEntry
+} from '$review/lib/review-catalog.mjs';
 import { companionPaths, ensureReviewDir, locateReviewFile, reviewDir } from '$review/lib/review-dir.mjs';
 import {
 	ensureRemoteWorktree,
@@ -272,6 +284,86 @@ export function writeReviewOutput(repo: string, filename: string, payload: unkno
 	return { filename: name, payload };
 }
 
+export type { ReviewCatalogEntry };
+
+export type ReviewCatalogHint = { filename: string; viewerId: string };
+
+export type AdoptReviewItem = { filename: string; viewerId: string; payload?: unknown };
+
+export type AdoptReviewResult = {
+	filename: string;
+	viewerId: string;
+	status: 'stamped' | 'kept' | 'written' | 'missing';
+};
+
+/** Catálogo: cada JSON de `.diff-review/` (y los nombres viejos en la raíz) es una tarjeta. */
+export function listLocalReviewCatalog(repo: string, hints?: ReviewCatalogHint[]): ReviewCatalogEntry[] {
+	const root = resolveReviewRoot(repo);
+	if (!root) return [];
+	return listReviewCatalog(root, hints || []);
+}
+
+export type FoundReviewFile = {
+	repo: string;
+	filename: string;
+	payload: unknown;
+	viewerId: string;
+	location: 'dir' | 'root';
+};
+
+/** Busca un JSON cuyo `meta.viewerId` es el id, o cuyo nombre coincide. */
+export function findLocalReview(
+	repos: string[],
+	query: { viewerId?: string; filename?: string }
+): FoundReviewFile | null {
+	const seen = new Set<string>();
+	for (const repo of repos) {
+		const root = resolveReviewRoot(String(repo || ''));
+		if (!root || seen.has(root)) continue;
+		seen.add(root);
+		const found = findReviewInRepo(root, query);
+		if (!found) continue;
+		return { ...found, repo: root };
+	}
+	return null;
+}
+
+/** Borra solo el JSON allowlisted (y copias con el mismo viewerId). */
+export function removeLocalReviewJson(repo: string, filename: string, viewerId?: string): boolean {
+	const name = basename(String(filename || '').trim());
+	if (!name || !isOutputFilename(name)) {
+		throw new Error('Nombre de archivo inválido.');
+	}
+	const root = resolveReviewRoot(repo);
+	if (!root) throw new Error('No existe la carpeta del repo.');
+	return deleteReviewJson(root, name, viewerId);
+}
+
+/** Migración del índice viejo: estampar el UUID o reescribir el JSON si solo estaba en localStorage. */
+export function adoptLocalReviews(repo: string, items: AdoptReviewItem[]): AdoptReviewResult[] {
+	const list = Array.isArray(items) ? items : [];
+	const root = resolveReviewRoot(repo);
+	if (!root) {
+		return list.map((item) => ({
+			filename: basename(String(item?.filename || '').trim()),
+			viewerId: String(item?.viewerId || '').trim(),
+			status: 'missing' as const
+		}));
+	}
+	return list.map((item) => adoptReviewFile(root, item));
+}
+
+/** Escribe `meta.viewerId` si el JSON existe y todavía no tiene. */
+export function ensureLocalReviewViewerId(
+	repo: string,
+	filename: string,
+	viewerId?: string
+): { filename: string; viewerId: string } | null {
+	const root = resolveReviewRoot(repo);
+	if (!root) return null;
+	return ensureFileViewerId(root, filename, viewerId);
+}
+
 export async function pickLocalFolder(): Promise<string | null> {
 	return pickFolder();
 }
@@ -282,6 +374,70 @@ export type OutputNameInfo = {
 	branchSha?: string;
 	baseSha?: string;
 };
+
+export type BranchFreshness = {
+	branch: string;
+	upstream: string | null;
+	behind: number;
+	local: boolean;
+};
+
+/** Commits detrás del upstream (tracking, o `origin/<branch>` si no hay tracking). No hace fetch. */
+export function readBranchFreshness(repo: string, branches: string[]): BranchFreshness[] {
+	const root = assertGitRepo(repo);
+	const unique = [...new Set(branches.map((b) => String(b || '').trim()).filter(Boolean))];
+	return unique.map((branch) => branchBehind(root, branch));
+}
+
+/**
+ * Fetch + fast-forward de un solo branch. No descarta cambios.
+ * Devuelve el estado nuevo y la lista de branches para refrescar la UI.
+ */
+export function updateLocalBranch(repo: string, branch: string) {
+	const root = assertGitRepo(repo);
+	const updated = fastForwardBranch(root, branch);
+	const listed = listBranches(root);
+	return {
+		...updated,
+		repo: root,
+		branches: listed.branches,
+		current: listed.current,
+		defaultBase: listed.defaultBase,
+		remoteUrl: getRemoteUrl(root) || undefined
+	};
+}
+
+/** Prepara el diff (commits + worktree) y, si `stamp`, guarda la huella en el JSON existente. */
+export function prepareLocalReview(input: {
+	repo: string;
+	branch: string;
+	base?: string;
+	outputFilename?: string;
+	stamp?: boolean;
+	acp?: boolean;
+}) {
+	const raw = String(input.repo || '').trim();
+	if (!raw || looksLikeGitUrl(raw)) {
+		throw new Error(
+			'No hay un worktree local donde escribir el diff. No se puede copiar un prompt que apunte a un archivo que no existe.'
+		);
+	}
+	const root = assertGitRepo(raw);
+	const prepared = prepareReviewPromptOpts({
+		repo: root,
+		branch: String(input.branch || '').trim(),
+		base: String(input.base || 'develop').trim() || 'develop',
+		...(String(input.outputFilename || '').trim()
+			? { outputFilename: String(input.outputFilename).trim() }
+			: {}),
+		acp: Boolean(input.acp)
+	});
+	if (input.stamp && prepared.diffFingerprint) {
+		const path = locateReviewFile(root, prepared.outputFilename);
+		if (path) stampReviewProvenance(path, { diffFingerprint: prepared.diffFingerprint });
+	}
+	return prepared;
+}
 
 /** Nombre de salida con tips cortos del branch y la base (repo local). */
 export function resolveOutputName(repo: string, branch: string, base: string): OutputNameInfo {
