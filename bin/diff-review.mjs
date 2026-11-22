@@ -435,6 +435,7 @@ function prepareContext(launch, branch, base, { useClack, outputFilename = '' })
 		};
 	}
 
+	const n = (promptOpts.files || []).length;
 	const done = `Contexto listo · ${n} archivo${n === 1 ? '' : 's'}`;
 	spin?.stop(done);
 	if (!useClack) console.log(done);
